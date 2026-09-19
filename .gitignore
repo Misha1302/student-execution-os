@@ -1,0 +1,27 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+.credentials/
+
+# IDE/editor
+.idea/
+.vscode/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build/cache
+bin/
+obj/
+dist/
+build/
+.cache/
+tmp/
+*.log
