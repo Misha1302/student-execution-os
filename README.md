@@ -45,11 +45,14 @@ Feasibility → Planner → Risk / Next actions
 
 ## Repository status
 
+Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
+
 The repository is specification-first. Application code has not been started yet. The normative baseline is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.0.
 
 ## Documentation
 
 - [Normative specification](docs/SPECIFICATION.md)
+- [Implementation prompt — first vertical slice](docs/IMPLEMENTATION_PROMPT.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
