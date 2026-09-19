@@ -2,46 +2,50 @@
 
 Student Execution OS is an experimental workload-planning system for students and other high-load users.
 
-It is **not** designed as another generic TODO list. The core idea is to turn fragmented obligations, fixed events, deadlines, travel constraints, and available calendar capacity into a trusted, explainable, executable plan.
+It is **not** another generic TODO list and it is not intended to replace every LMS or calendar. Its core is a trustworthy interpretation/planning layer over fragmented user and external evidence.
 
 ## Product thesis
 
-The system should answer three questions:
+The system should answer:
 
-1. **What do I need to do?** — capture obligations from manual input, LLMs, LMSs, calendars, documents, and future connectors.
-2. **What can I realistically do?** — combine remaining work, fixed events, location/travel, available capacity, and deadlines.
-3. **What should I do now?** — produce a small explainable execution queue and warn before the plan becomes infeasible.
+1. **What do I need to do?** — reconcile manual input, source systems, calendars, documents, and later LLM extraction into one local model without pretending that external facts belong to the server.
+2. **What can I realistically do?** — evaluate hard constraints, effort, fixed events, dependencies, location/travel, and uncertainty using a constraint-aware feasibility contract.
+3. **What should I do now?** — produce a small explainable plan/next-action queue and update it safely when reality changes.
 
-Canonical pipeline:
+Canonical architecture:
 
 ```text
-Sources
-  -> Capture
-  -> Provenance / Deduplication
-  -> Reconciliation
-  -> Canonical Workload Model
-  -> Capacity + Location + Travel
-  -> Risk Engine
-  -> Planner
-  -> Execution Queue
-  -> Notifications / User Actions
-  -> Feedback
+External / user evidence
+        ↓
+Immutable SourceRecords + Observations
+        ↓
+Identity matching + field reconciliation
+        ↓
+Server-owned local domain + user intent
+        ↓
+PlanningSnapshot
+        ↓
+Feasibility → Planner → Risk / Next actions
 ```
 
 ## Core design principles
 
-- **Server is canonical state.** Clients, LLMs, and connectors are not independent sources of truth.
-- **Source != Extractor != Actor.** A PDF parsed by an LLM is still sourced from the PDF; the LLM is the extractor.
-- **Actual cutoff != target != actionable-from != scheduled work != event time.**
-- **Travel is a transition between location-bound blocks**, not a duplicate TODO and not a fixed return trip.
-- **Importance, urgency, and risk are separate concepts.**
-- **Automation must be explainable and auditable.**
-- Low-confidence critical facts must not silently become canonical.
-- External source changes must be reconciled rather than blindly overwriting user planning decisions.
+- External systems own their assertions; the server owns **local interpretation, user intent, execution state, and projections**.
+- **Source != Extractor != Actor.**
+- Evidence is immutable; false dedup/matching must be reversible without evidence loss.
+- **Actual cutoff != target != actionable-from != event time != planned work.**
+- Project is a container, not a schedulable Task/Event subtype.
+- User scheduling constraints are canonical inputs; PlanBlocks are derived immutable projections.
+- Raw free minutes are not proof of feasibility.
+- `FEASIBLE` needs a legal witness; `INFEASIBLE` needs sound proof; heuristic failure alone is `UNKNOWN`.
+- Commute is derived plan state; a booked journey is a canonical moving Event.
+- LLMs are interfaces/extractors. Imported content is data, never tool authorization.
+- Connector/source synchronization is separate from client/offline replication.
+- Automation must remain explainable and auditable.
 
 ## Repository status
 
-This repository currently contains the normative product/system specification and project-governance files. Application code has not been started yet.
+The repository is specification-first. Application code has not been started yet. The normative baseline is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.0.
 
 ## Documentation
 
@@ -52,18 +56,17 @@ This repository currently contains the normative product/system specification an
 
 ## Planned implementation order
 
-1. Domain core: obligations, tasks, events, milestones, time semantics.
-2. Canonical server and sync.
-3. Capture API + LLM adapter + provenance/reconciliation.
-4. Capacity/risk engine and explainable next actions.
+1. Local Task/Event domain + exact/tri-state feasibility vertical slice.
+2. Evidence/reconciliation fixtures and reversible source matching.
+3. One reliable real connector with cursor/deletion/staleness semantics.
+4. LLM capture/action adapter behind the established evidence/authorization boundaries.
 5. Travel-aware planning.
-6. One authoritative academic connector brought to high reliability.
+6. Recurrence/notifications as demanded by usage.
+7. Offline client replication only if product evidence justifies it.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
-
-Apache-2.0 was selected over MIT primarily because this project is expected to expose public APIs, SDKs, connectors, and extension points; Apache-2.0 remains permissive while adding an explicit patent grant and clearer NOTICE/patent terms. See [docs/LICENSING.md](docs/LICENSING.md).
+Licensed under the [Apache License 2.0](LICENSE). See [docs/LICENSING.md](docs/LICENSING.md).
 
 ## Name
 

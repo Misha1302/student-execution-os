@@ -4,30 +4,19 @@
 
 The repository uses **Apache License 2.0**.
 
-### Why Apache-2.0 fits this project
-
-The project is expected to contain a server, public API, LLM/tool adapters, connectors, routing providers, notification integrations, and potentially SDKs. Apache-2.0 is permissive like MIT, but additionally provides:
-
-- an explicit copyright license;
-- an explicit patent grant from contributors;
-- patent-termination protection;
-- defined handling of NOTICE attribution;
-- clear rules for modified files and redistribution.
-
-Those properties are useful for infrastructure and ecosystem-oriented software where third parties may implement connectors, clients, or extensions.
+Apache-2.0 is permissive and includes an explicit patent grant/termination mechanism. That is a reasonable fit for a project that may later expose APIs, SDKs, clients, connectors, and extension points.
 
 ## Strongest simple alternative: MIT
 
-MIT is shorter and easier to read. It is an excellent choice when maximum simplicity is more important than explicit patent language.
+MIT is shorter and simpler. If the project later prioritizes minimum license text/process over Apache-2.0's explicit patent terms, changing the license would require a deliberate copyright/licensing decision covering existing contributions.
 
-For this project, the simplicity advantage does not outweigh Apache-2.0's explicit patent terms, so Apache-2.0 is the default.
+## Repository handling
 
-## What this decision does not imply
+- `LICENSE` should contain the canonical Apache-2.0 license text rather than a project-modified copy of the license body.
+- Project copyright notices may live in source-file headers/documentation when useful; they do not require modifying the Apache license text.
+- A `NOTICE` file is not used merely as general licensing documentation. If future dependencies/contributions require attribution notices, add a deliberate NOTICE file containing only applicable notices.
+- Third-party dependencies remain under their own licenses and required notices must be preserved.
+- No Contributor License Agreement (CLA) or Developer Certificate of Origin (DCO) is required by this repository today.
+- Future dual licensing/commercial exceptions require a separate explicit decision.
 
-- No Contributor License Agreement (CLA) is required by this repository today.
-- No additional source-available or non-commercial restriction is added.
-- No trademark grant is implied.
-- Third-party dependencies remain under their own licenses.
-- If the project later becomes dual-licensed or adopts a commercial exception model, that requires a separate explicit decision.
-
-This document is an engineering/project decision record, not legal advice.
+This is an engineering/project licensing decision record, not legal advice.
