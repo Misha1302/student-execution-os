@@ -399,9 +399,15 @@ Scheduled work MUST remain separate from completion.
 
 The UI MAY call deadlines “hard/soft”, but `HARD | SOFT` MUST NOT be the authoritative domain representation.
 
+Interval arithmetic MUST use half-open occupancy intervals `[start, end)` unless a source-specific constraint explicitly models a different boundary. Adjacent blocks where one ends exactly when the next begins do not overlap. Zero-duration occupancy intervals are invalid; point-in-time Milestones are instants, not zero-length Events.
+
+A hard cutoff observation MUST retain enough boundary semantics to distinguish `completion <= t` from `completion < t` when the source makes that distinction. Implementations MUST NOT silently discard inclusive/exclusive source semantics.
+
+Date-only or otherwise imprecise source statements (for example “deadline Wednesday”) MUST retain their precision/timezone/source convention. They MUST NOT silently become an exact `23:59` cutoff unless the source or an explicit versioned user/system policy defines that end-of-day convention. If an exact/bounded hard cutoff cannot be derived safely, effective state is `UNKNOWN`/`CONFLICT` and planning may use only an explicitly labelled conservative bound.
+
 ## 5.1 Time zones and local civil time
 
-Absolute instants MUST be stored/transmitted using UTC or an explicit offset.
+Absolute instants MUST be stored/transmitted using UTC or an explicit offset. Public API timestamp serialization MUST use an unambiguous RFC 3339 / ISO-8601 date-time representation with `Z` or an explicit offset; recurring/local civil-time rules retain their separate IANA time-zone identifier.
 
 Recurring/local civil-time semantics MUST retain an IANA time-zone identifier; storing only a UTC offset is insufficient.
 
@@ -766,8 +772,10 @@ PlanningSnapshot
     account_id
     input_server_revision
     input_hash
-    horizon_start
-    horizon_end
+    analysis_horizon_start
+    analysis_horizon_end
+    plan_output_horizon_start
+    plan_output_horizon_end
     obligations
     effective fields
     hard constraints
@@ -778,6 +786,8 @@ PlanningSnapshot
 ```
 
 `input_hash` MUST cover every planning-relevant canonical/effective input plus the policy/config versions that can change hard feasibility or deterministic ordering. A policy change that changes those semantics invalidates the old current plan just like a data change.
+
+The analysis horizon used for a `FEASIBLE`/`INFEASIBLE`/risk claim MUST cover every hard cutoff and required transition relevant to that claim. A shorter UI/plan-output horizon MAY be used for display/execution, but truncating the displayed plan MUST NOT truncate feasibility evidence. If the configured analysis horizon cannot cover a relevant hard cutoff/recurrence expansion, the engine MUST extend it or return `UNKNOWN` for the affected claim rather than infer infeasibility from missing future capacity.
 
 ```text
 PlanSnapshot
@@ -1381,6 +1391,7 @@ Treat authentication tokens, calendars, educational records, source documents/me
 
 Requirements:
 
+- production network APIs carrying authentication or sensitive data MUST use authenticated encrypted transport (TLS or an equivalent deployment boundary);
 - server-side authentication and authorization for every canonical mutation and sensitive read;
 - least-privilege connector scopes;
 - OAuth integrations SHOULD follow current OAuth security BCPs supported by the provider/client type, including PKCE where applicable;
@@ -1460,7 +1471,7 @@ Externally persisted protocol/change-feed formats MUST carry a version when comp
 
 Before production use, the system MUST have a tested backup/restore path for canonical local state, evidence/provenance required for reconciliation, connector checkpoints, idempotency records within retention, and secrets through a documented secret-management recovery strategy.
 
-A backup existing is not sufficient; restore MUST be tested.
+A backup existing is not sufficient; restore MUST be tested. Backup copies containing sensitive data or secrets MUST be protected by access controls/encryption equivalent to the sensitivity of the primary data.
 
 ## 25.3 Durability
 
@@ -1666,6 +1677,8 @@ The system MUST preserve all of the following:
 43. `OVERDUE` is emitted only when every admissible hard cutoff bound has passed; a conflict straddling `now` is not silently overdue.
 44. Every independently mutable aggregate has one version/ETag owner; mutable children use their declared parent version.
 45. Chunk semantics are deterministic for splittable/non-splittable work, including final residual chunks.
+46. Event/occupancy intervals use one declared boundary convention; date-only/imprecise source times are never silently promoted to exact cutoffs.
+47. Feasibility/risk analysis horizon covers every hard cutoff relevant to the claimed result, or the result is `UNKNOWN`.
 
 ---
 
@@ -1935,6 +1948,18 @@ A release that does not declare `FLEXIBLE_WINDOW` capability rejects/holds such 
 **AT-82 — Critical conflict UI preserves state**  
 A client rendering an unresolved critical-field conflict exposes the conflict/provenance state and does not present one scalar source value as if it were resolved truth.
 
+**AT-83 — Half-open event adjacency**  
+A required Event ending exactly at 15:00 and another non-travel-dependent block starting at 15:00 do not overlap under `[start,end)` occupancy semantics.
+
+**AT-84 — Date-only deadline precision**  
+A source statement “deadline Wednesday” with no source-defined end-of-day convention cannot silently become Wednesday 23:59; the original precision/convention remains inspectable and effective cutoff stays unresolved/bounded according to policy.
+
+**AT-85 — Cutoff boundary semantics**  
+Two otherwise identical source deadlines whose providers define `<= t` versus `< t` retain different boundary semantics and produce the correct result for completion exactly at `t`.
+
+**AT-86 — Analysis horizon beyond display horizon**  
+A task due in 14 days with a 7-day displayed plan is not declared infeasible merely because the visible 7-day plan lacks enough capacity; feasibility analysis extends through the relevant cutoff or returns `UNKNOWN`.
+
 ---
 
 # 31. Definition of Done — first implementation vertical slice
@@ -1956,7 +1981,7 @@ manual capture of Tasks/Events
 + input edit -> safe replan/invalidation
 ```
 
-It MUST pass at least AT-11–32 relevant to enabled features, especially the positive-capacity/illegal-chunk test and heuristic-failure-is-UNKNOWN test.
+It MUST pass AT-11–32 plus AT-75, AT-78–81 where those cases are enabled by the slice, especially the positive-capacity/illegal-chunk, non-splittable-contiguity, final-residual-chunk, no-cutoff/unknown-cutoff, aggregate-concurrency, and heuristic-failure-is-UNKNOWN tests.
 
 It does not require connectors, LLMs, travel routing, recurrence, notifications, or offline replication.
 
@@ -1975,7 +2000,7 @@ Before production schema/API is considered stable, the system MUST additionally 
 - one complete connector sync protocol;
 - auditable effective-field provenance.
 
-Relevant AT-01–10, AT-38–40, and AT-59 MUST pass.
+Relevant AT-01–10, AT-38–40, AT-59, and AT-71–74 MUST pass.
 
 ---
 
