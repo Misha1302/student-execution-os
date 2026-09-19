@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Restore dependencies
+        run: echo "Pass 0 has no third-party runtime dependencies."
+      - name: Static compile check
+        run: python -m compileall -q src tests
+      - name: Unit, integration, and harness tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Smoke CLI
+        run: python -m student_execution_os health
