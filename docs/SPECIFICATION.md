@@ -185,6 +185,8 @@ SYSTEM
 ADMIN
 ```
 
+Every independently mutable aggregate root MUST have an optimistic-concurrency version/ETag. Mutable child records that do not carry their own version MUST be mutated only through a declared parent aggregate root and checked against that parent version in the same transaction. Every mutating API/command MUST have one unambiguous concurrency owner.
+
 Time-dependent domain logic MUST use an injectable clock.
 
 Device/client clocks MAY be stored as diagnostic metadata but MUST NOT determine server conflict ordering or canonical commit order.
@@ -254,6 +256,12 @@ Quick-entry effort buckets MAY map to explicit configured ranges; the mapping MU
 
 Progress updates MUST NOT be inferred merely from elapsed planned block time.
 
+Chunk semantics are normative:
+
+- for `splittable = false`, the scenario-specific remaining effort requires one contiguous legal WORK interval; `min_chunk_duration`/`max_chunk_duration` MUST either be absent or validate that this one block is allowed;
+- for `splittable = true`, every non-final WORK chunk MUST satisfy configured min/max chunk bounds; the final residual chunk MAY be shorter than `min_chunk_duration` when the remaining positive effort is itself smaller than that minimum;
+- configured durations MUST be positive and `max_chunk_duration >= min_chunk_duration` when both exist.
+
 ## 4.3 Event
 
 An Event occupies or constrains time and may also change location.
@@ -290,6 +298,8 @@ Examples:
 Preparation requiring real effort SHOULD be represented as a Task plus dependency rather than a vague Event buffer.
 
 `REQUIRED` Events are hard occupancy constraints. `OPTIONAL`/`PREFERRED` attendance MAY be omitted by the planner only according to an explicit planning policy and the omission MUST be explained; optional attendance MUST NOT silently become a hard fact. Hybrid events may expose multiple allowed location effects, but one concrete selected option is required before route-dependent PlanBlocks are materialized.
+
+`FIXED_INTERVAL` support is required by MVP-A. `FLEXIBLE_WINDOW` is a later capability unless a release explicitly declares support. An implementation that does not support flexible-window feasibility MUST reject/hold such input as unsupported/pending; it MUST NOT silently coerce a flexible window into a fixed Event or claim a complete feasible plan that ignores the flexibility constraint.
 
 ## 4.4 Project
 
@@ -579,12 +589,15 @@ For externally informed critical fields, the conceptual contract is:
 ```text
 Effective<T> =
     RESOLVED(value, evidence_ids, policy_version)
-  | OVERRIDDEN(value, override_id, evidence_ids, policy_version)
+  | OVERRIDDEN(value_or_absent, override_id, evidence_ids, policy_version)
+  | ABSENT(evidence_ids, policy_version)
   | CONFLICT(evidence_ids, policy_version)
   | UNKNOWN(reason, policy_version)
 ```
 
 The DB MAY materialize a typed selected value for querying, but only the reconciliation boundary may write it, and the resolution/provenance link MUST be retained.
+
+`ABSENT` means the applicable local/source policy has established that the field has no value (for example an explicitly no-cutoff manual Task or a complete authoritative source record that declares no deadline). `UNKNOWN` means the system cannot currently determine the value. Missing observations alone MUST NOT be promoted to `ABSENT` unless the source/policy semantics make absence authoritative.
 
 ## 10.2 Resolution function
 
@@ -608,7 +621,19 @@ Each field policy MUST provide, explicitly or by a versioned shared default, the
 4. Compute authority per `field × source context`; do not use one universal ranking such as `USER > LMS > EMAIL > CHAT`.
 5. If one top-authority value remains, return `RESOLVED`.
 6. If top-authority values conflict and no deterministic safe rule applies, return `CONFLICT`.
-7. If no usable observation/bound remains, return `UNKNOWN`.
+7. Return `ABSENT` only when explicit local/source semantics establish non-applicability/no value; otherwise if no usable observation/bound remains, return `UNKNOWN`.
+
+The normative baseline policies for critical fields are:
+
+| Field | Auto-resolution / authority boundary | Conflict planning projection | User local override |
+|---|---|---|---|
+| `actual_cutoff` | Source/context policy is field-specific; a typed authoritative API value is normally exact evidence, extracted text must meet configured certainty | Earliest admissible hard cutoff MAY be used conservatively while truth remains `CONFLICT`; if admissible values straddle `now`, risk truth is `UNKNOWN`, not `OVERDUE` | Permitted as a local interpretation only; source observations remain visible |
+| fixed Event interval/window | Source/context policy; do not choose by global source rank | Block union of plausible required intervals or return `UNKNOWN`; never silently pick one | Permitted as local scheduling interpretation when explicit |
+| `location_effect` | Source/context policy + freshness | Route-dependent result becomes conditional/`UNKNOWN` when plausible locations change feasibility | Permitted when explicit and authorized |
+| completion | Explicit user completion is locally authoritative; imported `submitted/completed` maps only under source-specific policy | Conservative unresolved state keeps work active | User may complete/reopen explicitly |
+| cancellation | Explicit user cancellation is local state; external disappearance/deletion is evidence, not cancellation unless connector policy says so | Conservative unresolved state keeps obligation active | User may cancel/reactivate explicitly |
+
+A connector/source policy MUST declare the field authority/freshness semantics it relies on; unspecified cross-source precedence MUST become `CONFLICT`/`UNKNOWN`, not an invented global ranking.
 
 ## 10.3 User override semantics
 
@@ -647,7 +672,28 @@ Examples:
 - conflicting location -> route-dependent feasibility becomes conditional/unknown;
 - completion/cancellation conflict -> default conservative projection SHOULD keep the obligation active unless a source-specific deterministic policy resolves otherwise.
 
-## 10.5 Source staleness and disappearance
+## 10.5 Conflict workflow record
+
+A current unresolved reconciliation conflict is durable workflow state, not a competing fact:
+
+```text
+Conflict
+    id
+    account_id
+    entity_ref
+    field_path
+    evidence_ids[]
+    policy_version
+    status: OPEN | RESOLVED | DISMISSED | SUPERSEDED
+    created_at
+    resolved_at?
+    resolution_ref?
+    version
+```
+
+For one entity/field/policy context, the system SHOULD expose one current `OPEN` conflict representing the current evidence set. New source evidence may supersede an older conflict, but history MUST remain auditable. Resolving a conflict MUST produce an inspectable resolution/override/policy decision and then rerun effective-field calculation.
+
+## 10.6 Source staleness and disappearance
 
 Connector failure, auth expiration, incomplete pagination, or a stale source MUST NOT be interpreted as entity deletion.
 
@@ -849,8 +895,22 @@ Scenario construction MUST be deterministic for a given policy version and snaps
 
 ## 14.1 Risk states
 
+Risk result is a revision-bound projection:
+
+```text
+RiskResult
+    state
+    basis: RESOLVED_FACTS | CONSERVATIVE_CONFLICT_PROJECTION | NO_HARD_CUTOFF
+    reasons[]
+    planning_snapshot_hash
+    policy_version
+```
+
+Risk states:
+
 ```text
 UNKNOWN
+NOT_APPLICABLE
 SAFE
 START_SOON
 AT_RISK
@@ -859,10 +919,16 @@ IMPOSSIBLE
 OVERDUE
 ```
 
+`NOT_APPLICABLE` means the obligation is known to have no hard cutoff/planning hard bound. `target_at` and anti-starvation may still affect planning/ordering, but missing a soft target MUST NOT become `OVERDUE` or `IMPOSSIBLE`.
+
 Normative precedence:
 
 ```text
-if obligation incomplete and final hard cutoff passed:
+if hard cutoff is explicitly ABSENT and no conservative hard bound applies:
+    NOT_APPLICABLE
+else if cutoff is unresolved and admissible cutoff values straddle now:
+    UNKNOWN
+else if obligation incomplete and every admissible hard cutoff bound has passed:
     OVERDUE
 else if a required hard-constraint fact whose admitted values can change classification has no usable bound:
     UNKNOWN
@@ -888,7 +954,7 @@ Computational uncertainty (for example solver timeout) MUST NOT be disguised as 
 
 `IMPOSSIBLE` MUST NOT be emitted from heuristic failure alone.
 
-Risk classification MUST be mutually exclusive for one policy/snapshot.
+Risk classification MUST be mutually exclusive for one policy/snapshot. When conservative conflict projection is used, `basis` MUST say so and the unresolved conflict MUST remain visible; the risk state MUST NOT masquerade as a resolved external fact.
 
 Notification hysteresis/cooldown belongs to notification delivery policy, not the truth value of current risk.
 
@@ -1261,6 +1327,21 @@ CONNECTOR_PARTIAL
 
 ---
 
+## 22.2 User-visible trust contract
+
+Any UI/client built on the public application API MUST preserve the semantic distinctions needed for trust:
+
+- obligation details expose `target_at` separately from effective/planning hard cutoff state;
+- a critical effective field can expose `RESOLVED | OVERRIDDEN | ABSENT | CONFLICT | UNKNOWN` plus provenance/override state;
+- pending capture candidates, open conflicts, and stale/unavailable connectors have an inspectable inbox/status surface;
+- plan/timeline views visually or structurally distinguish canonical UserTimeConstraints from derived WORK/Event/TRAVEL/BUFFER PlanBlocks;
+- risk output exposes state, basis, reasons, and revision/hash identity;
+- destructive/high-impact agent actions expose the command scope/preview when confirmation is required.
+
+A client MUST NOT flatten an unresolved source conflict into an ordinary scalar value without preserving the conflict indicator/provenance in the same user workflow.
+
+---
+
 # 23. Notifications
 
 Notifications are workflow state, not canonical task truth.
@@ -1398,6 +1479,21 @@ The specification does not freeze arbitrary latency numbers before a reference d
 - production performance acceptance MUST name the reference workload and environment so latency claims are reproducible.
 
 Early engineering targets MAY be added once the first executable vertical slice establishes a baseline.
+
+## 25.5 Product/trust telemetry
+
+After the corresponding feature exists, telemetry SHOULD be sufficient to validate deferred architecture choices without storing unnecessary raw private content. Useful measures include:
+
+- manual correction rate for critical effective fields;
+- false-match detach/rebind rate;
+- connector stale/unavailable incidents and deletion-reconciliation events;
+- frequency/reason of feasibility `UNKNOWN` and exact-solver timeouts;
+- plan churn (moved near-term blocks/minutes) after small input changes;
+- next-action acceptance/skip/replan signals;
+- wrong/missed deadline reports attributable to source/reconciliation failures;
+- notification suppression/duplicate rate.
+
+Metrics MUST remain account-isolated and follow the same minimization/retention rules as other sensitive telemetry.
 
 ---
 
@@ -1565,6 +1661,11 @@ The system MUST preserve all of the following:
 38. Importance, computed risk, and UI display override remain distinct.
 39. Ordinary user WORK does not double-book the same attention resource by default.
 40. Source-native `submitted`/deleted/cancelled states are not universal local lifecycle commands.
+41. `ABSENT` (known no value) is distinct from `UNKNOWN` (value cannot be determined).
+42. Known no-hard-cutoff Tasks use `NOT_APPLICABLE` hard-deadline risk; soft target/anti-starvation remains separate.
+43. `OVERDUE` is emitted only when every admissible hard cutoff bound has passed; a conflict straddling `now` is not silently overdue.
+44. Every independently mutable aggregate has one version/ETag owner; mutable children use their declared parent version.
+45. Chunk semantics are deterministic for splittable/non-splittable work, including final residual chunks.
 
 ---
 
@@ -1766,18 +1867,6 @@ A source observation `submitted=true` does not mark the local Task COMPLETED unl
 **AT-60 — Single-attention default**  
 Two ordinary WORK blocks for one user do not overlap in the same plan unless an explicit parallel-work capability/policy permits it.
 
-**AT-71 — Single active source binding**  
-Attempting to bind one `(source_system, external_entity_id)` to a second local entity atomically detaches/supersedes the first active binding; the system never exposes two simultaneously active owners for the same source-native entity.
-
-**AT-72 — Override supersession and revoke**  
-Creating a second override for one entity field supersedes the prior override without rewriting history; revoking the active override re-runs resolution from source evidence/policy.
-
-**AT-73 — No duplicate hard-cutoff owner**  
-The same final success cutoff cannot be independently mutated both as an Obligation `actual_cutoff` and a Milestone timestamp; schema/domain validation enforces one canonical owner.
-
-**AT-74 — Policy change invalidates plan**  
-Changing a planning/reconciliation policy version that affects hard feasibility or deterministic ordering changes the planning input identity and prevents the old PlanSnapshot from remaining current without revalidation.
-
 ## Reliability / data lifecycle
 
 **AT-61 — Migration**  
@@ -1809,6 +1898,42 @@ A user export contains the documented account-scoped local state/provenance and 
 
 **AT-70 — Exact-feasibility timeout**  
 If exact feasibility cannot finish within the configured execution budget and no sound contradiction/witness is already known, the result is `UNKNOWN`, never a fabricated `FEASIBLE` or `INFEASIBLE`.
+
+**AT-71 — Single active source binding**  
+Attempting to bind one `(source_system, external_entity_id)` to a second local entity atomically detaches/supersedes the first active binding; the system never exposes two simultaneously active owners for the same source-native entity.
+
+**AT-72 — Override supersession and revoke**  
+Creating a second override for one entity field supersedes the prior override without rewriting history; revoking the active override re-runs resolution from source evidence/policy.
+
+**AT-73 — No duplicate hard-cutoff owner**  
+The same final success cutoff cannot be independently mutated both as an Obligation `actual_cutoff` and a Milestone timestamp; schema/domain validation enforces one canonical owner.
+
+**AT-74 — Policy change invalidates plan**  
+Changing a planning/reconciliation policy version that affects hard feasibility or deterministic ordering changes the planning input identity and prevents the old PlanSnapshot from remaining current without revalidation.
+
+**AT-75 — Known no-cutoff versus unknown cutoff**  
+An explicitly no-cutoff Task produces effective cutoff `ABSENT` and hard-deadline risk `NOT_APPLICABLE`; missing/unusable deadline evidence that has not established absence produces `UNKNOWN`.
+
+**AT-76 — Conflicting cutoff straddles now**  
+If admissible conflicting cutoffs include one past and one future value, the system does not emit factual `OVERDUE`; risk is `UNKNOWN` with the source conflict visible, while a separate conservative planning projection may still be used for repair planning.
+
+**AT-77 — All conflicting cutoffs passed**  
+If every admissible hard cutoff bound in an unresolved conflict has passed and the obligation is incomplete, `OVERDUE` may be emitted with conflict/provenance still visible.
+
+**AT-78 — Final residual chunk**  
+For a splittable Task with `min_chunk=30m` and `remaining=20m`, one final 20-minute residual WORK block is legal; a non-final 20-minute chunk is not.
+
+**AT-79 — Non-splittable contiguous requirement**  
+A non-splittable Task with 90m remaining requires one legal contiguous 90-minute interval even when total fragmented free capacity exceeds 90m.
+
+**AT-80 — Aggregate concurrency owner**  
+A mutable child without its own version cannot be updated independently of its declared parent aggregate version; a stale parent precondition fails without overwrite.
+
+**AT-81 — Unsupported flexible Event is not coerced**  
+A release that does not declare `FLEXIBLE_WINDOW` capability rejects/holds such input as unsupported/pending and never silently treats it as a fixed interval while claiming complete feasibility.
+
+**AT-82 — Critical conflict UI preserves state**  
+A client rendering an unresolved critical-field conflict exposes the conflict/provenance state and does not present one scalar source value as if it were resolved truth.
 
 ---
 
