@@ -3,18 +3,64 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 
 from student_execution_os import __version__
+from student_execution_os.domain.model import (
+    ActorCategory,
+    HardCutoff,
+    Importance,
+    ObligationCategory,
+)
+from student_execution_os.persistence import SQLiteCanonicalRepository
 
 
 def health_payload() -> dict[str, str]:
-    """Return the minimal executable-surface health contract for Pass 0."""
     return {
         "api_version": "0",
         "service": "student-execution-os",
         "status": "ok",
         "version": __version__,
     }
+
+
+def run_domain_smoke(database: str) -> dict[str, object]:
+    """Exercise the real Pass 1 domain/persistence/concurrency path."""
+    account_id = "smoke-account"
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    with SQLiteCanonicalRepository(database) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        task = repo.create_task(
+            account_id=account_id,
+            title="Pass 1 smoke task",
+            category=ObligationCategory.GENERAL,
+            importance=Importance.NORMAL,
+            estimated_total_effort_minutes=60,
+            remaining_effort_minutes=60,
+            splittable=True,
+            min_chunk_minutes=30,
+            max_chunk_minutes=60,
+            actionable_from=now,
+            target_at=now + timedelta(hours=6),
+            actual_cutoff=HardCutoff.known(now + timedelta(days=1)),
+            actor=ActorCategory.SYSTEM,
+        )
+        task = repo.update_task(
+            account_id=account_id,
+            obligation_id=task.obligation.id,
+            expected_version=task.obligation.version,
+            remaining_effort_minutes=30,
+            actor=ActorCategory.SYSTEM,
+        )
+        return {
+            "account_id": account_id,
+            "cutoff_state": task.actual_cutoff.state.value,
+            "schema_version": repo.schema_version(),
+            "server_revision": repo.get_server_revision(account_id),
+            "status": "ok",
+            "task_version": task.obligation.version,
+        }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("health", help="Print a machine-readable smoke/health payload.")
     subparsers.add_parser("version", help="Print the application version.")
+    domain_smoke = subparsers.add_parser(
+        "domain-smoke", help="Exercise Pass 1 canonical-domain persistence in SQLite."
+    )
+    domain_smoke.add_argument("--database", default=":memory:")
     return parser
 
 
@@ -35,5 +85,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "version":
         print(__version__)
+        return 0
+    if args.command == "domain-smoke":
+        print(json.dumps(run_domain_smoke(args.database), sort_keys=True))
         return 0
     raise AssertionError(f"Unhandled command: {args.command}")

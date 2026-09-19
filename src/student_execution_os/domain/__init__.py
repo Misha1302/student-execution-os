@@ -1,5 +1,26 @@
-"""Canonical local domain ownership boundary.
+"""Framework-independent canonical local domain for Student Execution OS."""
 
-Pass 0 intentionally contains no Task/Event/Project behavior. Pass 1 will place
-framework-independent domain invariants here.
-"""
+from student_execution_os.domain.clock import Clock, FrozenClock, SystemClock
+from student_execution_os.domain.errors import (
+    DependencyCycleError,
+    DomainError,
+    DuplicateHardCutoffOwner,
+    EntityNotFound,
+    UnsupportedCapability,
+    ValidationError,
+    VersionConflict,
+)
+from student_execution_os.domain.model import *  # noqa: F401,F403
+
+__all__ = [
+    "Clock",
+    "FrozenClock",
+    "SystemClock",
+    "DomainError",
+    "ValidationError",
+    "EntityNotFound",
+    "VersionConflict",
+    "UnsupportedCapability",
+    "DependencyCycleError",
+    "DuplicateHardCutoffOwner",
+]

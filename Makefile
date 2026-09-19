@@ -1,7 +1,7 @@
 .PHONY: restore static test smoke verify
 
 restore:
-	@echo "Pass 0 has no third-party runtime dependencies."
+	@echo "No third-party runtime dependencies."
 
 static:
 	PYTHONPATH=src python -m compileall -q src tests
@@ -11,5 +11,6 @@ test:
 
 smoke:
 	PYTHONPATH=src python -m student_execution_os health
+	PYTHONPATH=src python -m student_execution_os domain-smoke
 
 verify: restore static test smoke
