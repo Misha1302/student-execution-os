@@ -1,5 +1,27 @@
-"""Derived planning/feasibility boundary.
+"""Immutable planning input and sound tri-state feasibility core."""
 
-Pass 0 intentionally contains no feasibility or planner implementation and does
-not return placeholder FEASIBLE/INFEASIBLE results.
-"""
+from student_execution_os.planning.feasibility import FeasibilityEngine
+from student_execution_os.planning.witness import validate_witness
+from student_execution_os.planning.model import (
+    FeasibilityResult,
+    FeasibilityStatus,
+    PlanningPolicy,
+    PlanningSnapshot,
+    WorkPlacement,
+)
+from student_execution_os.planning.snapshot import build_planning_snapshot
+
+__all__ = [
+    "FeasibilityEngine",
+    "validate_witness",
+    "FeasibilityResult",
+    "FeasibilityStatus",
+    "PlanningPolicy",
+    "PlanningSnapshot",
+    "WorkPlacement",
+    "build_planning_snapshot",
+    "PlanningStateSource",
+    "SQLitePlanningStateSource",
+]
+
+from student_execution_os.planning.state import PlanningStateSource, SQLitePlanningStateSource

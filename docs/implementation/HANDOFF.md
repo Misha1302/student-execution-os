@@ -5,23 +5,23 @@
 ## Identity
 
 - Repository: `Misha1302/student-execution-os`
-- Main SHA observed at Pass 1 start: `e55aa3f5fbb85bfa9ca560f2681dc3723e16b991`
-- Normative specification used: v2.1 from the implementation stack, blob `9bb0d0934b0810b198dc67fc147b384347f44887`
-- Pass 0 base HEAD: `a869e3141f2e6ab5bd56f64e6dc01ad7ad561e1a`
-- Pass 1 branch: `impl/pass-1-domain`
-- Pass 1 implementation-content commit: `46de51e98dccdb7edf7140011c693205be6100e6`
-- Open stacked PR: `https://github.com/Misha1302/student-execution-os/pull/3` / `#3`
-- PR base: `impl/pass-0-bootstrap`
+- Main SHA observed throughout Pass 2: `e55aa3f5fbb85bfa9ca560f2681dc3723e16b991`
+- Normative specification used: v2.1, blob `9bb0d0934b0810b198dc67fc147b384347f44887`
+- Pass 1 base HEAD: `33903cf68ff9e15d8b7de1b401b03086ae98fae0`
+- Pass 2 branch: `impl/pass-2-feasibility`
+- Pass 2 tested implementation-content commit: `cd515af1e6628b1dffe56665ee452c8602066781`
+- Open stacked PR: `https://github.com/Misha1302/student-execution-os/pull/4` / `#4`
+- PR base: `impl/pass-1-domain`
 - Date: 2026-09-20
 
-A tracked Git file cannot literally contain the SHA of the commit that contains itself. Therefore the exact terminal branch HEAD after this handoff commit MUST be read from the branch ref/PR and checked against CI before this checkpoint is trusted. The implementation-content commit above identifies the tested code bytes; the final delivery report records the terminal remote HEAD.
+A tracked Git file cannot contain the SHA of the commit that contains itself. Therefore the exact terminal branch HEAD after this handoff commit MUST be read from the branch ref/PR and checked against CI before this checkpoint is trusted.
 
 ## Completed passes
 
 - [x] Pass 0 — baseline / stack / skeleton / CI
 - [x] Pass 1 — canonical local domain / persistence / concurrency
-- [ ] Pass 2 — PlanningSnapshot / exact-sound feasibility
-- [ ] Pass 3 — planner / risk / next actions / vertical slice
+- [x] Pass 2 — immutable PlanningSnapshot / sound tri-state feasibility
+- [ ] Pass 3 — planner / risk / next actions / first vertical-slice closure
 - [ ] Pass 4 — evidence / reconciliation / provenance
 - [ ] Pass 5 — one real connector
 - [ ] Pass 6 — LLM extraction / authorized action boundary
@@ -32,183 +32,131 @@ A tracked Git file cannot literally contain the SHA of the commit that contains 
 
 ## Current pass
 
-- Pass: 1
+- Pass: 2
 - Status: IMPLEMENTED_AND_PUSHED; terminal handoff-commit HEAD/CI must be re-read after this file is committed.
-- Scope boundary: no PlanningSnapshot, feasibility result, PlanSnapshot, risk engine, or planner behavior is implemented or claimed.
+- Scope boundary: no PlanSnapshot generation, risk classification, next-action ordering, travel routing, or soft-objective planner is implemented or claimed.
 
 ## Architecture / stack decisions
 
 | Decision | Owner | Reason | Re-verify? |
 |---|---|---|---|
-| Python 3.12+ stdlib-first | `docs/adr/0001-implementation-stack.md` | Small, testable, reversible initial stack | Only with concrete need |
-| SQLite canonical-state adapter behind a domain repository port | `docs/adr/0002-canonical-state-and-concurrency.md` | Provides durable local semantics/migrations without coupling domain to ORM/framework | Revisit before production storage choice |
-| `Obligation` owns concurrency for Task/Event subtype mutation | ADR 0002 + repository | Prevents dual version owners; required by AT-80 | Preserve |
-| Project/Milestone/UserTimeConstraint are independently versioned roots in current scope | ADR 0002 | Explicit mutation ownership | Re-check if aggregate boundaries change |
-| Account-level `server_revision` + append-only audit row per planning-relevant commit | repository/schema | Stable revision source for later snapshot invalidation/change feed | Preserve/evolve |
-| Fixed Event only in current release | domain/repository | `FLEXIBLE_WINDOW` is unsupported and rejected, never coerced | Revisit only when capability is implemented |
-| `actual_cutoff`, `target_at`, `actionable_from` remain separate | domain/schema | Core normative time ownership invariant | Preserve |
+| Immutable PlanningSnapshot bound to server revision + deterministic input hash | `planning/snapshot.py`, ADR 0003 | Derived decisions must bind to one inspectable planning input | Preserve |
+| Revision-stability sandwich with bounded retry | `planning/snapshot.py` | Prevent mixed-revision snapshots when canonical state changes during capture | Preserve or replace with an equally strong transactional snapshot |
+| Separate analysis and display horizons | snapshot model | Display truncation must not become false infeasibility | Preserve |
+| Solver-neutral tri-state feasibility | `planning/model.py`, `planning/feasibility.py` | FEASIBLE needs witness; INFEASIBLE needs sound proof; uncertainty stays UNKNOWN | Preserve |
+| Deterministic constructive search + bounded complete minute-grid fallback | `planning/search.py` | Standard-library implementation proves the current bounded model without freezing a solver dependency | Reconsider for scale only |
+| Independent witness verifier | `planning/witness.py` | Solver output is not trusted as its own correctness oracle | Preserve |
+| Unsupported OPTIONAL/PREFERRED Event semantics fail closed | `planning/feasibility.py` | Current pass does not yet own omission policy; silent dropping would fabricate feasibility | Revisit when explicit policy is implemented |
 
 ## Implemented capabilities
 
-- Account-scoped canonical state and repository reads/writes.
-- `Obligation` root with Task and fixed Event subtypes.
-- Separate Project container semantics; Project is not schedulable as Task/Event.
-- Minimal Milestone model with explicit owner kind and role.
-- Hard task dependencies with cycle rejection.
-- UserTimeConstraint with `FIXED_PERSONAL_BLOCK`, `UNAVAILABLE`, and `PINNED_WORK`.
-- Lifecycle completion, cancellation, and reopening with version increments/history retained in audit.
-- Offset-aware datetime enforcement and half-open `[start,end)` occupancy.
-- Explicit hard-cutoff state (`KNOWN | ABSENT | UNKNOWN`), inclusive/exclusive boundary, and precision.
-- Injectable `Clock`, including deterministic `FrozenClock` for tests.
-- SQLite schema migration v1 and re-entrant initialization.
-- Strong optimistic concurrency:
-  - Task/Event mutation checks parent Obligation version.
-  - Project, Milestone, UserTimeConstraint use their own version.
-  - stale versions fail without overwrite.
-- Monotonic account `server_revision` and append-only `audit_changes`.
-- Cross-account repository isolation.
-- Schema-level composite foreign keys prevent cross-account Project membership and PINNED_WORK references even through raw SQL.
-- Obligation-owned `FINAL_CUTOFF` Milestone is rejected in both domain/repository path and schema, preventing a duplicate writable hard-cutoff owner.
-- `FLEXIBLE_WINDOW` Event input is rejected as unsupported rather than silently represented as fixed.
-- Real CLI domain smoke creates and updates a persisted Task through the SQLite adapter.
+- Immutable `PlanningSnapshot` containing account identity, input revision/hash, policy version, analysis/display horizons, Tasks, Events, UserTimeConstraints, dependencies, and Milestones.
+- Deterministic SHA-256 input identity over planning-relevant state and policy.
+- Snapshot capture retries if `server_revision` changes during multi-table reads; persistent churn fails closed instead of publishing a mixed-revision snapshot.
+- Known active hard cutoffs extend the analysis horizon without extending the output/display horizon.
+- Tri-state `FeasibilityResult = FEASIBLE | INFEASIBLE | UNKNOWN`.
+- Fixed REQUIRED Event occupancy and canonical UserTimeConstraint occupancy.
+- `actionable_from`, exact known cutoff boundaries, remaining effort, hard Task dependencies.
+- Splittable and non-splittable work, min/max chunks, and legal final residual chunks.
+- Deterministic constructive scheduling followed by bounded exact fallback.
+- Exact-search node/time exhaustion => `UNKNOWN`.
+- Unsupported sub-minute semantics and unsupported OPTIONAL/PREFERRED Event policy => `UNKNOWN`.
+- No-hard-cutoff exhaustion of the finite analysis window => `UNKNOWN`, not fabricated infeasibility.
+- Independent witness verification checks effort totals, work overlap, required events/constraints, actionable/cutoff boundaries, chunk rules, pins, and hard dependencies before any FEASIBLE result.
+- CLI `feasibility-smoke` exercises repository -> snapshot -> feasibility -> verified witness.
 
 ## Acceptance coverage
 
-### PASS in Pass 1
+### PASS in Pass 2
 
-- AT-11 — target vs cutoff are independent.
-- AT-16 — hard task dependency cycles are rejected.
-- AT-17 — penalty milestone is distinct from final cutoff.
-- AT-73 — no duplicate hard-cutoff owner.
-- AT-80 — mutable Task/Event subtype has parent Obligation concurrency owner; stale parent version fails.
-- AT-81 — unsupported flexible Event is rejected, not coerced.
-- AT-83 — exact half-open adjacency does not overlap.
+- AT-12 — work is never scheduled before `actionable_from`.
+- AT-15 — hard Task dependency ordering is enforced in the feasibility witness.
+- AT-19 — positive fragmented raw capacity does not prove feasibility for an illegal chunk shape.
+- AT-20 — constructive/heuristic failure without proof yields `UNKNOWN`.
+- AT-21 — exact fallback can establish a legal witness; complete supported search may soundly prove no witness.
+- AT-27 — materially unknown hard cutoff yields `UNKNOWN`.
+- AT-58 — overlapping REQUIRED fixed Events produce explicit infeasibility.
+- AT-70 — exact-search budget exhaustion yields `UNKNOWN`.
+- AT-78 — legal final residual chunk below min_chunk is accepted.
+- AT-79 — non-splittable work requires one contiguous interval.
+- AT-86 — analysis horizon extends through a relevant hard cutoff even when display horizon is shorter.
 
-### Partial / later owner remains
+### Strengthened / partial
 
-- AT-14 — dependency mutation/revision behavior exists; plan invalidation/recompute is Pass 2/3.
-- AT-15 — dependency representation exists; planning enforcement is Pass 2.
-- AT-18 — Project is structurally a container; planner non-schedulability proof is Pass 2/3.
-- AT-75 — ABSENT vs UNKNOWN cutoff domain state is implemented/round-trips; risk `NOT_APPLICABLE` vs `UNKNOWN` is Pass 3.
-- AT-12–13, AT-19–32, AT-78–79 remain owned by planning/feasibility/risk passes as recorded in `tests/acceptance/acceptance_registry.json`.
+- AT-14 — remaining-effort mutation changes canonical revision/hash and therefore the feasibility input; risk/plan recomputation is Pass 3.
+- AT-28 — planning input identity changes on planning-relevant canonical/policy changes; persisted/current PlanSnapshot invalidation is Pass 3.
+- AT-32 — snapshot construction and current hard-feasibility search are deterministic for identical input; full deterministic planner/tie-breaking remains Pass 3.
+- AT-75 — ABSENT vs UNKNOWN cutoff is preserved and feasibility does not invent a finite hard cutoff; risk state remains Pass 3.
+- AT-85 — inclusive/exclusive cutoff boundary is preserved and enforced by feasibility.
 
-No acceptance test is marked complete merely because scaffolding exists.
+## Verification on tested implementation-content HEAD
 
-## Verification
+Exact content HEAD: `cd515af1e6628b1dffe56665ee452c8602066781`.
 
-### Local candidate verification on the exact implementation bytes
+GitHub Actions:
+- push run #14 / `35481421790`: SUCCESS
+- pull_request run #15 / `35481425071`: SUCCESS
+- push log explicitly checks out `cd515af1e6628b1dffe56665ee452c8602066781`
+- static compile: PASS
+- unit/integration/acceptance: **61 tests PASS**
+- health smoke: PASS, version `0.2.0.dev2`
+- canonical-domain SQLite smoke: PASS
+- planning feasibility smoke: PASS with `status=FEASIBLE` and one verified witness block
 
-Command:
-
-```bash
-make verify
-```
-
-Observed:
-- restore/no-third-party-runtime-dependencies: PASS
-- `python -m compileall -q src tests`: PASS
-- `python -m unittest discover -s tests -p 'test_*.py' -v`: **41 tests PASS**
-- health smoke: PASS
-- `python -m student_execution_os domain-smoke`: PASS
-- smoke result includes `schema_version=1`, `server_revision=2`, `task_version=2`, `cutoff_state=KNOWN`.
-
-Focused persistence verification includes:
-- migration v1 is re-entrant;
-- persisted state survives repository close/reopen;
-- stale Task/Event parent versions are rejected;
-- stale independent constraint/milestone versions are rejected;
-- cross-account reads fail;
-- schema rejects cross-account membership/raw-SQL bypasses;
-- dependency cycle rejection;
-- no duplicate final-cutoff owner;
-- half-open adjacency;
-- no-cutoff vs unknown-cutoff round-trip.
-
-### Remote verification already observed for implementation-content commit
-
-- Branch code SHA: `46de51e98dccdb7edf7140011c693205be6100e6`
-- GitHub Actions push run: `35476527893`
-- Result: **success**
-
-The terminal branch HEAD after this handoff commit MUST be checked again; do not substitute the earlier green run.
+The resumed execution environment did not retain the full prior local checkout, so correctness claims for the final content revision are bound to the exact remote GitHub Actions runs above rather than a newly reconstructed local checkout.
 
 ## Migrations / compatibility
 
-- Current schema version: **1**
-- Migration: `src/student_execution_os/persistence/migrations/001_initial.sql`
-- Fresh database initialization: tested.
-- Re-running initialization on schema v1: tested.
-- Close/reopen persistence: tested.
-- No previous application schema existed before Pass 1, so there is no v0 data migration fixture.
-- Rollback before release: revert Pass 1 commits / discard the new SQLite database; no production compatibility promise exists yet.
-- Any Pass 2 schema extension must add a new migration rather than rewriting `001_initial.sql` after the schema becomes a supported baseline.
+- No schema migration is added in Pass 2.
+- Pass 1 schema version remains 1.
+- Planning state is a read-only projection over canonical persistence.
+- No new third-party runtime dependency is introduced.
+- Existing Pass 0/1 tests remain green in the exact-head suite.
 
 ## Security / privacy
 
-- No external connectors, credentials, LLM inputs, private location records, or network-facing mutation API are added.
-- Repository reads/writes require an explicit `account_id` and do not expose another account's entity by guessed ID.
-- Composite schema constraints defend key cross-account relationships below the repository layer.
-- Audit records contain mutation metadata and compact payload, not external raw private content.
-- This pass establishes account scoping, not authentication/principal derivation; authn/authz remains a later application/security responsibility and must not be inferred from repository scoping alone.
-- Existing `SECURITY.md` prompt-injection boundary remains unchanged.
+- Account-scoped reads remain enforced by the Pass 1 repository boundary.
+- No connector credentials, external evidence, exact private location, or LLM mutation surface is introduced.
+- Planning state reads are derived from canonical local state only.
+- Revision-stability capture prevents a mixed-state planning projection from being labelled as one committed revision.
 
-## Known failures / blockers
+## Known limitations / explicitly unsupported conditions
 
-- No known correctness failure in the Pass 1 implemented scope after local 41-test suite and the green code-commit CI run.
-- PR #3 is stacked on Pass 0; PR ordering/base relationships must be re-read before any eventual merge.
-- Full public API/idempotency behavior is not implemented yet; optimistic concurrency is implemented at repository/domain command level.
-- Planning invalidation consumes `server_revision` only starting in Pass 2.
-
-## Deferred normative requirements
-
-Pass 1 deliberately does not implement:
-- PlanningSnapshot identity/hash;
-- tri-state feasibility;
-- solver/exact feasibility timeout behavior;
-- legal schedule witnesses/infeasibility proof;
-- derived PlanSnapshot/PlanBlocks;
-- risk states;
-- next actions;
-- reconciliation/evidence;
-- connectors;
-- LLM extraction/actions;
-- travel;
-- recurrence/notifications;
-- offline replication.
+- OPTIONAL/PREFERRED Event omission policy is not implemented; such active Events in the analysis horizon return `UNKNOWN`.
+- Sub-minute planning inputs are outside the Pass 2 minute-grid model and return `UNKNOWN`.
+- Some complex/multiple PINNED_WORK shapes remain explicitly unsupported/fail closed.
+- Exact search is intentionally bounded and may return `UNKNOWN` on large search spaces.
+- Travel/location, recurrence, soft optimization, risk, PlanSnapshot, and next actions are not part of Pass 2.
 
 ## Next pass
 
-**Pass 2 — PlanningSnapshot + exact/sound feasibility core.**
-
-Objective: turn one immutable, revision-bound view of the Pass 1 canonical state into sound `FEASIBLE | INFEASIBLE | UNKNOWN` results without introducing planner/risk semantics prematurely.
+- Pass: 3
+- Objective: planner + deterministic risk + derived PlanSnapshot/WORK blocks + 1–5 explainable next actions + safe invalidation/replan, closing the first vertical slice.
 
 ## First concrete next actions
 
-1. Re-read current `main`, PR #1/#2/#3 state, exact Pass 1 branch HEAD, this handoff, current v2.1 spec, and CI.
-2. Define immutable `PlanningSnapshot` with explicit account/server revision, policy/version inputs, analysis horizon, deterministic identity/hash, and canonical Task/Event/UserTimeConstraint/dependency projection.
-3. Implement a simple exact/sound feasibility method for the currently supported constraint set before considering a heavyweight solver.
-4. Add witness validation and sound contradiction evidence; unsupported semantics/timeout must return `UNKNOWN`.
-5. Cover splittable/non-splittable effort, min/max chunking, final residual chunk, actionable_from, dependencies, fixed required Events, half-open occupancy, and analysis-horizon semantics.
-6. Add focused AT coverage for positive-capacity-but-illegal-chunking, fragmented capacity for non-splittable work, required Event overlap, AT-70, AT-75, AT-78, AT-79, AT-86 and applicable AT-19–21/27.
+1. Re-read current main, PR #1–#4 state, exact Pass 2 terminal HEAD/CI, this handoff, and SPEC v2.1.
+2. Define immutable `PlanSnapshot`/PlanBlock ownership and current-plan invalidation keyed to `PlanningSnapshot.input_hash`.
+3. Build planner output from legal feasibility witnesses without letting heuristic failure redefine feasibility.
+4. Implement deterministic risk precedence, including no-cutoff `NOT_APPLICABLE`, UNKNOWN propagation, overdue rules, and scenario ordering.
+5. Produce 1–5 explainable next actions and prove input edit/completion invalidates or replaces derived work while preserving history.
+6. Finish remaining first-slice acceptance cases owned by Pass 3.
 
 ## Files/modules to inspect first
 
 - `docs/SPECIFICATION.md`
-- `docs/adr/0001-implementation-stack.md`
-- `docs/adr/0002-canonical-state-and-concurrency.md`
-- `src/student_execution_os/domain/model.py`
-- `src/student_execution_os/domain/ports.py`
-- `src/student_execution_os/persistence/sqlite.py`
-- `src/student_execution_os/persistence/migrations/001_initial.sql`
-- `src/student_execution_os/planning/`
+- `docs/adr/0003-planning-snapshot-and-feasibility.md`
+- `src/student_execution_os/planning/model.py`
+- `src/student_execution_os/planning/snapshot.py`
+- `src/student_execution_os/planning/feasibility.py`
+- `src/student_execution_os/planning/search.py`
+- `src/student_execution_os/planning/witness.py`
 - `tests/acceptance/acceptance_registry.json`
-- `tests/acceptance/test_pass1_domain.py`
-- `tests/integration/test_sqlite_repository.py`
 
 ## Do not trust without re-verification
 
-- exact branch HEAD after this handoff commit;
-- exact CI status for that terminal HEAD;
-- PR mergeability/base relationship;
-- whether PR #1/#2 were merged or rebased;
-- any hand-written PASS statement here without replaying the associated test/CI evidence.
+- terminal Pass 2 branch HEAD after this handoff commit
+- final CI status on that terminal HEAD
+- open/merged state of PR #1–#4
+- current `main`
+- any hand-written PASS claim in this checkpoint

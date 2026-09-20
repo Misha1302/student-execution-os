@@ -12,5 +12,6 @@ test:
 smoke:
 	PYTHONPATH=src python -m student_execution_os health
 	PYTHONPATH=src python -m student_execution_os domain-smoke
+	PYTHONPATH=src python -m student_execution_os feasibility-smoke
 
 verify: restore static test smoke
