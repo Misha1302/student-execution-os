@@ -6,6 +6,11 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from student_execution_os import __version__
+from student_execution_os.connectors import (
+    GoogleCalendarConnector,
+    GoogleCalendarPage,
+    SQLiteConnectorRepository,
+)
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.domain.model import (
     ActorCategory,
@@ -261,6 +266,65 @@ def run_reconciliation_smoke() -> dict[str, object]:
         }
 
 
+def run_connector_smoke() -> dict[str, object]:
+    account_id = "connector-smoke-account"
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+
+    class SmokeTransport:
+        def list_events(self, *, calendar_id, sync_token, page_token):
+            if calendar_id != "primary" or sync_token is not None or page_token is not None:
+                raise RuntimeError("unexpected connector smoke request")
+            return GoogleCalendarPage(
+                items=(
+                    {
+                        "id": "smoke-event",
+                        "updated": "2026-09-20T09:00:00Z",
+                        "status": "confirmed",
+                        "summary": "Connector smoke event",
+                        "start": {"dateTime": "2026-09-21T09:00:00Z"},
+                        "end": {"dateTime": "2026-09-21T10:00:00Z"},
+                    },
+                ),
+                next_page_token=None,
+                next_sync_token="smoke-sync-token",
+            )
+
+    with SQLiteCanonicalRepository(":memory:", clock=FrozenClock(now)) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        reconciliation = SQLiteReconciliationRepository(repo)
+        reconciliation.create_source_system(
+            account_id=account_id,
+            source_system_id="google-calendar",
+            kind="GOOGLE_CALENDAR",
+            policy_context={"provider": "google_calendar"},
+            actor=ActorCategory.SYSTEM,
+        )
+        connectors = SQLiteConnectorRepository(repo, reconciliation)
+        result = GoogleCalendarConnector(
+            account_id=account_id,
+            connector_id="google-calendar-primary",
+            source_system_id="google-calendar",
+            calendar_id="primary",
+            transport=SmokeTransport(),
+            reconciliation=reconciliation,
+            connectors=connectors,
+            sleeper=lambda _: None,
+        ).sync()
+        records = repo.connection.execute(
+            "SELECT count(*) FROM source_records WHERE account_id=?",
+            (account_id,),
+        ).fetchone()[0]
+        return {
+            "status": "ok",
+            "schema_version": repo.schema_version(),
+            "session_status": result.session.status.value,
+            "connector_health": result.health.value,
+            "checkpoint_present": result.checkpoint is not None,
+            "source_records": records,
+        }
+
+
 def _cutoff(value: str) -> HardCutoff:
     if value.upper() == "ABSENT":
         return HardCutoff.absent()
@@ -283,6 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("feasibility-smoke")
     subparsers.add_parser("planner-smoke")
     subparsers.add_parser("reconciliation-smoke")
+    subparsers.add_parser("connector-smoke")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -345,6 +410,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "reconciliation-smoke":
         print(json.dumps(run_reconciliation_smoke(), sort_keys=True))
+        return 0
+    if args.command == "connector-smoke":
+        print(json.dumps(run_connector_smoke(), sort_keys=True))
         return 0
 
     if args.command == "account-init":

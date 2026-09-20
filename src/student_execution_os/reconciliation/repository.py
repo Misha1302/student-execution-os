@@ -191,6 +191,40 @@ class SQLiteReconciliationRepository:
             created_at=_dt(row["created_at"]),
         )
 
+    def _mark_source_availability_in_tx(
+        self,
+        conn,
+        *,
+        account_id: str,
+        source_system_id: str,
+        status: SourceAvailability,
+        actor: ActorCategory,
+    ) -> None:
+        if conn.execute(
+            "SELECT 1 FROM source_systems WHERE account_id=? AND id=?",
+            (account_id, source_system_id),
+        ).fetchone() is None:
+            raise EntityNotFound("source system not found")
+        conn.execute(
+            "INSERT INTO source_status_history(account_id,source_system_id,status,recorded_at,actor_category) "
+            "VALUES (?,?,?,?,?)",
+            (
+                account_id,
+                source_system_id,
+                status.value,
+                _iso(self.clock.now()),
+                actor.value,
+            ),
+        )
+        self._audit(
+            conn,
+            account_id=account_id,
+            action="SOURCE_AVAILABILITY",
+            actor=actor,
+            entity_ref=source_system_id,
+            payload={"status": status.value},
+        )
+
     def mark_source_availability(
         self,
         *,
@@ -201,17 +235,12 @@ class SQLiteReconciliationRepository:
     ) -> None:
         self.get_source_system(account_id, source_system_id)
         with self.canonical._tx() as conn:
-            conn.execute(
-                "INSERT INTO source_status_history(account_id,source_system_id,status,recorded_at,actor_category) VALUES (?,?,?,?,?)",
-                (account_id, source_system_id, status.value, _iso(self.clock.now()), actor.value),
-            )
-            self._audit(
+            self._mark_source_availability_in_tx(
                 conn,
                 account_id=account_id,
-                action="SOURCE_AVAILABILITY",
+                source_system_id=source_system_id,
+                status=status,
                 actor=actor,
-                entity_ref=source_system_id,
-                payload={"status": status.value},
             )
 
     def current_source_availability(self, account_id: str, source_system_id: str) -> SourceAvailability:
@@ -383,6 +412,33 @@ class SQLiteReconciliationRepository:
                         actor=ActorCategory.RECONCILER,
                     )
         return observation
+
+    def observation_exists(self, account_id: str, observation_id: str) -> bool:
+        self.canonical._require_account(account_id)
+        return self.connection.execute(
+            "SELECT 1 FROM observations WHERE account_id=? AND id=?",
+            (account_id, observation_id),
+        ).fetchone() is not None
+
+    def get_observation(self, account_id: str, observation_id: str) -> Observation:
+        row = self.connection.execute(
+            "SELECT * FROM observations WHERE account_id=? AND id=?",
+            (account_id, observation_id),
+        ).fetchone()
+        if row is None:
+            raise EntityNotFound("observation not found")
+        return Observation(
+            id=row["id"],
+            account_id=row["account_id"],
+            source_record_id=row["source_record_id"],
+            binding_id=row["binding_id"],
+            field_path=row["field_path"],
+            value_type=ObservationValueType(row["value_type"]),
+            value=json.loads(row["value_json"]),
+            extraction_certainty=ExtractionCertainty(row["extraction_certainty"]),
+            observed_at=_dt(row["observed_at"]),
+            extractor_id=row["extractor_id"],
+        )
 
     def list_observations(
         self,
@@ -1396,62 +1452,106 @@ class SQLiteReconciliationRepository:
         actor: ActorCategory,
         source_revision: str | None = None,
         revision_order: int | None = None,
+        source_record_id: str | None = None,
+        observation_id: str | None = None,
+        observed_at: datetime | None = None,
+        content_hash: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Observation:
-        record = self.add_source_record(
-            account_id=account_id,
-            source_system_id=source_system_id,
-            external_entity_id=external_entity_id,
-            source_revision=source_revision,
-            revision_order=revision_order,
-            actor=actor,
-            metadata={"deletion_marker": True},
-        )
+        observed_at = observed_at or self.clock.now()
+        record: SourceRecord
+        if source_record_id is not None:
+            try:
+                record = self.get_source_record(account_id, source_record_id)
+            except EntityNotFound:
+                record = self.add_source_record(
+                    account_id=account_id,
+                    source_system_id=source_system_id,
+                    external_entity_id=external_entity_id,
+                    source_revision=source_revision,
+                    revision_order=revision_order,
+                    observed_at=observed_at,
+                    content_hash=content_hash,
+                    actor=actor,
+                    metadata={**dict(metadata or {}), "deletion_marker": True},
+                    source_record_id=source_record_id,
+                )
+            if (
+                record.source_system_id != source_system_id
+                or record.external_entity_id != external_entity_id
+            ):
+                raise ValidationError(
+                    "source removal idempotency collision for source_record_id"
+                )
+        else:
+            record = self.add_source_record(
+                account_id=account_id,
+                source_system_id=source_system_id,
+                external_entity_id=external_entity_id,
+                source_revision=source_revision,
+                revision_order=revision_order,
+                observed_at=observed_at,
+                content_hash=content_hash,
+                actor=actor,
+                metadata={**dict(metadata or {}), "deletion_marker": True},
+            )
+
         active = self.connection.execute(
             "SELECT id,local_entity_id FROM source_bindings WHERE account_id=? AND source_system_id=? "
             "AND external_entity_id=? AND state='ACTIVE'",
             (account_id, source_system_id, external_entity_id),
         ).fetchone()
-        observation = self.add_observation(
-            account_id=account_id,
-            source_record_id=record.id,
-            field_path="source_presence",
-            value_type=ObservationValueType.SOURCE_REMOVED,
-            value=None,
-            extraction_certainty=ExtractionCertainty.EXACT,
-            extractor_id=extractor_id,
-            actor=actor,
-            binding_id=active["id"] if active else None,
-        )
+        if observation_id is not None and self.observation_exists(account_id, observation_id):
+            observation = self.get_observation(account_id, observation_id)
+            if observation.source_record_id != record.id:
+                raise ValidationError(
+                    "source removal idempotency collision for observation_id"
+                )
+        else:
+            observation = self.add_observation(
+                account_id=account_id,
+                source_record_id=record.id,
+                field_path="source_presence",
+                value_type=ObservationValueType.SOURCE_REMOVED,
+                value=None,
+                extraction_certainty=ExtractionCertainty.EXACT,
+                extractor_id=extractor_id,
+                actor=actor,
+                observed_at=observed_at,
+                binding_id=active["id"] if active else None,
+                observation_id=observation_id,
+            )
         if active is not None:
             with self.canonical._tx() as conn:
                 conn.execute(
-                    "UPDATE source_bindings SET state='SOURCE_REMOVED',updated_at=?,version=version+1 WHERE id=?",
+                    "UPDATE source_bindings SET state='SOURCE_REMOVED',updated_at=?,version=version+1 WHERE id=? AND state='ACTIVE'",
                     (_iso(self.clock.now()), active["id"]),
                 )
-                conn.execute(
-                    "INSERT INTO binding_history(binding_id,state,recorded_at,actor_category,reason) VALUES (?,?,?,?,?)",
-                    (
-                        active["id"],
-                        BindingState.SOURCE_REMOVED.value,
-                        _iso(self.clock.now()),
-                        actor.value,
-                        "provider-removal-evidence",
-                    ),
-                )
-                self._audit(
-                    conn,
-                    account_id=account_id,
-                    action="SOURCE_ENTITY_REMOVED",
-                    actor=actor,
-                    entity_ref=active["local_entity_id"],
-                    payload={"observation_id": observation.id},
-                )
-                self._reconcile_cutoff_in_tx(
-                    conn,
-                    account_id,
-                    active["local_entity_id"],
-                    actor=ActorCategory.RECONCILER,
-                )
+                if conn.execute("SELECT changes()").fetchone()[0]:
+                    conn.execute(
+                        "INSERT INTO binding_history(binding_id,state,recorded_at,actor_category,reason) VALUES (?,?,?,?,?)",
+                        (
+                            active["id"],
+                            BindingState.SOURCE_REMOVED.value,
+                            _iso(self.clock.now()),
+                            actor.value,
+                            "provider-removal-evidence",
+                        ),
+                    )
+                    self._audit(
+                        conn,
+                        account_id=account_id,
+                        action="SOURCE_ENTITY_REMOVED",
+                        actor=actor,
+                        entity_ref=active["local_entity_id"],
+                        payload={"observation_id": observation.id},
+                    )
+                    self._reconcile_cutoff_in_tx(
+                        conn,
+                        account_id,
+                        active["local_entity_id"],
+                        actor=ActorCategory.RECONCILER,
+                    )
         return observation
 
     def capture_task_idempotent(
