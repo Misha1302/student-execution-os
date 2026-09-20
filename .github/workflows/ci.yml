@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  statuses: write
 
 jobs:
   verify:
@@ -24,33 +23,9 @@ jobs:
       - name: Restore dependencies
         run: echo "No third-party runtime dependencies."
       - name: Static compile check
-        id: compile
-        continue-on-error: true
-        run: python -m compileall -q src tests > compile.log 2>&1
-      - name: Publish compile diagnostic
-        if: steps.compile.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          msg="$(head -n 2 compile.log | tr '\n' ' ' | cut -c1-130)"
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}"             -f state=error -f context=debug/compile -f description="$msg"
-      - name: Stop on compile failure
-        if: steps.compile.outcome == 'failure'
-        run: exit 1
+        run: python -m compileall -q src tests
       - name: Unit, integration, and acceptance tests
-        id: tests
-        continue-on-error: true
-        run: python -m unittest discover -s tests -p 'test_*.py' -v > tests.log 2>&1
-      - name: Publish test diagnostic
-        if: steps.tests.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          msg="$(tail -n 4 tests.log | tr '\n' ' ' | cut -c1-130)"
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}"             -f state=error -f context=debug/tests -f description="$msg"
-      - name: Stop on test failure
-        if: steps.tests.outcome == 'failure'
-        run: exit 1
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Health smoke
         run: python -m student_execution_os health
       - name: Canonical-domain SQLite smoke
