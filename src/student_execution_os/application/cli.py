@@ -22,6 +22,13 @@ from student_execution_os.planning import (
     SQLitePlanningStateSource,
     build_planning_snapshot,
 )
+from student_execution_os.reconciliation import (
+    ConflictProjection,
+    EffectiveFieldState,
+    ExtractionCertainty,
+    ObservationValueType,
+    SQLiteReconciliationRepository,
+)
 
 
 def _dt(value: str) -> datetime:
@@ -171,6 +178,89 @@ def run_planner_smoke() -> dict[str, object]:
         }
 
 
+def run_reconciliation_smoke() -> dict[str, object]:
+    account_id = "reconciliation-smoke-account"
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    with SQLiteCanonicalRepository(":memory:", clock=FrozenClock(now)) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        repo.create_task(
+            account_id=account_id,
+            obligation_id="recon-task",
+            title="Pass 4 smoke task",
+            category=ObligationCategory.HOMEWORK,
+            importance=Importance.HIGH,
+            estimated_total_effort_minutes=30,
+            remaining_effort_minutes=30,
+            splittable=False,
+            actual_cutoff=HardCutoff.unknown(),
+            actor=ActorCategory.SYSTEM,
+        )
+        reconciliation = SQLiteReconciliationRepository(repo)
+        for source_id in ("lms", "chat"):
+            reconciliation.create_source_system(
+                account_id=account_id,
+                source_system_id=source_id,
+                kind="SMOKE_SOURCE",
+                policy_context={"authority_group": "trusted"},
+                actor=ActorCategory.SYSTEM,
+            )
+        reconciliation.create_field_policy(
+            account_id=account_id,
+            field_path="actual_cutoff",
+            version="smoke-cutoff-v1",
+            min_certainty=ExtractionCertainty.HIGH,
+            source_authority={"context:trusted": 10},
+            conflict_projection=ConflictProjection.EARLIEST_HARD_CUTOFF,
+            actor=ActorCategory.SYSTEM,
+        )
+        for source_id, external_id, hours in (("lms", "e1", 2), ("chat", "e2", 4)):
+            reconciliation.bind_source_entity(
+                account_id=account_id,
+                source_system_id=source_id,
+                external_entity_id=external_id,
+                local_entity_id="recon-task",
+                match_decision_id=f"smoke:{source_id}",
+                actor=ActorCategory.RECONCILER,
+            )
+            record = reconciliation.add_source_record(
+                account_id=account_id,
+                source_system_id=source_id,
+                external_entity_id=external_id,
+                source_revision="r1",
+                revision_order=1,
+                actor=ActorCategory.CONNECTOR_INGESTION,
+            )
+            reconciliation.add_observation(
+                account_id=account_id,
+                source_record_id=record.id,
+                field_path="actual_cutoff",
+                value_type=ObservationValueType.HARD_CUTOFF,
+                value=HardCutoff.known(now + timedelta(hours=hours)),
+                extraction_certainty=ExtractionCertainty.EXACT,
+                extractor_id=f"smoke-extractor:{source_id}",
+                actor=ActorCategory.CONNECTOR_INGESTION,
+            )
+        effective = reconciliation.get_effective_cutoff(account_id, "recon-task")
+        snapshot = build_planning_snapshot(
+            SQLitePlanningStateSource(repo),
+            account_id=account_id,
+            analysis_horizon_start=now,
+            analysis_horizon_end=now + timedelta(hours=6),
+        )
+        context = snapshot.cutoff_reconciliation[0]
+        if effective is None or effective.state is not EffectiveFieldState.CONFLICT:
+            raise RuntimeError("reconciliation smoke did not preserve conflict truth")
+        return {
+            "status": "ok",
+            "schema_version": repo.schema_version(),
+            "effective_state": effective.state.value,
+            "planning_cutoff": effective.planning_projection.at.isoformat() if effective.planning_projection else None,
+            "conflict_visible": context.truth_state == EffectiveFieldState.CONFLICT.value,
+            "server_revision": snapshot.input_server_revision,
+        }
+
+
 def _cutoff(value: str) -> HardCutoff:
     if value.upper() == "ABSENT":
         return HardCutoff.absent()
@@ -192,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     domain_smoke.add_argument("--database", default=":memory:")
     subparsers.add_parser("feasibility-smoke")
     subparsers.add_parser("planner-smoke")
+    subparsers.add_parser("reconciliation-smoke")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -251,6 +342,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "planner-smoke":
         print(json.dumps(run_planner_smoke(), sort_keys=True))
+        return 0
+    if args.command == "reconciliation-smoke":
+        print(json.dumps(run_reconciliation_smoke(), sort_keys=True))
         return 0
 
     if args.command == "account-init":
