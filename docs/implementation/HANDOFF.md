@@ -1,184 +1,96 @@
 # Student Execution OS — Implementation Handoff
 
-> Checkpoint only. Re-read current repository, current specification, PR state, exact branch refs, and CI before using this file as current state.
+> Checkpoint only. Re-read current repository, specification, PR/branch state and exact-head CI before using this file as current truth.
 
 ## Identity
 
-- Repository: Misha1302/student-execution-os
-- Main baseline for Pass 7: `306f060ecbe5b4fca91c51c4a77c1fc770dcd0d5`
-- Main baseline content: merged Pass 6 / PR #8
-- Normative specification: v2.1, blob `9bb0d0934b0810b198dc67fc147b384347f44887`
-- Pass 7 branch: `impl/pass-7-travel-aware-planning`
+- Repository: `Misha1302/student-execution-os`
+- UI slice baseline: `fcdd4eb346491501c1c18a90ab5e69e7d0869898` (merged Pass 7)
+- Normative specification: v2.1
+- UI implementation branch: `ui/product-shell-stage2`
+- Schema before this UI slice: v6
 - Date: 2026-09-21
 
-A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after the final Pass 7 commit.
-
-## Completed passes
+## Completed before this slice
 
 - [x] Pass 0 — baseline / stack / skeleton / CI
 - [x] Pass 1 — canonical local domain / persistence / concurrency
 - [x] Pass 2 — immutable PlanningSnapshot / sound tri-state feasibility
 - [x] Pass 3 — planner / risk / PlanSnapshot / next actions
 - [x] Pass 4 — evidence / reconciliation / provenance
-- [x] Pass 5 — one real provider connector
+- [x] Pass 5 — Google Calendar evidence connector
 - [x] Pass 6 — LLM extraction / authenticated action boundary
 - [x] Pass 7 — travel-aware planning
-- [ ] Pass 8 — recurrence / notifications
-- [ ] Pass 9 — reliability / security / hardening
-- [ ] Pass 10 — conformance closure
 
-## Pass 7 status
+## UI product slice
 
-IMPLEMENTED AND LOCALLY VERIFIED on the current pre-commit candidate. Final branch push / PR / exact-head CI must be re-read after the final commit.
+Implemented a real server-backed product shell rather than a mock/demo:
 
-## Ownership model
+- `Today` — current proof state, 1–5 next actions, safe boundaries and hard travel occupancy;
+- `Plan` — separate canonical facts vs derived WORK / EVENT_PROJECTION / TRAVEL_TRANSITION / BUFFER;
+- `Tasks` — create/edit/lifecycle with expected-version concurrency;
+- `Calendar` — canonical fixed Events and visibly distinct MOVE journeys;
+- `Evidence` — source health, observations, open conflicts, effective interpretation and active overrides;
+- `Places` — aliases, current-location state and route freshness without serializing exact address/coordinates;
+- `Ask` — explicit statement that no live LLM provider is configured plus real authenticated destructive-action preview/confirmation;
+- `Settings` — schema/server revision, current plan and connector diagnostics.
 
-- `Place` is account-scoped canonical local place identity/private metadata.
-- `CurrentLocationContext` is planning-input history with KNOWN / ASSUMED / UNKNOWN state.
-- `TravelEstimate` is source-backed route evidence/history, not a canonical journey.
-- New location-bearing Events validate origin/destination Place ids inside the same account and fail closed on missing/cross-account references.
-- A booked train/flight remains a canonical Event with `LocationEffectKind.MOVE`.
-- Ordinary commute and arrival buffers are derived `PlanBlock` state.
-- Replanning cannot delete or rewrite a canonical MOVE Event merely because adjacency changes.
-- There is no automatic “return home/origin” rule.
+### Application boundary
 
-## Implemented capabilities
+`student_execution_os.web.UiService` is an account/principal-bound façade over existing owners. Browser requests cannot self-assert account scope. PlanBlocks are read-only projections. Existing repositories continue to own mutation semantics, feasibility, planning, reconciliation, travel and agent authorization.
 
-- SQLite schema v6.
-- Canonical/account-scoped `places`.
-- Version-affecting current-location history.
-- Route estimate history with expected/safe durations, source, revision, calculated_at, expires_at.
-- `Event.arrival_requirement_minutes`.
-- `TravelProjectionBuilder` over required chronological location-bearing Events.
-- Location semantics for NONE / REMOTE / STAY / MOVE.
-- Exact latest-safe-departure calculation from safe travel + arrival requirement.
-- Fail-closed unknown-origin behavior.
-- Fail-closed missing/stale route behavior.
-- Derived TRAVEL_TRANSITION and BUFFER PlanBlocks.
-- Persisted `travel_estimate_id` provenance on travel blocks.
-- Travel projection included in PlanningSnapshot input hash.
-- Travel and arrival buffer inserted into hard occupancy before feasibility search.
-- Independent witness validation rejects WORK overlapping travel.
-- Required travel conflicts can produce INFEASIBLE; routing uncertainty produces UNKNOWN.
-- Existing WORK / EVENT_PROJECTION plan history survives schema migration.
-- `travel-smoke` wired into Makefile and GitHub Actions.
+The host uses FastAPI/uvicorn and serves a zero-build native ES-module/CSS frontend. ADR 0009 records why this slice did not introduce an unreproducible npm dependency graph when registry access was unavailable during implementation.
 
-## Acceptance coverage
+### Privacy and action safety
 
-Pass 7 adds executable coverage for:
+- Places API omits exact address/coordinates by construction.
+- Cross-account guessed task ids fail as not-found at the UI boundary.
+- Destructive agent cancellation uses server-minted `ActionIntent`, expected version, explicit confirmation and idempotency.
+- Imported/source text remains data and never authorization.
+- Local host defaults to loopback; non-loopback binding requires an explicit flag and is not a production-auth claim.
 
-- AT-33 — HSE travel: 45m safe route + 10m arrival → 15:05 latest safe departure;
-- AT-34 — unknown feasibility-material origin → UNKNOWN, no fabricated origin;
-- AT-35 — actual next location is used; no fake return;
-- AT-36 — booked MOVE journey stays canonical through replanning;
-- AT-37 — expired route estimate cannot silently retain safe status.
+## Local verification checkpoint
 
-Additional adversarial coverage proves travel occupancy can make an otherwise feasible day INFEASIBLE.
+The final pre-commit candidate was verified in one `make verify` run on 2026-09-21:
 
-All Pass 0–6 tests remain active.
+- existing unit/integration/acceptance suite: **137/137 PASS**;
+- web/API acceptance suite: **9/9 PASS**;
+- real Chromium UI suite: **3/3 PASS**;
+- all 8 existing CLI smoke surfaces: **PASS**;
+- web-host CLI smoke: **PASS**;
+- Python compile + frontend JS syntax check: **PASS**;
+- `git diff --check`: **PASS**.
 
-## Verification checkpoint
+The new automated UI/API coverage includes:
 
-Observed on Fedora against the current Pass 7 pre-doc/pre-commit candidate:
+- FEASIBLE / INFEASIBLE / UNKNOWN as distinct first-class states;
+- current plan and latest-safe-departure travel boundary;
+- canonical vs derived timeline ownership;
+- stale Google source plus simultaneous open conflict and active override;
+- stale optimistic-concurrency mutation rejection;
+- cross-account isolation;
+- private-location redaction;
+- destructive agent preview + authenticated confirmation;
+- responsive navigation and mobile Agenda fallback;
+- long-title/narrow-layout containment and short/dense timeline rendering without overlap.
 
-- full unit/integration/acceptance suite: 137 tests PASS;
-- health smoke: PASS;
-- canonical-domain smoke: PASS;
-- feasibility smoke: PASS;
-- planner smoke: PASS;
-- reconciliation smoke: PASS;
-- connector smoke: PASS;
-- agent smoke: PASS;
-- travel smoke: PASS;
-- travel smoke latest safe departure: 2026-09-21T15:05:00+00:00;
-- schema_version=6;
-- `git diff --check`: PASS.
+Fresh desktop/narrow/mobile screenshots were also reviewed on the same candidate. This is local candidate evidence only: terminal branch SHA, pushed exact-head GitHub Actions, PR mergeability and post-merge CI must still be re-read before any merge/completion claim.
 
-Do not treat this pre-commit result as terminal exact-head evidence. Re-run `make verify` after the final commit and inspect GitHub Actions on the exact pushed SHA.
+## Known external/deployment limitations
 
-## Migration contract
+- No live LLM provider is configured; the UI does not fake one.
+- Google Calendar Pass 5 still lacks the production OAuth consent/refresh-token lifecycle.
+- No live routing/maps provider exists; the UI uses real persisted route evidence only.
+- Production session authentication, TLS termination, secret management and deployment are not introduced by this local product slice.
 
-Migration 006:
+## Remaining normative work after safe UI merge
 
-- adds `events.arrival_requirement_minutes`;
-- adds places/current_location_context/travel_estimates;
-- rebuilds `plan_blocks` to admit WORK / EVENT_PROJECTION / TRAVEL_TRANSITION / BUFFER;
-- adds `travel_estimate_id`;
-- copies pre-v6 PlanBlock rows unchanged with null travel estimate provenance.
+Re-read the current specification and build a fresh conformance ledger. Expected major areas remain:
 
-Executable migration test verifies v5 → v6 preservation of old plan history.
+- recurrence and stable occurrence identity / DST semantics;
+- notification workflow/delivery state, quiet hours, suppression/idempotency;
+- reliability/security hardening, restart/backup/restore and production-boundary requirements;
+- final acceptance/migration/install/restart/conformance closure;
+- UI synchronization for recurrence/notifications/hardening features.
 
-## Failure semantics
-
-Travel-related `UNKNOWN` includes:
-
-- unknown current origin for a feasibility-material location-bound Event;
-- missing route estimate;
-- only stale/expired route evidence.
-
-Travel-related `INFEASIBLE` includes:
-
-- required departure before the analysis horizon/current planning boundary;
-- travel/buffer overlap with another required Event;
-- travel/buffer conflict with hard user constraints;
-- exact no-witness result after travel hard occupancy is included.
-
-Search-budget exhaustion remains UNKNOWN.
-
-## Scope intentionally not implemented
-
-- live maps/routing provider connector;
-- traffic webhooks/live refresh;
-- multi-modal optimizer;
-- learned route distributions;
-- task-level place requirements;
-- automatic commute canonicalization;
-- recurrence;
-- notifications;
-- offline replication.
-
-## Known limitations
-
-- Route estimate freshness is evaluated against the planning capture time; Pass 7 does not model predictive live-traffic confidence at future departure time.
-- Current-location history is explicit server planning state; no device geolocation ingestion exists yet.
-- Place privacy in LLM context remains governed by the Pass 6 exact-location grant boundary.
-- Arrival requirements are implemented for derived travel transitions; Pass 7 does not introduce a general unrelated pre-event buffer subsystem.
-- Real route-provider availability/fallback selection policy remains a later connector concern.
-
-## Next pass
-
-Pass 8 — recurrence / notifications.
-
-Before Pass 8, re-read terminal Pass 7 PR/head/CI and current main. Start Pass 8 from the merge commit if Pass 7 is merged.
-
-### First concrete actions for Pass 8
-
-1. Re-read recurrence/notification owners and acceptance identifiers from SPEC v2.1.
-2. Keep recurrence rules canonical while generated occurrences remain derived/materialized with stable identity.
-3. Separate notification policy/state from Task/Event truth.
-4. Define missed/delivered notification idempotency before provider delivery.
-5. Preserve existing PlanningSnapshot/travel semantics when recurrence expands Events.
-
-## Inspect first
-
-- docs/SPECIFICATION.md
-- docs/adr/0008-travel-aware-planning.md
-- src/student_execution_os/travel/model.py
-- src/student_execution_os/travel/repository.py
-- src/student_execution_os/travel/projection.py
-- src/student_execution_os/persistence/migrations/006_travel_planning.sql
-- src/student_execution_os/planning/snapshot.py
-- src/student_execution_os/planning/feasibility.py
-- src/student_execution_os/planning/witness.py
-- src/student_execution_os/planning/planner.py
-- tests/acceptance/test_pass7_travel_planning.py
-- tests/integration/test_migration_v6.py
-- tests/acceptance/acceptance_registry.json
-
-## Do not trust without fresh verification
-
-- terminal Pass 7 branch HEAD;
-- final PR number/state/mergeability;
-- exact terminal-head GitHub Actions status;
-- current main;
-- any PASS statement in this checkpoint without matching executable evidence.
+The UI approval authorizes continuing these independent passes after a safe UI merge, but not production deployment, paid services or secret disclosure.
