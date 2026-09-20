@@ -617,6 +617,8 @@ class SQLiteReconciliationRepository:
         policy = self.current_field_policy(account_id, field_path)
         if policy is None or not policy.allow_user_override:
             raise ValidationError("active field policy does not permit user override")
+        if actor not in (ActorCategory.USER_UI, ActorCategory.USER_VIA_LLM):
+            raise ValidationError("user override requires authenticated user-origin actor")
         if self.connection.execute(
             "SELECT 1 FROM obligations WHERE account_id=? AND id=?",
             (account_id, entity_ref),
@@ -883,6 +885,8 @@ class SQLiteReconciliationRepository:
                 continue
             context = json.loads(row["policy_context_json"])
             authority = policy.authority_for(row["source_system_id"], context)
+            if authority is None:
+                continue
             usable.append(
                 (
                     authority,
@@ -1481,11 +1485,23 @@ class SQLiteReconciliationRepository:
                 target_at=target_at,
                 actor=actor,
             )
-        except Exception:
+        except sqlite3.IntegrityError:
             try:
                 task = self.canonical.get_task(account_id, obligation_id)
             except EntityNotFound:
                 raise
+            expected = (
+                task.obligation.title == title
+                and task.obligation.category is category
+                and task.obligation.importance is importance
+                and task.estimated_total_effort_minutes == estimated_total_effort_minutes
+                and task.remaining_effort_minutes == remaining_effort_minutes
+                and task.splittable is splittable
+                and task.actual_cutoff == actual_cutoff
+                and task.target_at == target_at
+            )
+            if not expected:
+                raise ValidationError("deterministic capture identity collides with different task semantics")
 
         with self.canonical._tx() as conn:
             row = conn.execute(
