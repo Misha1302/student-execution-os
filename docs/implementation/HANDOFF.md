@@ -1,20 +1,19 @@
 # Student Execution OS — Implementation Handoff
 
-> Checkpoint only. Re-read current repository, current specification, open PRs, exact branch refs, and CI before using this file as state.
+> Checkpoint only. Re-read current repository, current specification, PR state, exact branch refs, and CI before using this file as current state.
 
 ## Identity
 
 - Repository: Misha1302/student-execution-os
-- Main observed during Pass 3: e55aa3f5fbb85bfa9ca560f2681dc3723e16b991
+- Main observed during Pass 4: 62f78ca1455db7ece95ea3b4cde0ad834c8bc38d
 - Normative specification: v2.1, blob 9bb0d0934b0810b198dc67fc147b384347f44887
-- Pass 2 base HEAD: 93c1d72876a0907a6cab6016636a57d1b422e876
-- Pass 3 branch: impl/pass-3-planner
-- Tested Pass 3 content HEAD: a516cfa20d965bbb9cc6329abfe9d9825a39ce8a
-- Open stacked PR: #5
-- PR base: impl/pass-2-feasibility
+- Pass 4 branch: impl/pass-4-evidence-reconciliation
+- Independently verified implementation content HEAD: fd8cc222ead73c377b09c4f87f5f1f697694a551
+- Open PR: #6 — https://github.com/Misha1302/student-execution-os/pull/6
+- PR base: main
 - Date: 2026-09-20
 
-A tracked Git file cannot contain the SHA of the commit that contains itself. Read the terminal branch ref after this handoff commit and verify CI on that SHA.
+A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after this handoff commit.
 
 ## Completed passes
 
@@ -22,7 +21,7 @@ A tracked Git file cannot contain the SHA of the commit that contains itself. Re
 - [x] Pass 1 — canonical local domain / persistence / concurrency
 - [x] Pass 2 — immutable PlanningSnapshot / sound tri-state feasibility
 - [x] Pass 3 — planner / risk / PlanSnapshot / next actions / first vertical-slice closure
-- [ ] Pass 4 — evidence / reconciliation / provenance
+- [x] Pass 4 — evidence / reconciliation / provenance
 - [ ] Pass 5 — one real connector
 - [ ] Pass 6 — LLM extraction / authorized action boundary
 - [ ] Pass 7 — travel-aware planning
@@ -30,121 +29,168 @@ A tracked Git file cannot contain the SHA of the commit that contains itself. Re
 - [ ] Pass 9 — reliability / security / hardening
 - [ ] Pass 10 — conformance closure
 
-## Pass 3 status
+## Pass 4 status
 
-IMPLEMENTED, HARDENED, PUSHED, PR OPEN. Final terminal handoff SHA/CI must be re-read after this file is committed.
+IMPLEMENTED, HARDENED, LOCALLY VERIFIED, PUSHED, PR OPEN.
+
+GitHub-hosted Actions is currently blocked before runner assignment. This checkpoint does not convert that infrastructure failure into a CI PASS.
 
 ## Architecture decisions
 
-- FeasibilityEngine remains the hard-constraint correctness owner.
-- Planner may select deterministic soft ordering but only materializes WORK blocks from a verified legal witness.
-- PlanSnapshot and PlanBlock are immutable derived projections, never canonical truth.
-- Pin/drag actions create or update canonical UserTimeConstraint PINNED_WORK records.
-- RiskEngine owns deterministic LOW / EXPECTED / HIGH scenario classification.
-- Computational/search uncertainty remains UNKNOWN and never becomes IMPOSSIBLE.
-- latest_safe_start is derived by repeated constraint-aware feasibility checks, not cutoff-minus-duration arithmetic.
-- PlanningSnapshot input identity covers low/expected/high effort bounds and policy fields.
-- Derived plan persistence does not advance canonical server_revision.
-- PlanStore rejects the same deterministic plan id with different projection content.
-- Importance, computed risk, and display colour remain separate projections.
+- SourceSystem, SourceRecord, and Observation are immutable evidence/provenance.
+- Source, Extractor, and Actor are distinct identities. Imported content is data and never an actor or authorization.
+- SourceBinding is reversible local identity state with explicit history/versioning and one ACTIVE owner per source-native entity.
+- FieldPolicy is immutable/versioned; authority is field-specific and missing authority fails closed.
+- UserOverride is explicit local interpretation with ACTIVE / SUPERSEDED / REVOKED history.
+- Conflict is durable workflow state. Resolution by override records the exact override identifier.
+- Effective actual_cutoff state is RESOLVED / OVERRIDDEN / ABSENT / CONFLICT / UNKNOWN.
+- Unresolved truth and conservative planning projection are separate. A conservative cutoff does not erase CONFLICT.
+- Stale/unavailable source state does not imply deletion.
+- Explicit source-removal evidence triggers reconciliation and does not hard-delete the local Task.
+- actual_cutoff has one writable owner: once reconciliation materializes it, direct canonical cutoff writes are rejected; target_at remains independently user-owned.
+- Planning carries reconciliation truth/provenance while using only the permitted effective/conservative projection.
+- Material reconciliation changes invalidate planning; provenance-only evidence churn does not advance canonical server_revision or PlanningSnapshot identity.
+- Pass 4 deliberately does not introduce a provider connector, plugin framework, queue, vector store, or generalized event-sourcing framework.
 
 ## Implemented capabilities
 
-- Schema migration v2.
-- Optional low/high total and remaining effort bounds around expected effort.
-- Immutable PlanSnapshot / PlanBlock persistence with historical snapshots.
-- current-plan validity keyed to PlanningSnapshot input hash/revision.
-- Deterministic planner ordering for ready Tasks.
-- REQUIRED Event projections.
-- WORK projections from validated feasibility witnesses.
-- Risk states: UNKNOWN, NOT_APPLICABLE, SAFE, START_SOON, AT_RISK, CRITICAL, IMPOSSIBLE, OVERDUE.
-- Constraint-aware latest_safe_start.
-- 1–5 explainable next actions with server-generated reason text.
-- Display colour projection separate from importance/risk.
-- Canonical pin/drag ownership through UserTimeConstraint.
-- Persistent manual CLI: account-init, task-add, event-add, plan, task-complete.
-- Planner smoke and CI coverage.
-- v1-to-v2 migration fixture.
+- SQLite schema migration v3 with v2 -> v3 preservation coverage.
+- Immutable source systems, source records, and typed observations.
+- Source availability history and explicit source-removal evidence.
+- Reversible source binding and false-dedup correction without evidence loss.
+- Versioned reconciliation policies with certainty and source-authority rules.
+- User override lifecycle/history and exact override provenance.
+- Durable conflict/current-history storage with resolution references.
+- Materialized effective_fields and effective_field_history.
+- Idempotent explicit user task capture.
+- Reconciliation audit trail separate from canonical revision semantics.
+- Conservative earliest-hard-cutoff conflict projection where policy permits.
+- Reconciliation-aware planning snapshots and risk handling.
+- Date-only precision retention; no invented 23:59 cutoff.
+- Inclusive/exclusive cutoff boundaries remain distinct.
+- Cross-account observation/binding integrity at the schema/repository boundary.
+- reconciliation-smoke is part of make verify and CI.
 
 ## Acceptance coverage
 
-The enabled first-slice registry now reports executable PASS coverage for:
-- AT-11 through AT-32
-- AT-75
-- AT-78
-- AT-79
-- AT-80
-- AT-81
+Pass 4 executable coverage includes:
+- AT-01 through AT-10
+- AT-59
+- AT-67
+- AT-71
+- AT-72
+- AT-74
+- AT-76
+- AT-77
+- AT-82
+- AT-84
+- AT-85
 
-Pass 1/2 supplemental tests remain active, including AT-58, AT-70, AT-73, AT-83, and AT-86.
+Existing Pass 0–3 acceptance/integration/unit coverage remains active.
 
-## Verification on tested content HEAD
+Explicitly deferred to Pass 5:
+- AT-38
+- AT-39
+- AT-40
 
-Exact HEAD: a516cfa20d965bbb9cc6329abfe9d9825a39ce8a
+## Verification
 
-GitHub Actions:
-- push run #20 / 35482429139: SUCCESS
-- pull_request run #21 / 35482472554: SUCCESS
-- push job explicitly checked out a516cfa20d965bbb9cc6329abfe9d9825a39ce8a
+### Independent local verifier
+
+Machine: Fedora remote verifier, fresh clone of the GitHub branch.
+
+Verified implementation content HEAD:
+`fd8cc222ead73c377b09c4f87f5f1f697694a551`
+
+Command:
+`make verify`
+
+Result:
 - static compile: PASS
-- unit/integration/acceptance: 79 tests PASS
+- unit/integration/acceptance: 105 tests PASS
 - health smoke: PASS
-- canonical-domain SQLite smoke: PASS
+- canonical-domain SQLite smoke: PASS, schema_version=3
 - planning feasibility smoke: PASS
 - planner vertical-slice smoke: PASS
-- migration v1 -> v2: PASS
-- persistent manual capture -> plan -> completion -> replan flow: PASS
+- evidence reconciliation smoke: PASS
+- git diff --check before commit: PASS
+
+The reconciliation smoke preserved visible CONFLICT truth while producing a separately labelled conservative planning cutoff.
+
+### GitHub Actions
+
+Exact implementation HEAD push run:
+- run: 35526504345
+- URL: https://github.com/Misha1302/student-execution-os/actions/runs/35526504345
+- head: fd8cc222ead73c377b09c4f87f5f1f697694a551
+- conclusion reported by GitHub: FAILURE
+- verify job runner_id: 0
+- runner_name: empty
+- steps: []
+
+Exact implementation HEAD pull_request run:
+- run: 35526575110
+- URL: https://github.com/Misha1302/student-execution-os/actions/runs/35526575110
+- head: fd8cc222ead73c377b09c4f87f5f1f697694a551
+- conclusion reported by GitHub: FAILURE
+- verify job runner_id: 0
+- runner_name: empty
+- steps: []
+
+Interpretation: both Actions jobs failed before any runner/step execution. They provide no test result. The independent local verification above is the executable verification evidence for this checkpoint.
 
 ## Scope explicitly not implemented
 
-- evidence records / source observations / reconciliation / provenance
-- real connectors
-- LLM extraction or action authorization
+- real provider connector
+- connector cursor/retry/deletion polling implementation beyond the Pass-4 evidence contracts
+- LLM extraction/action adapter
 - travel routing / location transitions
 - recurrence
 - notifications
 - offline replication
 - production-scale optimizer
-- optional/preferred Event omission policy
+- generalized event-sourcing or plugin framework
 
-## Known limitations
+## Known limitations / operational blockers
 
-- Risk evaluation is conservative over the modeled workload and may return UNKNOWN when exact search budget/unsupported semantics prevent a sound classification.
-- latest_safe_start can be computationally more expensive than one feasibility call because it performs repeated feasibility checks.
-- Soft-objective planning is intentionally minimal; Pass 3 proves deterministic, legal projections rather than global soft-optimality.
-- No travel/location semantics are claimed.
-- Plan snapshots remain derived history; callers must use input-hash-aware current-plan lookup rather than treating the convenience current_plans pointer alone as proof of currency.
+- GitHub Actions is presently unable to assign the ubuntu-latest runner for this repository's workflow; exact reason is not established by available evidence.
+- A normal hosted-CI PASS is therefore still absent even though the same branch passes the full repository verification suite on the independent Fedora verifier.
+- Reconciliation is intentionally implemented first for the critical actual_cutoff field rather than as a speculative generic reconciliation engine for every future field.
+- Pass 5 must consume these contracts rather than bypass them with connector-owned canonical writes.
 
 ## Next pass
 
-Pass 4 — evidence / reconciliation / provenance.
+Pass 5 — one real connector.
 
-### First concrete actions
+Do not start Pass 5 from this checkpoint until Pass 4 review/merge authority is explicitly given.
 
-1. Re-read current main, PR #1–#5, exact Pass 3 terminal HEAD/CI, this handoff, and SPEC v2.1.
-2. Define immutable SourceRecord / Observation / extraction provenance ownership without weakening the canonical local domain.
-3. Implement field-level reconciliation for at least cutoff/target-relevant facts, preserving ABSENT / UNKNOWN / CONFLICT semantics.
-4. Add reversible source binding / false-dedup handling and stale/deletion evidence semantics.
-5. Make reconciliation changes advance canonical revisions only when effective local interpretation changes.
-6. Add acceptance coverage for the relevant evidence/reconciliation cases before starting a real connector.
+### First concrete actions for Pass 5
+
+1. Re-read current main, PR #6, terminal Pass 4 head/CI, this handoff, and SPEC v2.1.
+2. Choose one provider and implement its adapter against SourceSystem / SourceRecord / Observation / SourceBinding boundaries.
+3. Preserve source revision ordering, staleness/unavailability, explicit deletion evidence, retry/idempotency, and account scoping.
+4. Never let imported content become an actor or authorization.
+5. Complete AT-38 / AT-39 / AT-40 and provider-specific integration fixtures before expanding connector breadth.
 
 ## Inspect first
 
 - docs/SPECIFICATION.md
-- docs/adr/0004-planner-risk-and-plan-projection.md
-- src/student_execution_os/domain/model.py
+- docs/adr/0005-evidence-reconciliation-provenance.md
+- src/student_execution_os/reconciliation/model.py
+- src/student_execution_os/reconciliation/repository.py
+- src/student_execution_os/persistence/migrations/003_evidence_reconciliation.sql
 - src/student_execution_os/persistence/sqlite.py
+- src/student_execution_os/planning/state.py
 - src/student_execution_os/planning/snapshot.py
-- src/student_execution_os/planning/feasibility.py
-- src/student_execution_os/planning/planner.py
 - src/student_execution_os/planning/risk.py
-- src/student_execution_os/planning/store.py
+- tests/acceptance/test_pass4_reconciliation.py
 - tests/acceptance/acceptance_registry.json
+- tests/integration/test_migration_v3.py
 
 ## Do not trust without fresh verification
 
-- terminal Pass 3 branch HEAD after this handoff commit
+- terminal Pass 4 branch HEAD after this handoff commit
 - final CI status on terminal HEAD
-- open/merged state of PR #1–#5
+- PR #6 state / mergeability
 - current main
 - any PASS statement in this checkpoint without matching executable evidence
