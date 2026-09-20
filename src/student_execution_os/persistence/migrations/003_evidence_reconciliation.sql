@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS source_bindings (
     match_decision_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
     UNIQUE(account_id, id),
     FOREIGN KEY(account_id, source_system_id) REFERENCES source_systems(account_id, id) ON DELETE CASCADE,
     FOREIGN KEY(account_id, local_entity_id) REFERENCES obligations(account_id, id) ON DELETE CASCADE
@@ -75,7 +76,7 @@ CREATE TABLE IF NOT EXISTS observations (
     extractor_id TEXT NOT NULL,
     UNIQUE(account_id, id),
     FOREIGN KEY(account_id, source_record_id) REFERENCES source_records(account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY(binding_id) REFERENCES source_bindings(id) ON DELETE SET NULL
+    FOREIGN KEY(account_id, binding_id) REFERENCES source_bindings(account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_observations_field ON observations(account_id, field_path, source_record_id);
 
