@@ -75,7 +75,7 @@ class SQLiteMigrationTests(RepositoryFixture):
         self.repo.initialize()
         self.assertEqual(self.repo.schema_version(), SCHEMA_VERSION)
         rows = self.repo.connection.execute("SELECT version FROM schema_migrations").fetchall()
-        self.assertEqual([row[0] for row in rows], [1, 2])
+        self.assertEqual([row[0] for row in rows], list(range(1, SCHEMA_VERSION + 1)))
 
 
 class SQLiteCanonicalRepositoryTests(RepositoryFixture):

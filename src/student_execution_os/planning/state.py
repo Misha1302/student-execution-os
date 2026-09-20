@@ -15,6 +15,8 @@ from student_execution_os.domain.model import (
     UserTimeConstraint,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt
+from student_execution_os.planning.model import CutoffReconciliationContext
+from student_execution_os.reconciliation.repository import SQLiteReconciliationRepository
 
 
 class PlanningStateSource(Protocol):
@@ -24,6 +26,7 @@ class PlanningStateSource(Protocol):
     def list_dependencies(self, account_id: str) -> list[Dependency]: ...
     def list_milestones(self, account_id: str) -> list[Milestone]: ...
     def list_time_constraints(self, account_id: str) -> list[UserTimeConstraint]: ...
+    def list_cutoff_reconciliation(self, account_id: str) -> list[CutoffReconciliationContext]: ...
 
 
 @dataclass(frozen=True)
@@ -44,7 +47,37 @@ class SQLitePlanningStateSource:
         rows = self.repository.connection.execute(
             "SELECT id FROM obligations WHERE account_id=? AND kind='TASK' ORDER BY id", (account_id,)
         ).fetchall()
-        return [self.repository.get_task(account_id, row["id"]) for row in rows]
+        reconciliation = SQLiteReconciliationRepository(self.repository)
+        return [
+            reconciliation.apply_cutoff_projection(self.repository.get_task(account_id, row["id"]))
+            for row in rows
+        ]
+
+    def list_cutoff_reconciliation(self, account_id: str) -> list[CutoffReconciliationContext]:
+        self.repository._require_account(account_id)
+        rows = self.repository.connection.execute(
+            "SELECT id FROM obligations WHERE account_id=? AND kind='TASK' ORDER BY id", (account_id,)
+        ).fetchall()
+        reconciliation = SQLiteReconciliationRepository(self.repository)
+        contexts: list[CutoffReconciliationContext] = []
+        for row in rows:
+            effective = reconciliation.get_effective_cutoff(account_id, row["id"])
+            if effective is None:
+                continue
+            contexts.append(
+                CutoffReconciliationContext(
+                    task_id=row["id"],
+                    truth_state=effective.state.value,
+                    evidence_ids=effective.evidence_ids,
+                    policy_version=effective.policy_version,
+                    override_id=effective.override_id,
+                    conflict_id=effective.conflict_id,
+                    admissible_cutoffs=effective.admissible_cutoffs,
+                    planning_projection=effective.planning_projection,
+                    reason=effective.reason,
+                )
+            )
+        return contexts
 
     def list_events(self, account_id: str) -> list[Event]:
         self.repository._require_account(account_id)

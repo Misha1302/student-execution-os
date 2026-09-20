@@ -49,7 +49,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _UNSET = object()
 
 
@@ -96,6 +96,7 @@ class SQLiteCanonicalRepository:
         migrations = [
             (1, Path(__file__).with_name("migrations") / "001_initial.sql"),
             (2, Path(__file__).with_name("migrations") / "002_planning_projection.sql"),
+            (3, Path(__file__).with_name("migrations") / "003_evidence_reconciliation.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -389,6 +390,15 @@ class SQLiteCanonicalRepository:
         remaining_effort_high_minutes: int | None | object = _UNSET,
     ) -> Task:
         current = self.get_task(account_id, obligation_id)
+        if actual_cutoff is not _UNSET:
+            reconciled = self.connection.execute(
+                "SELECT 1 FROM effective_fields WHERE account_id=? AND entity_ref=? AND field_path='actual_cutoff'",
+                (account_id, obligation_id),
+            ).fetchone()
+            if reconciled is not None:
+                raise ValidationError(
+                    "actual_cutoff is reconciliation-owned for this task; use an explicit reconciliation override"
+                )
         if current.obligation.version != expected_version:
             raise VersionConflict(
                 f"expected obligation version {expected_version}, current {current.obligation.version}"

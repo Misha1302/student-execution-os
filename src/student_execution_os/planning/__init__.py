@@ -8,6 +8,7 @@ from student_execution_os.planning.actions import (
 )
 from student_execution_os.planning.feasibility import FeasibilityEngine
 from student_execution_os.planning.model import (
+    CutoffReconciliationContext,
     DisplayColour,
     DisplayProjection,
     FeasibilityResult,
@@ -32,6 +33,7 @@ from student_execution_os.planning.store import SQLitePlanStore
 from student_execution_os.planning.witness import validate_witness
 
 __all__ = [
+    "CutoffReconciliationContext",
     "DisplayColour",
     "DisplayProjection",
     "FeasibilityEngine",

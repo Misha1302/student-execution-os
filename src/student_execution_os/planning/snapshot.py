@@ -15,7 +15,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _stable_payload(*, account_id, revision, analysis_start, analysis_end, output_start, output_end,
-                    tasks, events, constraints, dependencies, milestones, policy) -> dict[str, object]:
+                    tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, policy) -> dict[str, object]:
     return {
         "account_id": account_id,
         "input_server_revision": revision,
@@ -82,6 +82,30 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
             }
             for d in dependencies
         ],
+        "cutoff_reconciliation": [
+            {
+                "task_id": item.task_id,
+                "truth_state": item.truth_state,
+                "policy_version": item.policy_version,
+                "admissible_cutoffs": [
+                    {
+                        "state": cutoff.state.value,
+                        "at": _iso(cutoff.at),
+                        "boundary": cutoff.boundary.value if cutoff.boundary else None,
+                        "precision": cutoff.precision.value if cutoff.precision else None,
+                    }
+                    for cutoff in item.admissible_cutoffs
+                ],
+                "planning_projection": None if item.planning_projection is None else {
+                    "state": item.planning_projection.state.value,
+                    "at": _iso(item.planning_projection.at),
+                    "boundary": item.planning_projection.boundary.value if item.planning_projection.boundary else None,
+                    "precision": item.planning_projection.precision.value if item.planning_projection.precision else None,
+                },
+                "reason": item.reason,
+            }
+            for item in cutoff_reconciliation
+        ],
         "milestones": [
             {
                 "id": m.id,
@@ -113,6 +137,11 @@ def _read_stable_inputs(source, account_id: str):
         constraints = tuple(sorted(source.list_time_constraints(account_id), key=lambda c: c.id))
         dependencies = tuple(sorted(source.list_dependencies(account_id), key=lambda d: d.id))
         milestones = tuple(sorted(source.list_milestones(account_id), key=lambda m: m.id))
+        context_reader = getattr(source, "list_cutoff_reconciliation", None)
+        cutoff_reconciliation = (
+            tuple(sorted(context_reader(account_id), key=lambda item: item.task_id))
+            if context_reader is not None else ()
+        )
         revision_after = source.get_server_revision(account_id)
         if revision_before == revision_after:
             return (
@@ -122,6 +151,7 @@ def _read_stable_inputs(source, account_id: str):
                 constraints,
                 dependencies,
                 milestones,
+                cutoff_reconciliation,
             )
     raise RuntimeError("planning state changed during snapshot capture")
 
@@ -152,9 +182,16 @@ def build_planning_snapshot(
         constraints,
         dependencies,
         milestones,
+        cutoff_reconciliation,
     ) = _read_stable_inputs(source, account_id)
 
     known_cutoffs = [t.actual_cutoff.at for t in tasks if t.actual_cutoff.at is not None]
+    known_cutoffs.extend(
+        cutoff.at
+        for item in cutoff_reconciliation
+        for cutoff in item.admissible_cutoffs
+        if cutoff.at is not None
+    )
     effective_analysis_end = max([analysis_horizon_end, *known_cutoffs]) if known_cutoffs else analysis_horizon_end
     output_start = plan_output_horizon_start or analysis_horizon_start
     output_end = plan_output_horizon_end or min(analysis_horizon_end, effective_analysis_end)
@@ -173,6 +210,7 @@ def build_planning_snapshot(
         constraints=constraints,
         dependencies=dependencies,
         milestones=milestones,
+        cutoff_reconciliation=cutoff_reconciliation,
         policy=policy,
     )
     input_hash = hashlib.sha256(
@@ -192,4 +230,5 @@ def build_planning_snapshot(
         dependencies=dependencies,
         milestones=milestones,
         policy=policy,
+        cutoff_reconciliation=cutoff_reconciliation,
     )

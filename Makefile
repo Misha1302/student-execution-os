@@ -14,5 +14,6 @@ smoke:
 	PYTHONPATH=src python -m student_execution_os domain-smoke
 	PYTHONPATH=src python -m student_execution_os feasibility-smoke
 	PYTHONPATH=src python -m student_execution_os planner-smoke
+	PYTHONPATH=src python -m student_execution_os reconciliation-smoke
 
 verify: restore static test smoke

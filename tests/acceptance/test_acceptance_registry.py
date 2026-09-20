@@ -27,6 +27,23 @@ class AcceptanceRegistryTests(unittest.TestCase):
         self.assertEqual(registry["supplemental_pass_tests"]["AT-73"], "PASS_PASS1_DOMAIN")
         self.assertEqual(registry["supplemental_pass_tests"]["AT-83"], "PASS_PASS1_DOMAIN")
 
+    def test_pass4_acceptance_and_pass5_deferrals_are_explicitly_tracked(self) -> None:
+        path = Path(__file__).with_name("acceptance_registry.json")
+        registry = json.loads(path.read_text(encoding="utf-8"))
+        expected_pass4 = {
+            "AT-01", "AT-02", "AT-03", "AT-04", "AT-05", "AT-06", "AT-07", "AT-08", "AT-09", "AT-10",
+            "AT-59", "AT-67", "AT-71", "AT-72", "AT-74", "AT-76", "AT-77", "AT-82", "AT-84", "AT-85",
+        }
+        self.assertEqual(set(registry["pass4_tests"]), expected_pass4)
+        self.assertTrue(all(status.startswith("PASS_PASS4_") for status in registry["pass4_tests"].values()))
+        self.assertEqual(
+            set(registry["deferred_pass5_connector_tests"]),
+            {"AT-38", "AT-39", "AT-40"},
+        )
+        self.assertTrue(
+            all(status.startswith("DEFERRED_PASS5_") for status in registry["deferred_pass5_connector_tests"].values())
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

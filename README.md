@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Pass 2 adds immutable revision/hash-bound `PlanningSnapshot` inputs plus a sound tri-state feasibility core. Pass 3 completes the first executable vertical slice with immutable `PlanSnapshot` history, derived WORK/Event projections, deterministic risk and colour projections, constraint-aware latest-safe-start, 1–5 explainable next actions, and a persistent CLI capture/plan flow. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
+Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Pass 2 adds immutable revision/hash-bound `PlanningSnapshot` inputs plus a sound tri-state feasibility core. Pass 3 completes the first executable vertical slice with immutable `PlanSnapshot` history, derived WORK/Event projections, deterministic risk and colour projections, constraint-aware latest-safe-start, 1–5 explainable next actions, and a persistent CLI capture/plan flow. Pass 4 adds immutable source/evidence records, typed observations, reversible source binding, versioned field reconciliation, explicit override/conflict history, provenance-aware conservative cutoff projections, and reconciliation-bound plan invalidation without a real provider connector. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
 ## Run the current implementation locally
 
@@ -64,9 +64,10 @@ PYTHONPATH=src python -m student_execution_os health
 PYTHONPATH=src python -m student_execution_os domain-smoke
 PYTHONPATH=src python -m student_execution_os feasibility-smoke
 PYTHONPATH=src python -m student_execution_os planner-smoke
+PYTHONPATH=src python -m student_execution_os reconciliation-smoke
 ```
 
-`domain-smoke` verifies canonical persistence/versioning. `feasibility-smoke` exercises repository → immutable snapshot → tri-state feasibility. `planner-smoke` exercises the full first vertical slice: canonical Task/Event → snapshot → plan → risk → next actions → persisted derived plan history. A persistent manual flow is available through `account-init`, `task-add`, `event-add`, `plan`, and `task-complete`.
+`domain-smoke` verifies canonical persistence/versioning. `feasibility-smoke` exercises repository → immutable snapshot → tri-state feasibility. `planner-smoke` exercises the full first vertical slice: canonical Task/Event → snapshot → plan → risk → next actions → persisted derived plan history. `reconciliation-smoke` exercises immutable evidence → conflicting cutoff reconciliation → separately labelled conservative planning projection while preserving conflict truth. A persistent manual flow is available through `account-init`, `task-add`, `event-add`, `plan`, and `task-complete`.
 
 ## Documentation
 
@@ -76,6 +77,7 @@ PYTHONPATH=src python -m student_execution_os planner-smoke
 - [Canonical state and concurrency ADR](docs/adr/0002-canonical-state-and-concurrency.md)
 - [Planning snapshot and feasibility ADR](docs/adr/0003-planning-snapshot-and-feasibility.md)
 - [Planner, risk, and derived plan ADR](docs/adr/0004-planner-risk-and-plan-projection.md)
+- [Evidence, reconciliation, provenance, and cutoff ownership ADR](docs/adr/0005-evidence-reconciliation-provenance.md)
 - [Current implementation handoff](docs/implementation/HANDOFF.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)

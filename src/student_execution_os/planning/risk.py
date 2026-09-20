@@ -47,12 +47,15 @@ def scenario_snapshot(snapshot: PlanningSnapshot, scenario: Scenario) -> Plannin
     return replace(snapshot, tasks=task_tuple, input_hash=_derived_hash(snapshot, scenario.value, task_tuple))
 
 
-def _past_cutoff(task: Task, now: datetime) -> bool:
-    cutoff = task.actual_cutoff
+def _past_hard_cutoff(cutoff, now: datetime) -> bool:
     assert cutoff.state is CutoffState.KNOWN and cutoff.at is not None
     if cutoff.boundary is CutoffBoundary.EXCLUSIVE:
         return now >= cutoff.at
     return now > cutoff.at
+
+
+def _past_cutoff(task: Task, now: datetime) -> bool:
+    return _past_hard_cutoff(task.actual_cutoff, now)
 
 
 @dataclass(frozen=True)
@@ -71,10 +74,62 @@ class RiskEngine:
             )
 
         results: dict[str, RiskResult] = {}
+        reconciliation = {item.task_id: item for item in snapshot.cutoff_reconciliation}
         for task in snapshot.tasks:
             if task.remaining_effort_minutes <= 0:
                 continue
             task_id = task.obligation.id
+            context = reconciliation.get(task_id)
+            if context is not None and context.truth_state == "CONFLICT":
+                exact_conflict = (
+                    context.reason == "EXACT_CUTOFF_VALUES_CONFLICT"
+                    and bool(context.admissible_cutoffs)
+                )
+                passed = [
+                    _past_hard_cutoff(cutoff, now)
+                    for cutoff in context.admissible_cutoffs
+                ]
+                if exact_conflict and passed and all(passed):
+                    results[task_id] = self._result(
+                        snapshot,
+                        task_id,
+                        RiskState.OVERDUE,
+                        RiskBasis.CONSERVATIVE_CONFLICT_PROJECTION,
+                        ("ALL_ADMISSIBLE_CONFLICTING_CUTOFFS_PASSED",),
+                    )
+                else:
+                    straddles_now = bool(passed) and any(passed) and not all(passed)
+                    results[task_id] = self._result(
+                        snapshot,
+                        task_id,
+                        RiskState.UNKNOWN,
+                        RiskBasis.CONSERVATIVE_CONFLICT_PROJECTION,
+                        (
+                            "UNRESOLVED_CUTOFF_CONFLICT_STRADDLES_NOW"
+                            if straddles_now
+                            else "UNRESOLVED_CUTOFF_CONFLICT"
+                        ,),
+                    )
+                continue
+            if context is not None and context.truth_state == "UNKNOWN":
+                results[task_id] = self._result(
+                    snapshot,
+                    task_id,
+                    RiskState.UNKNOWN,
+                    RiskBasis.RESOLVED_FACTS,
+                    ("UNRESOLVED_HARD_CUTOFF",),
+                )
+                continue
+            if context is not None and context.truth_state == "ABSENT":
+                results[task_id] = self._result(
+                    snapshot,
+                    task_id,
+                    RiskState.NOT_APPLICABLE,
+                    RiskBasis.NO_HARD_CUTOFF,
+                    ("NO_HARD_CUTOFF",),
+                )
+                continue
+
             cutoff = task.actual_cutoff
             if cutoff.state is CutoffState.ABSENT:
                 results[task_id] = self._result(snapshot, task_id, RiskState.NOT_APPLICABLE, RiskBasis.NO_HARD_CUTOFF, ("NO_HARD_CUTOFF",))

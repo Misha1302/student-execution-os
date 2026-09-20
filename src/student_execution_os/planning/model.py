@@ -7,6 +7,7 @@ from enum import StrEnum
 from student_execution_os.domain.model import (
     Dependency,
     Event,
+    HardCutoff,
     Importance,
     Milestone,
     Task,
@@ -34,6 +35,23 @@ class PlanningPolicy:
 
 
 @dataclass(frozen=True)
+class CutoffReconciliationContext:
+    task_id: str
+    truth_state: str
+    evidence_ids: tuple[str, ...]
+    policy_version: str
+    override_id: str | None
+    conflict_id: str | None
+    admissible_cutoffs: tuple[HardCutoff, ...]
+    planning_projection: HardCutoff | None
+    reason: str | None
+
+    def __post_init__(self) -> None:
+        if not self.task_id or not self.truth_state or not self.policy_version:
+            raise ValueError("cutoff reconciliation context identity is required")
+
+
+@dataclass(frozen=True)
 class PlanningSnapshot:
     account_id: str
     input_server_revision: int
@@ -48,6 +66,7 @@ class PlanningSnapshot:
     dependencies: tuple[Dependency, ...]
     milestones: tuple[Milestone, ...]
     policy: PlanningPolicy
+    cutoff_reconciliation: tuple[CutoffReconciliationContext, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
