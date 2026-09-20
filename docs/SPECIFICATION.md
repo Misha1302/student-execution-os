@@ -1,10 +1,48 @@
 # Student Execution OS — Normative Product and System Specification
 
-**Version:** 2.0  
+**Version:** 2.1  
 **Status:** normative baseline; ready for the first implementation vertical slice  
 **Purpose:** define the minimum stable product, domain, evidence, reconciliation, feasibility, planning, sync, API, security, privacy, reliability, and acceptance contracts so that independent implementations preserve the same semantics.
 
 This specification is intentionally stricter about **ownership and invariants** than about concrete implementation technology. PostgreSQL layout, solver choice, framework, ORM, transport library, and UI toolkit are implementation details unless explicitly constrained below.
+
+---
+
+# 0A. Repository identity and product boundary
+
+The canonical implementation repository for this product is:
+
+```text
+Misha1302/student-execution-os
+```
+
+This repository identity is normative for implementation work.
+
+Before the first write in any implementation session, the agent/developer MUST verify the actual repository identity and current `main` revision. If the writable target is not `Misha1302/student-execution-os`, implementation MUST stop before mutation.
+
+In particular:
+
+- `Misha1302/chatgpt-knowledge-base` is a separate personal knowledge/provenance system and MUST NOT contain Student Execution OS application code, implementation scaffolding, migrations, or canonical product specification.
+- Knowledge-base architecture such as `SearchBackend`, `SourceImporter`, canonical Markdown/YAML entities, KB provenance batches, or KB schema migration machinery MUST NOT be imported into this product merely because prior drafts or experiments used them.
+- Existing code from another repository MAY be reused only when it solves a concrete Student Execution OS requirement, its ownership/security implications are reviewed, and the copied dependency does not create a hidden cross-repository source of truth.
+- Product requirements, domain semantics, acceptance tests, and implementation prompts for Student Execution OS belong in this repository.
+- Normal implementation work MUST use a feature branch and pull request. Direct mutation of `main` and merge into `main` require separate explicit authorization.
+
+Source-of-truth order for implementation is:
+
+```text
+actual current main of Misha1302/student-execution-os
+>
+this normative specification
+>
+CONTRIBUTING.md + SECURITY.md + accepted ADRs
+>
+older research/review artifacts
+>
+unrelated repositories or prior ChatGPT drafts
+```
+
+A repository mismatch is a task-routing failure, not an architecture decision.
 
 ---
 
