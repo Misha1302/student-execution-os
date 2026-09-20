@@ -137,7 +137,7 @@ Exact implementation HEAD pull_request run:
 - runner_name: empty
 - steps: []
 
-Interpretation: both Actions jobs failed before any runner/step execution. They provide no test result. The independent local verification above is the executable verification evidence for this checkpoint.
+Interpretation: both Actions jobs failed before any runner/step execution. GitHub check-run annotations state: `The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the Billing & plans section in your settings`. This is an account billing/spending-limit blocker, not a workflow or Python-test failure. The independent local verification above is the executable verification evidence for this checkpoint.
 
 ## Scope explicitly not implemented
 
@@ -153,7 +153,7 @@ Interpretation: both Actions jobs failed before any runner/step execution. They 
 
 ## Known limitations / operational blockers
 
-- GitHub Actions is presently unable to assign the ubuntu-latest runner for this repository's workflow; exact reason is not established by available evidence.
+- GitHub Actions check-run annotations identify the blocker as failed recent account payments or an Actions spending limit that needs to be increased; GitHub therefore does not assign the ubuntu-latest runner.
 - A normal hosted-CI PASS is therefore still absent even though the same branch passes the full repository verification suite on the independent Fedora verifier.
 - Reconciliation is intentionally implemented first for the critical actual_cutoff field rather than as a speculative generic reconciliation engine for every future field.
 - Pass 5 must consume these contracts rather than bypass them with connector-owned canonical writes.
