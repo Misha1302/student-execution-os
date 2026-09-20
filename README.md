@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Pass 2 adds immutable revision/hash-bound `PlanningSnapshot` inputs plus a sound tri-state feasibility core with constructive witness generation, bounded exact fallback, and an independent witness verifier. Planner/risk/next-actions remain intentionally deferred to Pass 3. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
+Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Pass 2 adds immutable revision/hash-bound `PlanningSnapshot` inputs plus a sound tri-state feasibility core. Pass 3 completes the first executable vertical slice with immutable `PlanSnapshot` history, derived WORK/Event projections, deterministic risk and colour projections, constraint-aware latest-safe-start, 1–5 explainable next actions, and a persistent CLI capture/plan flow. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
 ## Run the current implementation locally
 
@@ -63,9 +63,10 @@ The executable smoke surfaces are:
 PYTHONPATH=src python -m student_execution_os health
 PYTHONPATH=src python -m student_execution_os domain-smoke
 PYTHONPATH=src python -m student_execution_os feasibility-smoke
+PYTHONPATH=src python -m student_execution_os planner-smoke
 ```
 
-`domain-smoke` creates and updates a real Task through the SQLite repository and verifies schema/version/revision behavior. `feasibility-smoke` exercises repository → immutable snapshot → tri-state feasibility and emits a validated legal witness.
+`domain-smoke` verifies canonical persistence/versioning. `feasibility-smoke` exercises repository → immutable snapshot → tri-state feasibility. `planner-smoke` exercises the full first vertical slice: canonical Task/Event → snapshot → plan → risk → next actions → persisted derived plan history. A persistent manual flow is available through `account-init`, `task-add`, `event-add`, `plan`, and `task-complete`.
 
 ## Documentation
 
@@ -74,6 +75,7 @@ PYTHONPATH=src python -m student_execution_os feasibility-smoke
 - [Implementation stack ADR](docs/adr/0001-implementation-stack.md)
 - [Canonical state and concurrency ADR](docs/adr/0002-canonical-state-and-concurrency.md)
 - [Planning snapshot and feasibility ADR](docs/adr/0003-planning-snapshot-and-feasibility.md)
+- [Planner, risk, and derived plan ADR](docs/adr/0004-planner-risk-and-plan-projection.md)
 - [Current implementation handoff](docs/implementation/HANDOFF.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)

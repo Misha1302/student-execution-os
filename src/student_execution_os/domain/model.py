@@ -194,6 +194,10 @@ class Task:
     actionable_from: datetime | None
     actual_cutoff: HardCutoff
     target_at: datetime | None
+    estimated_total_effort_low_minutes: int | None = None
+    estimated_total_effort_high_minutes: int | None = None
+    remaining_effort_low_minutes: int | None = None
+    remaining_effort_high_minutes: int | None = None
 
     def __post_init__(self) -> None:
         if self.obligation.kind is not ObligationKind.TASK:
@@ -217,6 +221,18 @@ class Task:
                 raise ValidationError("non-splittable remaining effort is shorter than configured minimum block")
             if self.max_chunk_minutes is not None and self.remaining_effort_minutes > self.max_chunk_minutes:
                 raise ValidationError("non-splittable remaining effort exceeds configured maximum block")
+        if self.estimated_total_effort_low_minutes is not None:
+            if self.estimated_total_effort_low_minutes <= 0 or self.estimated_total_effort_low_minutes > self.estimated_total_effort_minutes:
+                raise ValidationError("estimated effort low must be positive and <= expected")
+        if self.estimated_total_effort_high_minutes is not None:
+            if self.estimated_total_effort_high_minutes < self.estimated_total_effort_minutes:
+                raise ValidationError("estimated effort high must be >= expected")
+        if self.remaining_effort_low_minutes is not None:
+            if self.remaining_effort_low_minutes < 0 or self.remaining_effort_low_minutes > self.remaining_effort_minutes:
+                raise ValidationError("remaining effort low must be >= 0 and <= expected")
+        if self.remaining_effort_high_minutes is not None:
+            if self.remaining_effort_high_minutes < self.remaining_effort_minutes:
+                raise ValidationError("remaining effort high must be >= expected")
         require_aware(self.actionable_from, "actionable_from")
         require_aware(self.target_at, "target_at")
 

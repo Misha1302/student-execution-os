@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 from datetime import datetime
 
 from student_execution_os.domain.model import (
@@ -27,6 +28,7 @@ class FeasibilityEngine:
     exact_search_enabled: bool = True
     node_limit: int = 200_000
     timeout_seconds: float = 2.0
+    task_tie_break: Callable[[object], tuple] | None = None
 
     def evaluate(self, snapshot: PlanningSnapshot) -> FeasibilityResult:
         if self.node_limit < 0 or self.timeout_seconds < 0:
@@ -235,7 +237,10 @@ class FeasibilityEngine:
             if d.successor_kind is DependencySuccessorKind.TASK and d.predecessor_task_id in ids and d.successor_id in ids:
                 outgoing[d.predecessor_task_id].add(d.successor_id)
                 incoming[d.successor_id].add(d.predecessor_task_id)
-        ready = sorted((i for i in ids if not incoming[i]))
+        by_id = {t.obligation.id: t for t in tasks}
+        def sort_key(task_id):
+            return self.task_tie_break(by_id[task_id]) if self.task_tie_break is not None else (task_id,)
+        ready = sorted((i for i in ids if not incoming[i]), key=sort_key)
         ordered_ids = []
         while ready:
             node = ready.pop(0)
@@ -244,10 +249,9 @@ class FeasibilityEngine:
                 incoming[nxt].remove(node)
                 if not incoming[nxt]:
                     ready.append(nxt)
-                    ready.sort()
+                    ready.sort(key=sort_key)
         if len(ordered_ids) != len(ids):
             return "DEPENDENCY_GRAPH_NOT_ACYCLIC"
-        by_id = {t.obligation.id: t for t in tasks}
         return [by_id[i] for i in ordered_ids]
     @staticmethod
     def _ends_before_cutoff(task, end) -> bool:

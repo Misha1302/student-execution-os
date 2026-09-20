@@ -27,7 +27,7 @@ class DomainCliSmokeTests(unittest.TestCase):
             )
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["status"], "ok")
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(payload["server_revision"], 2)
             self.assertEqual(payload["task_version"], 2)
             self.assertEqual(payload["cutoff_state"], "KNOWN")
