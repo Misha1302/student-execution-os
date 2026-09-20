@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from student_execution_os.domain.model import LifecycleStatus
 from student_execution_os.planning.model import PlanningPolicy, PlanningSnapshot
 
+_STABLE_CAPTURE_ATTEMPTS = 3
+
 
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.astimezone(timezone.utc).isoformat()
@@ -87,6 +89,34 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
     }
 
 
+def _read_stable_inputs(source, account_id: str):
+    """Read one revision-consistent planning state without requiring source-specific transactions."""
+    for _ in range(_STABLE_CAPTURE_ATTEMPTS):
+        revision_before = source.get_server_revision(account_id)
+        tasks = tuple(sorted(
+            (t for t in source.list_tasks(account_id) if t.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
+            key=lambda t: t.obligation.id,
+        ))
+        events = tuple(sorted(
+            (e for e in source.list_events(account_id) if e.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
+            key=lambda e: e.obligation.id,
+        ))
+        constraints = tuple(sorted(source.list_time_constraints(account_id), key=lambda c: c.id))
+        dependencies = tuple(sorted(source.list_dependencies(account_id), key=lambda d: d.id))
+        milestones = tuple(sorted(source.list_milestones(account_id), key=lambda m: m.id))
+        revision_after = source.get_server_revision(account_id)
+        if revision_before == revision_after:
+            return (
+                revision_after,
+                tasks,
+                events,
+                constraints,
+                dependencies,
+                milestones,
+            )
+    raise RuntimeError("planning state changed during snapshot capture")
+
+
 def build_planning_snapshot(
     source,
     *,
@@ -99,22 +129,21 @@ def build_planning_snapshot(
 ) -> PlanningSnapshot:
     """Materialize one immutable, revision-bound planning input.
 
-    The builder extends the analysis horizon through every known active hard
-    cutoff instead of confusing the shorter display horizon with feasibility.
+    The builder retries if canonical state changes while tables are being read,
+    preventing a mixed-revision snapshot from being labelled with one committed
+    server revision. It also extends the analysis horizon through every known
+    active hard cutoff instead of confusing the shorter display horizon with
+    feasibility.
     """
     policy = policy or PlanningPolicy()
-    tasks = tuple(sorted(
-        (t for t in source.list_tasks(account_id) if t.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
-        key=lambda t: t.obligation.id,
-    ))
-    events = tuple(sorted(
-        (e for e in source.list_events(account_id) if e.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
-        key=lambda e: e.obligation.id,
-    ))
-    constraints = tuple(sorted(source.list_time_constraints(account_id), key=lambda c: c.id))
-    dependencies = tuple(sorted(source.list_dependencies(account_id), key=lambda d: d.id))
-    milestones = tuple(sorted(source.list_milestones(account_id), key=lambda m: m.id))
-    revision = source.get_server_revision(account_id)
+    (
+        revision,
+        tasks,
+        events,
+        constraints,
+        dependencies,
+        milestones,
+    ) = _read_stable_inputs(source, account_id)
 
     known_cutoffs = [t.actual_cutoff.at for t in tasks if t.actual_cutoff.at is not None]
     effective_analysis_end = max([analysis_horizon_end, *known_cutoffs]) if known_cutoffs else analysis_horizon_end
