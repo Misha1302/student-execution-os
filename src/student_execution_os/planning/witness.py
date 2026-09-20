@@ -62,10 +62,18 @@ def validate_witness(snapshot: PlanningSnapshot, witness: tuple[WorkPlacement, .
         if constraint.type is UserTimeConstraintType.PINNED_WORK
     }
 
+    travel_occupancy = [
+        interval
+        for transition in snapshot.travel_projection.transitions
+        for interval in transition.hard_occupancy
+    ]
+
     for placement in witness:
         interval = HalfOpenInterval(placement.starts_at, placement.ends_at)
         if any(interval.overlaps(event.interval) for event in required_events):
             errors.append(f"WORK_OVERLAPS_REQUIRED_EVENT:{placement.task_id}")
+        if any(interval.overlaps(occupied) for occupied in travel_occupancy):
+            errors.append(f"WORK_OVERLAPS_TRAVEL:{placement.task_id}")
         if any(interval.overlaps(constraint.interval) for constraint in hard_constraints):
             errors.append(f"WORK_OVERLAPS_CONSTRAINT:{placement.task_id}")
         if placement.source == "PINNED" and not any(

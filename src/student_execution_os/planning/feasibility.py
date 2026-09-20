@@ -36,6 +36,18 @@ class FeasibilityEngine:
         unsupported = self._unsupported_reason(snapshot)
         if unsupported:
             return self._unknown(snapshot, unsupported)
+        if snapshot.travel_projection.unknown_reasons:
+            return self._unknown(
+                snapshot,
+                snapshot.travel_projection.unknown_reasons[0],
+            )
+        if snapshot.travel_projection.infeasible_reasons:
+            return FeasibilityResult(
+                FeasibilityStatus.INFEASIBLE,
+                snapshot.input_hash,
+                reasons=(snapshot.travel_projection.infeasible_reasons[0],),
+                explored_nodes=0,
+            )
 
         required_events = [
             e for e in snapshot.events
@@ -45,7 +57,16 @@ class FeasibilityEngine:
         ]
         constraints = [c for c in snapshot.constraints if self._overlaps_horizon(c.interval, snapshot)]
 
-        conflict = self._fixed_conflict(required_events, constraints)
+        travel_occupancy = [
+            interval
+            for transition in snapshot.travel_projection.transitions
+            for interval in transition.hard_occupancy
+        ]
+        conflict = self._fixed_conflict(
+            required_events,
+            constraints,
+            travel_occupancy,
+        )
         if conflict:
             return FeasibilityResult(
                 FeasibilityStatus.INFEASIBLE, snapshot.input_hash, reasons=(conflict,), explored_nodes=0
@@ -73,6 +94,7 @@ class FeasibilityEngine:
             )
         pinned_by_task, occupied = pin_state
         occupied.extend(e.interval for e in required_events)
+        occupied.extend(travel_occupancy)
         occupied.extend(c.interval for c in constraints if c.type is not UserTimeConstraintType.PINNED_WORK)
         occupied = merge_intervals(occupied)
 
@@ -177,12 +199,26 @@ class FeasibilityEngine:
             values.extend([constraint.interval.starts_at, constraint.interval.ends_at])
         for milestone in snapshot.milestones:
             values.append(milestone.marker_at)
+        for transition in snapshot.travel_projection.transitions:
+            values.extend(
+                [
+                    transition.travel_interval.starts_at,
+                    transition.travel_interval.ends_at,
+                ]
+            )
+            if transition.arrival_buffer is not None:
+                values.extend(
+                    [
+                        transition.arrival_buffer.starts_at,
+                        transition.arrival_buffer.ends_at,
+                    ]
+                )
         for value in values:
             if value is not None and (value.second != 0 or value.microsecond != 0):
                 return "UNSUPPORTED_SUB_MINUTE_TIME"
         return None
 
-    def _fixed_conflict(self, events, constraints) -> str | None:
+    def _fixed_conflict(self, events, constraints, travel_occupancy) -> str | None:
         for i, left in enumerate(events):
             for right in events[i + 1 :]:
                 if left.interval.overlaps(right.interval):
@@ -196,6 +232,10 @@ class FeasibilityEngine:
             for right in pins[i + 1 :]:
                 if left.interval.overlaps(right.interval):
                     return f"PINNED_WORK_CONFLICT:{left.id}:{right.id}"
+        for interval in travel_occupancy:
+            for constraint in constraints:
+                if interval.overlaps(constraint.interval):
+                    return f"TRAVEL_CONSTRAINT_CONFLICT:{constraint.id}"
         return None
 
     def _pinned_state(self, snapshot, tasks):
@@ -273,4 +313,3 @@ class FeasibilityEngine:
         return FeasibilityResult(
             FeasibilityStatus.UNKNOWN, snapshot.input_hash, reasons=(reason,), explored_nodes=nodes
         )
-

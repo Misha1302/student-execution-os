@@ -204,7 +204,7 @@ class Pass6LLMActionBoundaryTests(unittest.TestCase):
                 )
                 self.assertTrue(replay.replayed)
                 self.assertEqual(replay.entity_version, 2)
-                self.assertEqual(repo.schema_version(), 5)
+                self.assertGreaterEqual(repo.schema_version(), 5)
 
     def test_at45_prompt_injection_content_cannot_authorize(self):
         recon = SQLiteReconciliationRepository(self.repo)

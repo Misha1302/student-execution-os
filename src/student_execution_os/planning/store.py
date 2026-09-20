@@ -33,9 +33,9 @@ class SQLitePlanStore:
             )
             for block in plan.blocks:
                 conn.execute(
-                    "INSERT INTO plan_blocks(id,plan_id,block_type,starts_at,ends_at,obligation_id,source_constraint_ids_json,source_event_id,explanation) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO plan_blocks(id,plan_id,block_type,starts_at,ends_at,obligation_id,source_constraint_ids_json,source_event_id,travel_estimate_id,explanation) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (block.id, plan.id, block.type.value, block.starts_at.isoformat(), block.ends_at.isoformat(),
-                     block.obligation_id, json.dumps(block.source_constraint_ids), block.source_event_id, block.explanation),
+                     block.obligation_id, json.dumps(block.source_constraint_ids), block.source_event_id, block.travel_estimate_id, block.explanation),
                 )
         conn.execute(
             "INSERT INTO current_plans(account_id,plan_id) VALUES (?,?) ON CONFLICT(account_id) DO UPDATE SET plan_id=excluded.plan_id",
@@ -70,7 +70,7 @@ class SQLitePlanStore:
         blocks = tuple(PlanBlock(
             starts_at=_dt(b["starts_at"]), ends_at=_dt(b["ends_at"]), id=b["id"], type=PlanBlockType(b["block_type"]),
             obligation_id=b["obligation_id"], source_constraint_ids=tuple(json.loads(b["source_constraint_ids_json"])),
-            source_event_id=b["source_event_id"], explanation=b["explanation"],
+            source_event_id=b["source_event_id"], travel_estimate_id=b["travel_estimate_id"], explanation=b["explanation"],
         ) for b in block_rows)
         return PlanSnapshot(
             id=row["id"], account_id=row["account_id"], plan_revision=row["plan_revision"],

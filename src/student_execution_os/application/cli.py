@@ -24,6 +24,8 @@ from student_execution_os.domain.model import (
     AttendancePolicy,
     HardCutoff,
     Importance,
+    LocationEffect,
+    LocationEffectKind,
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
@@ -34,6 +36,12 @@ from student_execution_os.planning import (
     SQLitePlanningStateSource,
     build_planning_snapshot,
 )
+from student_execution_os.travel import (
+    LocationContextState,
+    SQLiteTravelRepository,
+    TravelEstimateSource,
+)
+
 from student_execution_os.reconciliation import (
     ConflictProjection,
     EffectiveFieldState,
@@ -390,6 +398,78 @@ def run_agent_smoke() -> dict[str, object]:
         }
 
 
+def run_travel_smoke() -> dict[str, object]:
+    account_id = "travel-smoke-account"
+    now = datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc)
+    with SQLiteCanonicalRepository(":memory:", clock=FrozenClock(now)) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        travel = SQLiteTravelRepository(repo)
+        for place_id in ("hse", "psychologist"):
+            travel.create_place(
+                account_id=account_id,
+                place_id=place_id,
+                display_name=place_id,
+                alias=place_id.upper(),
+                visibility_policy="PRIVATE_ALIAS",
+                actor=ActorCategory.SYSTEM,
+            )
+        travel.set_current_location(
+            account_id=account_id,
+            state=LocationContextState.KNOWN,
+            place_id="hse",
+            source="SMOKE",
+            actor=ActorCategory.SYSTEM,
+            recorded_at=now,
+            expires_at=now + timedelta(hours=12),
+        )
+        travel.add_travel_estimate(
+            account_id=account_id,
+            estimate_id="travel-smoke-route",
+            origin_place_id="hse",
+            destination_place_id="psychologist",
+            transport_mode="TRANSIT",
+            expected_duration_minutes=40,
+            safe_duration_minutes=45,
+            source=TravelEstimateSource.ROUTING_PROVIDER,
+            source_revision="smoke",
+            actor=ActorCategory.SYSTEM,
+            calculated_at=now,
+            expires_at=now + timedelta(hours=12),
+        )
+        repo.create_fixed_event(
+            account_id=account_id,
+            obligation_id="psychologist-event",
+            title="Psychologist",
+            starts_at=now.replace(hour=16),
+            ends_at=now.replace(hour=17),
+            attendance_policy=AttendancePolicy.REQUIRED,
+            location_effect=LocationEffect(
+                kind=LocationEffectKind.STAY,
+                destination_place_id="psychologist",
+            ),
+            arrival_requirement_minutes=10,
+            actor=ActorCategory.SYSTEM,
+        )
+        snapshot = build_planning_snapshot(
+            SQLitePlanningStateSource(repo),
+            account_id=account_id,
+            analysis_horizon_start=now,
+            analysis_horizon_end=now.replace(hour=18),
+            plan_output_horizon_end=now.replace(hour=18),
+        )
+        transition = snapshot.travel_projection.transitions[0]
+        feasibility = FeasibilityEngine().evaluate(snapshot)
+        return {
+            "status": "ok",
+            "schema_version": repo.schema_version(),
+            "feasibility": feasibility.status.value,
+            "latest_safe_departure": transition.latest_safe_departure.isoformat(),
+            "arrival_buffer_minutes": transition.arrival_requirement_minutes,
+            "travel_estimate_id": transition.travel_estimate_id,
+        }
+
+
 def _cutoff(value: str) -> HardCutoff:
     if value.upper() == "ABSENT":
         return HardCutoff.absent()
@@ -414,6 +494,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("reconciliation-smoke")
     subparsers.add_parser("connector-smoke")
     subparsers.add_parser("agent-smoke")
+    subparsers.add_parser("travel-smoke")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -482,6 +563,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "agent-smoke":
         print(json.dumps(run_agent_smoke(), sort_keys=True))
+        return 0
+    if args.command == "travel-smoke":
+        print(json.dumps(run_travel_smoke(), sort_keys=True))
         return 0
 
     if args.command == "account-init":

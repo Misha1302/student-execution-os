@@ -17,5 +17,6 @@ smoke:
 	PYTHONPATH=src python -m student_execution_os reconciliation-smoke
 	PYTHONPATH=src python -m student_execution_os connector-smoke
 	PYTHONPATH=src python -m student_execution_os agent-smoke
+	PYTHONPATH=src python -m student_execution_os travel-smoke
 
 verify: restore static test smoke

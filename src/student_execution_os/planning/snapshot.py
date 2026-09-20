@@ -15,7 +15,7 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _stable_payload(*, account_id, revision, analysis_start, analysis_end, output_start, output_end,
-                    tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, policy) -> dict[str, object]:
+                    tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, travel_projection, policy) -> dict[str, object]:
     return {
         "account_id": account_id,
         "input_server_revision": revision,
@@ -59,6 +59,9 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
                 "attendance_policy": e.attendance_policy.value,
                 "time_semantics": e.time_semantics.value,
                 "location_effect": e.location_effect.kind.value,
+                "origin_place_id": e.location_effect.origin_place_id,
+                "destination_place_id": e.location_effect.destination_place_id,
+                "arrival_requirement_minutes": e.arrival_requirement_minutes,
             }
             for e in events
         ],
@@ -106,6 +109,30 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
             }
             for item in cutoff_reconciliation
         ],
+        "travel_projection": {
+            "transitions": [
+                {
+                    "travel_starts_at": _iso(item.travel_interval.starts_at),
+                    "travel_ends_at": _iso(item.travel_interval.ends_at),
+                    "buffer_starts_at": (
+                        _iso(item.arrival_buffer.starts_at)
+                        if item.arrival_buffer is not None else None
+                    ),
+                    "buffer_ends_at": (
+                        _iso(item.arrival_buffer.ends_at)
+                        if item.arrival_buffer is not None else None
+                    ),
+                    "origin_place_id": item.origin_place_id,
+                    "destination_place_id": item.destination_place_id,
+                    "travel_estimate_id": item.travel_estimate_id,
+                    "target_event_id": item.target_event_id,
+                    "arrival_requirement_minutes": item.arrival_requirement_minutes,
+                }
+                for item in travel_projection.transitions
+            ],
+            "unknown_reasons": list(travel_projection.unknown_reasons),
+            "infeasible_reasons": list(travel_projection.infeasible_reasons),
+        },
         "milestones": [
             {
                 "id": m.id,
@@ -122,7 +149,7 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
     }
 
 
-def _read_stable_inputs(source, account_id: str):
+def _read_stable_inputs(source, account_id: str, analysis_horizon_start: datetime, analysis_horizon_end: datetime):
     """Read one revision-consistent planning state without requiring source-specific transactions."""
     for _ in range(_STABLE_CAPTURE_ATTEMPTS):
         revision_before = source.get_server_revision(account_id)
@@ -142,6 +169,17 @@ def _read_stable_inputs(source, account_id: str):
             tuple(sorted(context_reader(account_id), key=lambda item: item.task_id))
             if context_reader is not None else ()
         )
+        travel_reader = getattr(source, "build_travel_projection", None)
+        if travel_reader is not None:
+            travel_projection = travel_reader(
+                account_id,
+                events,
+                analysis_horizon_start,
+                analysis_horizon_end,
+            )
+        else:
+            from student_execution_os.travel.model import TravelProjection
+            travel_projection = TravelProjection()
         revision_after = source.get_server_revision(account_id)
         if revision_before == revision_after:
             return (
@@ -152,6 +190,7 @@ def _read_stable_inputs(source, account_id: str):
                 dependencies,
                 milestones,
                 cutoff_reconciliation,
+                travel_projection,
             )
     raise RuntimeError("planning state changed during snapshot capture")
 
@@ -183,7 +222,13 @@ def build_planning_snapshot(
         dependencies,
         milestones,
         cutoff_reconciliation,
-    ) = _read_stable_inputs(source, account_id)
+        travel_projection,
+    ) = _read_stable_inputs(
+        source,
+        account_id,
+        analysis_horizon_start,
+        analysis_horizon_end,
+    )
 
     known_cutoffs = [t.actual_cutoff.at for t in tasks if t.actual_cutoff.at is not None]
     known_cutoffs.extend(
@@ -211,6 +256,7 @@ def build_planning_snapshot(
         dependencies=dependencies,
         milestones=milestones,
         cutoff_reconciliation=cutoff_reconciliation,
+        travel_projection=travel_projection,
         policy=policy,
     )
     input_hash = hashlib.sha256(
@@ -231,4 +277,5 @@ def build_planning_snapshot(
         milestones=milestones,
         policy=policy,
         cutoff_reconciliation=cutoff_reconciliation,
+        travel_projection=travel_projection,
     )

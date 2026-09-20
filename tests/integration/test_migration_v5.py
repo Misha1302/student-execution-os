@@ -63,7 +63,7 @@ class MigrationV5IntegrationTests(unittest.TestCase):
             ) as repo:
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 5)
+                self.assertGreaterEqual(SCHEMA_VERSION, 5)
                 self.assertEqual(repo.get_task("a", "t").obligation.title, "Task")
                 tables = {
                     row["name"]
