@@ -82,6 +82,15 @@ class Pass2FeasibilityAcceptanceTests(unittest.TestCase):
         self.assertEqual(r.status,FeasibilityStatus.INFEASIBLE)
         self.assertTrue(r.reasons[0].startswith("REQUIRED_EVENT_CONFLICT"))
 
+
+    def test_optional_event_policy_is_unknown_not_silently_omitted(self):
+        self.repo.create_fixed_event(account_id="a",obligation_id="optional",title="optional",starts_at=BASE,ends_at=BASE+timedelta(hours=1),
+            attendance_policy=AttendancePolicy.OPTIONAL,actor=ActorCategory.SYSTEM)
+        self.task("t",60,BASE+timedelta(hours=2))
+        r=FeasibilityEngine().evaluate(self.snap())
+        self.assertEqual(r.status,FeasibilityStatus.UNKNOWN)
+        self.assertEqual(r.reasons,("UNSUPPORTED_OPTIONAL_EVENT_POLICY:optional",))
+
     def test_at70_search_budget_exhaustion_is_unknown(self):
         self.task("a",60,BASE+timedelta(hours=2)); self.task("b",60,BASE+timedelta(hours=1))
         r=FeasibilityEngine(node_limit=0).evaluate(self.snap(BASE+timedelta(hours=2)))

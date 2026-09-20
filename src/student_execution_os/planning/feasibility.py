@@ -154,6 +154,13 @@ class FeasibilityEngine:
         )
 
     def _unsupported_reason(self, snapshot: PlanningSnapshot) -> str | None:
+        for event in snapshot.events:
+            if (
+                event.obligation.lifecycle_status is LifecycleStatus.ACTIVE
+                and event.attendance_policy is not AttendancePolicy.REQUIRED
+                and self._overlaps_horizon(event.interval, snapshot)
+            ):
+                return f"UNSUPPORTED_OPTIONAL_EVENT_POLICY:{event.obligation.id}"
         values = [
             snapshot.analysis_horizon_start,
             snapshot.analysis_horizon_end,
