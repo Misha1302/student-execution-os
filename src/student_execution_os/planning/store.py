@@ -20,8 +20,10 @@ class SQLitePlanStore:
         conn = self.repository.connection
         self.repository._require_account(plan.account_id)
         exists = conn.execute("SELECT input_hash FROM plan_snapshots WHERE id=?", (plan.id,)).fetchone()
-        if exists is not None and exists["input_hash"] != plan.input_hash:
-            raise RuntimeError("plan id collision")
+        if exists is not None:
+            persisted = self.get(plan.account_id, plan.id)
+            if persisted is None or not self._same_projection(persisted, plan):
+                raise RuntimeError("plan id collision or non-deterministic projection")
         if exists is None:
             conn.execute(
                 "INSERT INTO plan_snapshots(id,account_id,plan_revision,input_server_revision,input_hash,horizon_start,horizon_end,feasibility_status,generated_at,explanations_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -40,6 +42,21 @@ class SQLitePlanStore:
             (plan.account_id, plan.id),
         )
         conn.commit()
+
+    @staticmethod
+    def _same_projection(left: PlanSnapshot, right: PlanSnapshot) -> bool:
+        return (
+            left.id == right.id
+            and left.account_id == right.account_id
+            and left.plan_revision == right.plan_revision
+            and left.input_server_revision == right.input_server_revision
+            and left.input_hash == right.input_hash
+            and left.horizon_start == right.horizon_start
+            and left.horizon_end == right.horizon_end
+            and left.feasibility_status == right.feasibility_status
+            and left.blocks == right.blocks
+            and left.explanations == right.explanations
+        )
 
     def get(self, account_id: str, plan_id: str) -> PlanSnapshot | None:
         row = self.repository.connection.execute(

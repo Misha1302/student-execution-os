@@ -119,26 +119,39 @@ def build_next_actions(
     return tuple(actions)
 
 
-def pin_work_block(repository, *, account_id: str, plan: PlanSnapshot, block_id: str, actor: ActorCategory):
+def pin_work_block(
+    repository,
+    *,
+    account_id: str,
+    plan: PlanSnapshot,
+    block_id: str,
+    actor: ActorCategory,
+    starts_at=None,
+    ends_at=None,
+):
     block = next((b for b in plan.blocks if b.id == block_id), None)
     if block is None or block.type is not PlanBlockType.WORK or block.obligation_id is None:
         raise ValueError("only a WORK PlanBlock can be pinned")
+    if (starts_at is None) != (ends_at is None):
+        raise ValueError("dragging a WORK block requires both starts_at and ends_at")
+    target_start = block.starts_at if starts_at is None else starts_at
+    target_end = block.ends_at if ends_at is None else ends_at
     if block.source_constraint_ids:
         constraint = repository.get_time_constraint(account_id, block.source_constraint_ids[0])
         return repository.update_time_constraint(
             account_id=account_id,
             constraint_id=constraint.id,
             expected_version=constraint.version,
-            starts_at=block.starts_at,
-            ends_at=block.ends_at,
+            starts_at=target_start,
+            ends_at=target_end,
             actor=actor,
             reason="Pinned from derived PlanBlock",
         )
     return repository.create_time_constraint(
         account_id=account_id,
         type=UserTimeConstraintType.PINNED_WORK,
-        starts_at=block.starts_at,
-        ends_at=block.ends_at,
+        starts_at=target_start,
+        ends_at=target_end,
         obligation_id=block.obligation_id,
         reason="Pinned from derived PlanBlock",
         actor=actor,

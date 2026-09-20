@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import unittest
+from dataclasses import replace
 
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.domain.model import ActorCategory, HardCutoff, Importance, ObligationCategory
@@ -42,6 +43,10 @@ class PlanStoreIntegrationTests(unittest.TestCase):
             self.assertEqual(repo.get_server_revision("a"), before)
             self.assertEqual(store.get("a", plan.id), plan)
             self.assertEqual(store.get_current("a", snapshot.input_hash), plan)
+            same_projection_new_time = replace(plan, generated_at=BASE + timedelta(minutes=1))
+            store.save(same_projection_new_time)
+            with self.assertRaisesRegex(RuntimeError, "non-deterministic projection"):
+                store.save(replace(plan, explanations=("tampered",)))
 
 
 if __name__ == "__main__":

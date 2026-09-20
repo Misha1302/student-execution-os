@@ -11,6 +11,7 @@ from student_execution_os.domain.model import (
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
 from student_execution_os.planning import (
+    DisplayColour,
     PlanBlockType,
     Planner,
     PlanningPolicy,
@@ -214,6 +215,50 @@ class Pass3AcceptanceTests(unittest.TestCase):
         self.assertEqual(pin.type, UserTimeConstraintType.PINNED_WORK)
         self.assertEqual(pin.obligation_id, "t")
         self.assertEqual(block.source_constraint_ids, ())
+
+        pinned_snapshot = self.snap()
+        pinned_plan = Planner(clock=FrozenClock(BASE)).plan(pinned_snapshot)
+        pinned_block = next(
+            b for b in pinned_plan.blocks
+            if b.type is PlanBlockType.WORK and b.obligation_id == "t"
+        )
+        self.assertEqual(pinned_block.source_constraint_ids, (pin.id,))
+        moved = pin_work_block(
+            self.repo,
+            account_id="a",
+            plan=pinned_plan,
+            block_id=pinned_block.id,
+            actor=ActorCategory.USER_UI,
+            starts_at=pinned_block.starts_at + timedelta(minutes=15),
+            ends_at=pinned_block.ends_at + timedelta(minutes=15),
+        )
+        self.assertEqual(moved.id, pin.id)
+        self.assertEqual(moved.version, 2)
+        self.assertEqual(moved.interval.starts_at, pinned_block.starts_at + timedelta(minutes=15))
+        self.assertEqual(pinned_block.starts_at, pin.interval.starts_at)
+
+    def test_next_actions_are_bounded_explainable_and_display_is_separate(self):
+        for index in range(6):
+            self.task(
+                f"t{index}",
+                30,
+                HardCutoff.known(BASE + timedelta(hours=6)),
+                low=30,
+                high=30,
+                importance=Importance.CRITICAL if index == 0 else Importance.LOW,
+            )
+        snapshot = self.snap(
+            BASE + timedelta(hours=6),
+            policy=PlanningPolicy(max_next_actions=3, start_soon_lead_minutes=30),
+        )
+        outcome = PlanningService().build(snapshot, now=BASE)
+        self.assertEqual(len(outcome.next_actions), 3)
+        self.assertTrue(all(a.why_now and a.risk_if_skipped for a in outcome.next_actions))
+        first_display = next(d for d in outcome.display if d.task_id == "t0")
+        self.assertEqual(first_display.importance, Importance.CRITICAL)
+        self.assertIn(first_display.computed_risk, RiskState)
+        self.assertIn(first_display.colour, DisplayColour)
+        self.assertIsNot(first_display.importance, first_display.computed_risk)
 
     def test_at31_completion_removes_future_work_but_history_survives(self):
         task = self.task("t", 30, HardCutoff.known(BASE + timedelta(hours=3)))
