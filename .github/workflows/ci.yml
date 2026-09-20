@@ -23,9 +23,22 @@ jobs:
       - name: Restore dependencies
         run: echo "No third-party runtime dependencies."
       - name: Static compile check
-        run: python -m compileall -q src tests
+        run: |
+          set -o pipefail
+          python -m compileall -q src tests 2>&1 | tee compile.log
       - name: Unit, integration, and acceptance tests
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tee tests.log
+      - name: Upload verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-diagnostics
+          path: |
+            compile.log
+            tests.log
+          if-no-files-found: ignore
       - name: Health smoke
         run: python -m student_execution_os health
       - name: Canonical-domain SQLite smoke
