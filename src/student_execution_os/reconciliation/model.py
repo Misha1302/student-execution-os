@@ -156,13 +156,15 @@ class FieldPolicy:
             raise ValueError("unsupported freshness rule")
         require_aware(self.created_at, "created_at")
 
-    def authority_for(self, source_system_id: str, policy_context: Mapping[str, Any]) -> int:
+    def authority_for(self, source_system_id: str, policy_context: Mapping[str, Any]) -> int | None:
         if source_system_id in self.source_authority:
             return int(self.source_authority[source_system_id])
         group = policy_context.get("authority_group")
         if group is not None and f"context:{group}" in self.source_authority:
             return int(self.source_authority[f"context:{group}"])
-        return int(self.source_authority.get("*", 0))
+        if "*" in self.source_authority:
+            return int(self.source_authority["*"])
+        return None
 
 
 @dataclass(frozen=True)
