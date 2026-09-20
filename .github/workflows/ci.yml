@@ -38,3 +38,5 @@ jobs:
         run: python -m student_execution_os reconciliation-smoke
       - name: Google Calendar connector smoke
         run: python -m student_execution_os connector-smoke
+      - name: LLM action boundary smoke
+        run: python -m student_execution_os agent-smoke

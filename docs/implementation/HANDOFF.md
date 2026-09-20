@@ -5,176 +5,162 @@
 ## Identity
 
 - Repository: Misha1302/student-execution-os
-- Main baseline for Pass 5: `0a6b90f5106c21a34d1dec70acc6ba1b5fdcc8a1`
-- Main baseline content: merged Pass 4 / PR #6
+- Main baseline for Pass 6: `1d648be20ea3b0ecc416a5d3175facda72e97386`
+- Main baseline content: merged Pass 5 / PR #7
 - Normative specification: v2.1, blob `9bb0d0934b0810b198dc67fc147b384347f44887`
-- Pass 5 branch: `impl/pass-5-google-calendar-connector`
-- First pushed Pass 5 implementation checkpoint: `63feafb46b60c5c409f9e7d3f4ee98f7fa9210cb`
-- Date: 2026-09-20
+- Pass 6 branch: `impl/pass-6-llm-action-boundary`
+- Date: 2026-09-21
 
-A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after this handoff commit.
+A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after the final Pass 6 commit.
 
 ## Completed passes
 
 - [x] Pass 0 — baseline / stack / skeleton / CI
 - [x] Pass 1 — canonical local domain / persistence / concurrency
 - [x] Pass 2 — immutable PlanningSnapshot / sound tri-state feasibility
-- [x] Pass 3 — planner / risk / PlanSnapshot / next actions / first vertical-slice closure
+- [x] Pass 3 — planner / risk / PlanSnapshot / next actions
 - [x] Pass 4 — evidence / reconciliation / provenance
-- [x] Pass 5 — one real provider connector (Google Calendar Events)
-- [ ] Pass 6 — LLM extraction / authorized action boundary
+- [x] Pass 5 — one real provider connector
+- [x] Pass 6 — LLM extraction / authenticated action boundary
 - [ ] Pass 7 — travel-aware planning
 - [ ] Pass 8 — recurrence / notifications
 - [ ] Pass 9 — reliability / security / hardening
 - [ ] Pass 10 — conformance closure
 
-## Pass 5 status
+## Pass 6 status
 
-IMPLEMENTED AND LOCALLY VERIFIED. Final branch push / PR / exact-head CI must be re-read after this handoff commit.
-
-## Provider
-
-Google Calendar Events API, read-only ingestion.
-
-Provider-specific implementation follows the current Google contracts for Events.list pagination and `nextSyncToken`, incremental deleted events, HTTP 410 invalid-token recovery, `status=cancelled` tombstones, minimal deleted-event payloads, and least-privilege event read scope. Canonical references are recorded in ADR 0006.
+IMPLEMENTED AND LOCALLY VERIFIED on the current pre-commit candidate. Final branch push / PR / exact-head CI must be re-read after the final commit.
 
 ## Architecture decisions
 
-- Connector responsibility ends at trustworthy evidence ingestion.
-- Google Calendar never directly writes canonical Task/Event fields.
-- Access tokens are supplied at request time and are not persisted by the connector.
-- Persisted provider scope uses a hash-derived calendar identity rather than raw `calendar_id`.
-- SQLite schema v4 owns connector workflow state separately from canonical/evidence/planning state.
-- `connector_states.version` is the optimistic-concurrency owner of checkpoint/health transitions.
-- Every sync session captures `state_version_before`.
-- Success, failure, and invalid-cursor state transitions are compare-and-swap guarded.
-- Source availability changes occur in the same transaction as the connector-state CAS.
-- A stale concurrent success cannot overwrite a newer checkpoint.
-- A stale concurrent failure cannot regress newer health.
-- A stale concurrent HTTP 410 cannot clear a newer checkpoint.
-- Completed sync sessions are terminal/write-once; repeated finish calls cannot rewrite the recorded result.
-- Partial/failed polls do not infer source deletion from absence.
-- Terminal-page `nextSyncToken` is persisted only after the corresponding response range has been durably ingested.
-- Replayed provider revisions are idempotent through deterministic evidence IDs and ingestion receipts.
-- Explicit Google `cancelled` events become source-removal evidence; local obligations survive.
-- Deleted events that contain only `id` are accepted without fabricating provider revision time.
-- Complete full-snapshot absence may produce source-removal evidence but never local hard deletion.
-- Imported content remains data and cannot become an Actor or authorization.
+- Extraction and action capability remain separate.
+- `ToollessExtractionContext` has no canonical repository/action gateway.
+- Source content and extractor identity remain data/provenance, never mutation authority.
+- Trusted server ingestion persists typed extraction candidates as immutable observations.
+- Model-facing action requests do not contain account, principal, target authority, actor category, or intent strength.
+- `AuthenticatedPrincipal` is supplied by the server/application boundary, not asserted by the LLM.
+- Durable `ActionIntent` binds one account/principal/client/command/target/version.
+- Ambiguous or inferred destructive intent cannot execute until separate authenticated confirmation.
+- Pass 6 intentionally implements only one destructive command: `CANCEL_OBLIGATION`.
+- Canonical lifecycle mutation remains owned by `SQLiteCanonicalRepository`; the gateway reuses its in-transaction transition owner.
+- LLM mutation audit uses `ActorCategory.USER_VIA_LLM` plus server intent id.
+- Action idempotency is scoped by account + principal + client + command family + key.
+- Canonical mutation, intent consumption, and idempotency receipt are committed atomically.
+- Same-key/same-semantic request replays the original logical result without re-running the mutation.
+- Same-key/different-semantic request fails deterministically.
+- Authorization lifecycle is stored in `action_intent_history` without changing planning revision.
+- Private place context exposes opaque alias only by default; exact location needs a server-issued `ExactLocationGrant`.
+- Cross-account guessed entity/intent ids fail through account-scoped lookup.
 
 ## Implemented capabilities
 
-- Real Google Calendar Events.list HTTP transport using the Python standard library.
-- Bounded transient retry for network / 429 / 5xx failures.
-- Auth failure → connector/source UNAVAILABLE when the failing session still owns current state.
-- Provider failure → STALE without checkpoint advancement.
-- Incremental sync using persisted sync token.
-- Multi-page sync with terminal-page checkpoint discipline.
-- HTTP 410 invalid-token recovery through guarded full resync.
-- Explicit cancelled-event deletion evidence.
-- Minimal tombstone support where only event id is guaranteed.
-- Provider metadata for recurring cancelled exceptions when present.
-- Durable connector sessions, health, checkpoints, entity workflow state, and ingestion receipts.
-- Schema v4 migration and v3 → v4 preservation test.
-- Connector CLI smoke wired into Makefile and GitHub Actions.
-- AT-38, AT-39, and AT-40 promoted from deferred to executable PASS coverage.
+- SQLite schema v5.
+- Durable `action_intents`.
+- Durable scoped `action_idempotency_records`.
+- Durable `action_intent_history`.
+- Tool-less typed extraction proposal boundary.
+- Server-side immutable observation ingestion.
+- Explicit/ambiguous/inferred intent model.
+- Authenticated confirmation path for ambiguous destructive intent.
+- Scoped cancellation action with expected-version enforcement.
+- Dry-run surface for destructive action preview.
+- Idempotent replay across later entity changes and process restart.
+- Prompt-injection negative coverage.
+- Private place alias redaction with operation-bound exact-location grant.
+- Cross-account read/mutation isolation at the gateway.
+- `agent-smoke` in Makefile and GitHub Actions.
 
-## Verification checkpoint before final documentation commit
+## Acceptance coverage
 
-Observed on Fedora against the terminal pre-commit Pass 5 candidate after concurrency hardening:
+Pass 6 adds executable coverage for:
 
-- full unit/integration/acceptance suite: 118 tests PASS;
+- AT-41 optimistic concurrency;
+- AT-42 idempotency replay;
+- AT-43 idempotency misuse;
+- AT-44 restart durability;
+- AT-45 prompt injection cannot authorize;
+- AT-46 ambiguous destructive intent;
+- AT-47 explicit scoped action;
+- AT-48 private place alias;
+- AT-49 cross-account isolation.
+
+All Pass 0–5 tests remain active.
+
+## Verification checkpoint
+
+Observed on Fedora against the current Pass 6 pre-commit candidate:
+
+- full unit/integration/acceptance suite: 129 tests PASS;
 - health smoke: PASS;
 - canonical-domain smoke: PASS;
 - feasibility smoke: PASS;
 - planner smoke: PASS;
 - reconciliation smoke: PASS;
 - connector smoke: PASS;
-- first pushed checkpoint GitHub Actions run `35535245792`: SUCCESS on `63feafb46b60c5c409f9e7d3f4ee98f7fa9210cb`.
+- agent smoke: PASS;
+- schema_version=5.
 
-Do not treat those earlier results as proof for the terminal documentation/concurrency HEAD. Run `make verify` and inspect exact-head GitHub Actions after the final commit.
-
-## Acceptance coverage
-
-Pass 5 adds:
-- AT-38 — partial poll no deletion;
-- AT-39 — checkpoint atomicity;
-- AT-40 — invalid provider cursor / full resync.
-
-Additional provider/concurrency regression coverage:
-- old successful session cannot overwrite a newer checkpoint;
-- old failed session cannot downgrade newer connector health;
-- old 410 cannot clear a newer checkpoint;
-- a completed session cannot be rewritten by repeated terminal calls;
-- explicit cancelled event is evidence, not local hard delete;
-- deleted event with only `id` is supported;
-- auth failure preserves checkpoint;
-- HTTP transport maps 410 to invalid-sync-token behavior;
-- access token is carried only in the Authorization header, not the request URL.
-
-All Pass 0–4 tests remain active.
+Do not treat this pre-commit result as terminal exact-head evidence. Re-run `make verify` after the final commit and inspect GitHub Actions on the exact pushed SHA.
 
 ## Security / privacy boundary
 
-- Intended OAuth scope: `https://www.googleapis.com/auth/calendar.events.readonly`.
-- OAuth token acquisition, refresh-token persistence, consent UI, rotation, and revocation are not implemented in Pass 5.
-- Access token strings are not stored in connector SQLite state.
-- The raw Google calendar identifier is not persisted in connector workflow state.
-- Connector content cannot authorize commands or widen scopes.
-- No write-capable Google Calendar operation exists in Pass 5.
+- Imported/retrieved/connector content never mints or confirms an action intent.
+- The LLM action payload cannot self-assert principal/account/actor.
+- Exact private address/coordinates are absent from default LLM context.
+- Long-lived credentials are not introduced by Pass 6.
+- The action gateway exposes no generic arbitrary SQL/CRUD tool.
+- Only one scoped cancellation action is implemented; broader write surfaces remain deferred.
 
 ## Scope explicitly not implemented
 
-- OAuth consent / refresh-token secret store;
-- calendar discovery / multi-calendar account UI;
-- webhook/watch delivery;
-- recurrence expansion into canonical Event instances;
-- automatic canonical Event/Task creation from imported Calendar events;
-- LLM extraction/action adapter;
-- travel routing / location transitions;
+- live OpenAI/Anthropic/other LLM provider integration;
+- production authentication middleware;
+- OAuth/token storage for LLM providers;
+- generic plugin/tool marketplace;
+- broad unrestricted CRUD tools;
+- automatic LLM mutation from extracted content;
+- travel routing / route provider;
+- recurrence;
 - notifications;
-- offline replication;
-- additional provider connectors;
-- generalized plugin framework.
+- offline replication.
 
 ## Known limitations
 
-- Provider integration tests are deterministic HTTP/fixture tests plus a real REST transport; this checkpoint does not claim a live end-user OAuth account test.
-- Connector evidence currently captures a bounded event field set (status/summary/start/end/eventType plus provenance metadata); it is not a complete Calendar event mirror.
-- Recurring-event semantics remain evidence-level only until recurrence is deliberately implemented.
-- Pass 5 is read-only by design.
+- `AuthenticatedPrincipal` is an internal server/application type, not a cryptographic authentication primitive.
+- The tool-less extraction boundary is enforced by application composition/interface separation; Pass 6 does not attempt to sandbox arbitrary Python code.
+- Exact-location grants are server-side capability objects; production issuance policy belongs with the later API/auth layer.
+- Only cancellation is implemented as a destructive action family; additional commands should reuse the same server-bound intent/idempotency/version pattern rather than generalizing prematurely.
 
 ## Next pass
 
-Pass 6 — LLM extraction / authorized action boundary.
+Pass 7 — travel-aware planning.
 
-Do not start Pass 6 merely from this checkpoint. First re-read terminal Pass 5 PR/head and CI, and merge Pass 5 only with separate merge authority.
+Before Pass 7, re-read terminal Pass 6 PR/head/CI and current main. If Pass 6 is merged, start Pass 7 from the merge commit, not from the feature branch.
 
-### First concrete actions for Pass 6
+### First concrete actions for Pass 7
 
-1. Keep extraction contexts tool-less and treat imported Calendar/source content as untrusted data.
-2. Convert model extraction into typed observations/candidates, not direct canonical mutations.
-3. Keep action/tool execution in a separately authenticated and authorized boundary.
-4. Bind every mutation to authenticated actor, expected entity version, and idempotency policy.
-5. Add prompt-injection negative tests before exposing any LLM-driven mutation path.
+1. Re-read Place, LocationEffect, TravelEstimate, Journey and AT-33–37 in SPEC v2.1.
+2. Introduce canonical/private Place storage without exposing exact location to LLM context by default.
+3. Keep route provider state/evidence distinct from canonical journeys.
+4. Add route staleness/unknown-origin semantics before any commute optimization.
+5. Prove canonical MOVE Event ownership and latest-safe-departure behavior with AT-33–37.
 
 ## Inspect first
 
 - docs/SPECIFICATION.md
-- docs/adr/0005-evidence-reconciliation-provenance.md
-- docs/adr/0006-google-calendar-connector-sync.md
-- src/student_execution_os/connectors/google_calendar.py
-- src/student_execution_os/connectors/model.py
-- src/student_execution_os/connectors/repository.py
-- src/student_execution_os/persistence/migrations/004_connector_sync.sql
-- src/student_execution_os/reconciliation/repository.py
-- tests/acceptance/test_pass5_google_calendar_connector.py
-- tests/unit/test_google_calendar_transport.py
-- tests/integration/test_migration_v4.py
+- docs/adr/0007-llm-extraction-action-boundary.md
+- src/student_execution_os/agent/model.py
+- src/student_execution_os/agent/extraction.py
+- src/student_execution_os/agent/action.py
+- src/student_execution_os/persistence/migrations/005_llm_action_boundary.sql
+- src/student_execution_os/persistence/sqlite.py
+- tests/acceptance/test_pass6_llm_action_boundary.py
+- tests/integration/test_migration_v5.py
 - tests/acceptance/acceptance_registry.json
 
 ## Do not trust without fresh verification
 
-- terminal Pass 5 branch HEAD;
+- terminal Pass 6 branch HEAD;
 - final PR number/state/mergeability;
 - exact terminal-head GitHub Actions status;
 - current main;
