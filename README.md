@@ -47,9 +47,9 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-Pass 0 establishes the executable skeleton, CI, and acceptance harness. Product/domain semantics intentionally begin in later passes. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
+Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Planning/feasibility remains intentionally deferred to Pass 2. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
-## Run Pass 0 locally
+## Run the current implementation locally
 
 Requires Python 3.12+ and no third-party runtime dependencies.
 
@@ -57,17 +57,21 @@ Requires Python 3.12+ and no third-party runtime dependencies.
 make verify
 ```
 
-The executable smoke surface is:
+The executable smoke surfaces are:
 
 ```bash
 PYTHONPATH=src python -m student_execution_os health
+PYTHONPATH=src python -m student_execution_os domain-smoke
 ```
+
+`domain-smoke` creates and updates a real Task through the SQLite repository and verifies schema/version/revision behavior.
 
 ## Documentation
 
 - [Normative specification](docs/SPECIFICATION.md)
 - [Implementation prompt — first vertical slice](docs/IMPLEMENTATION_PROMPT.md)
 - [Implementation stack ADR](docs/adr/0001-implementation-stack.md)
+- [Canonical state and concurrency ADR](docs/adr/0002-canonical-state-and-concurrency.md)
 - [Current implementation handoff](docs/implementation/HANDOFF.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)

@@ -1,7 +1,18 @@
 # Acceptance test harness
 
-This directory is keyed to the normative acceptance-test identifiers in `docs/SPECIFICATION.md` v2.1.
+This directory is keyed to normative acceptance-test identifiers in `docs/SPECIFICATION.md` v2.1.
 
-Pass 0 establishes the executable harness only. `acceptance_registry.json` lists every acceptance ID required by the first implementation vertical slice (`AT-11`–`AT-32`, `AT-75`, `AT-78`–`AT-81`) and deliberately marks them `PENDING_*`; no product behavior is reported as passing merely because scaffolding exists.
+`acceptance_registry.json` keeps the first implementation vertical-slice IDs (`AT-11`–`AT-32`, `AT-75`, `AT-78`–`AT-81`) explicit and also records supplemental tests pulled forward when a pass owns their invariant.
 
-As later passes implement semantics, each acceptance ID should gain an executable test/fixture and the registry status should be updated only with observed evidence.
+Pass 1 provides executable acceptance coverage for:
+
+- `AT-11` target vs cutoff independence;
+- `AT-16` dependency cycle rejection;
+- `AT-17` penalty milestone vs final cutoff separation;
+- `AT-73` no duplicate hard-cutoff owner;
+- the domain-state half of `AT-75` (ABSENT vs UNKNOWN; risk remains Pass 3);
+- `AT-80` aggregate concurrency ownership;
+- `AT-81` unsupported flexible Event is rejected, not coerced;
+- `AT-83` half-open adjacency.
+
+A status is marked PASS only where the complete acceptance statement is implemented. Partial statuses name the remaining owning pass rather than treating scaffolding or a narrower assertion as full conformance.
