@@ -47,12 +47,28 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The repository is specification-first. Application code has not been started yet. The normative baseline is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.0.
+Pass 0 establishes the executable skeleton, CI, and acceptance harness. Product/domain semantics intentionally begin in later passes. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
+
+## Run Pass 0 locally
+
+Requires Python 3.12+ and no third-party runtime dependencies.
+
+```bash
+make verify
+```
+
+The executable smoke surface is:
+
+```bash
+PYTHONPATH=src python -m student_execution_os health
+```
 
 ## Documentation
 
 - [Normative specification](docs/SPECIFICATION.md)
 - [Implementation prompt — first vertical slice](docs/IMPLEMENTATION_PROMPT.md)
+- [Implementation stack ADR](docs/adr/0001-implementation-stack.md)
+- [Current implementation handoff](docs/implementation/HANDOFF.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
