@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS connector_sync_sessions (
     connector_id TEXT NOT NULL,
     scope TEXT NOT NULL,
     cursor_before TEXT,
+    state_version_before INTEGER NOT NULL CHECK (state_version_before >= 1),
     cursor_after TEXT,
     is_full_sync INTEGER NOT NULL CHECK (is_full_sync IN (0,1)),
     status TEXT NOT NULL CHECK (status IN ('COMPLETE','PARTIAL','FAILED')),

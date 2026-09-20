@@ -45,6 +45,7 @@ class ConnectorSyncSession:
     connector_id: str
     scope: str
     cursor_before: str | None
+    state_version_before: int
     cursor_after: str | None
     is_full_sync: bool
     status: ConnectorSessionStatus

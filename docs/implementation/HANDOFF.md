@@ -5,12 +5,11 @@
 ## Identity
 
 - Repository: Misha1302/student-execution-os
-- Main observed during Pass 4: 62f78ca1455db7ece95ea3b4cde0ad834c8bc38d
-- Normative specification: v2.1, blob 9bb0d0934b0810b198dc67fc147b384347f44887
-- Pass 4 branch: impl/pass-4-evidence-reconciliation
-- Independently verified implementation content HEAD: fd8cc222ead73c377b09c4f87f5f1f697694a551
-- Open PR: #6 — https://github.com/Misha1302/student-execution-os/pull/6
-- PR base: main
+- Main baseline for Pass 5: `0a6b90f5106c21a34d1dec70acc6ba1b5fdcc8a1`
+- Main baseline content: merged Pass 4 / PR #6
+- Normative specification: v2.1, blob `9bb0d0934b0810b198dc67fc147b384347f44887`
+- Pass 5 branch: `impl/pass-5-google-calendar-connector`
+- First pushed Pass 5 implementation checkpoint: `63feafb46b60c5c409f9e7d3f4ee98f7fa9210cb`
 - Date: 2026-09-20
 
 A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after this handoff commit.
@@ -22,175 +21,161 @@ A tracked Git file cannot contain the SHA of the commit that contains itself. Re
 - [x] Pass 2 — immutable PlanningSnapshot / sound tri-state feasibility
 - [x] Pass 3 — planner / risk / PlanSnapshot / next actions / first vertical-slice closure
 - [x] Pass 4 — evidence / reconciliation / provenance
-- [ ] Pass 5 — one real connector
+- [x] Pass 5 — one real provider connector (Google Calendar Events)
 - [ ] Pass 6 — LLM extraction / authorized action boundary
 - [ ] Pass 7 — travel-aware planning
 - [ ] Pass 8 — recurrence / notifications
 - [ ] Pass 9 — reliability / security / hardening
 - [ ] Pass 10 — conformance closure
 
-## Pass 4 status
+## Pass 5 status
 
-IMPLEMENTED, HARDENED, LOCALLY VERIFIED, PUSHED, PR OPEN.
+IMPLEMENTED AND LOCALLY VERIFIED. Final branch push / PR / exact-head CI must be re-read after this handoff commit.
 
-GitHub-hosted Actions is currently blocked before runner assignment. This checkpoint does not convert that infrastructure failure into a CI PASS.
+## Provider
+
+Google Calendar Events API, read-only ingestion.
+
+Provider-specific implementation follows the current Google contracts for Events.list pagination and `nextSyncToken`, incremental deleted events, HTTP 410 invalid-token recovery, `status=cancelled` tombstones, minimal deleted-event payloads, and least-privilege event read scope. Canonical references are recorded in ADR 0006.
 
 ## Architecture decisions
 
-- SourceSystem, SourceRecord, and Observation are immutable evidence/provenance.
-- Source, Extractor, and Actor are distinct identities. Imported content is data and never an actor or authorization.
-- SourceBinding is reversible local identity state with explicit history/versioning and one ACTIVE owner per source-native entity.
-- FieldPolicy is immutable/versioned; authority is field-specific and missing authority fails closed.
-- UserOverride is explicit local interpretation with ACTIVE / SUPERSEDED / REVOKED history.
-- Conflict is durable workflow state. Resolution by override records the exact override identifier.
-- Effective actual_cutoff state is RESOLVED / OVERRIDDEN / ABSENT / CONFLICT / UNKNOWN.
-- Unresolved truth and conservative planning projection are separate. A conservative cutoff does not erase CONFLICT.
-- Stale/unavailable source state does not imply deletion.
-- Explicit source-removal evidence triggers reconciliation and does not hard-delete the local Task.
-- actual_cutoff has one writable owner: once reconciliation materializes it, direct canonical cutoff writes are rejected; target_at remains independently user-owned.
-- Planning carries reconciliation truth/provenance while using only the permitted effective/conservative projection.
-- Material reconciliation changes invalidate planning; provenance-only evidence churn does not advance canonical server_revision or PlanningSnapshot identity.
-- Pass 4 deliberately does not introduce a provider connector, plugin framework, queue, vector store, or generalized event-sourcing framework.
+- Connector responsibility ends at trustworthy evidence ingestion.
+- Google Calendar never directly writes canonical Task/Event fields.
+- Access tokens are supplied at request time and are not persisted by the connector.
+- Persisted provider scope uses a hash-derived calendar identity rather than raw `calendar_id`.
+- SQLite schema v4 owns connector workflow state separately from canonical/evidence/planning state.
+- `connector_states.version` is the optimistic-concurrency owner of checkpoint/health transitions.
+- Every sync session captures `state_version_before`.
+- Success, failure, and invalid-cursor state transitions are compare-and-swap guarded.
+- Source availability changes occur in the same transaction as the connector-state CAS.
+- A stale concurrent success cannot overwrite a newer checkpoint.
+- A stale concurrent failure cannot regress newer health.
+- A stale concurrent HTTP 410 cannot clear a newer checkpoint.
+- Completed sync sessions are terminal/write-once; repeated finish calls cannot rewrite the recorded result.
+- Partial/failed polls do not infer source deletion from absence.
+- Terminal-page `nextSyncToken` is persisted only after the corresponding response range has been durably ingested.
+- Replayed provider revisions are idempotent through deterministic evidence IDs and ingestion receipts.
+- Explicit Google `cancelled` events become source-removal evidence; local obligations survive.
+- Deleted events that contain only `id` are accepted without fabricating provider revision time.
+- Complete full-snapshot absence may produce source-removal evidence but never local hard deletion.
+- Imported content remains data and cannot become an Actor or authorization.
 
 ## Implemented capabilities
 
-- SQLite schema migration v3 with v2 -> v3 preservation coverage.
-- Immutable source systems, source records, and typed observations.
-- Source availability history and explicit source-removal evidence.
-- Reversible source binding and false-dedup correction without evidence loss.
-- Versioned reconciliation policies with certainty and source-authority rules.
-- User override lifecycle/history and exact override provenance.
-- Durable conflict/current-history storage with resolution references.
-- Materialized effective_fields and effective_field_history.
-- Idempotent explicit user task capture.
-- Reconciliation audit trail separate from canonical revision semantics.
-- Conservative earliest-hard-cutoff conflict projection where policy permits.
-- Reconciliation-aware planning snapshots and risk handling.
-- Date-only precision retention; no invented 23:59 cutoff.
-- Inclusive/exclusive cutoff boundaries remain distinct.
-- Cross-account observation/binding integrity at the schema/repository boundary.
-- reconciliation-smoke is part of make verify and CI.
+- Real Google Calendar Events.list HTTP transport using the Python standard library.
+- Bounded transient retry for network / 429 / 5xx failures.
+- Auth failure → connector/source UNAVAILABLE when the failing session still owns current state.
+- Provider failure → STALE without checkpoint advancement.
+- Incremental sync using persisted sync token.
+- Multi-page sync with terminal-page checkpoint discipline.
+- HTTP 410 invalid-token recovery through guarded full resync.
+- Explicit cancelled-event deletion evidence.
+- Minimal tombstone support where only event id is guaranteed.
+- Provider metadata for recurring cancelled exceptions when present.
+- Durable connector sessions, health, checkpoints, entity workflow state, and ingestion receipts.
+- Schema v4 migration and v3 → v4 preservation test.
+- Connector CLI smoke wired into Makefile and GitHub Actions.
+- AT-38, AT-39, and AT-40 promoted from deferred to executable PASS coverage.
+
+## Verification checkpoint before final documentation commit
+
+Observed on Fedora against the terminal pre-commit Pass 5 candidate after concurrency hardening:
+
+- full unit/integration/acceptance suite: 118 tests PASS;
+- health smoke: PASS;
+- canonical-domain smoke: PASS;
+- feasibility smoke: PASS;
+- planner smoke: PASS;
+- reconciliation smoke: PASS;
+- connector smoke: PASS;
+- first pushed checkpoint GitHub Actions run `35535245792`: SUCCESS on `63feafb46b60c5c409f9e7d3f4ee98f7fa9210cb`.
+
+Do not treat those earlier results as proof for the terminal documentation/concurrency HEAD. Run `make verify` and inspect exact-head GitHub Actions after the final commit.
 
 ## Acceptance coverage
 
-Pass 4 executable coverage includes:
-- AT-01 through AT-10
-- AT-59
-- AT-67
-- AT-71
-- AT-72
-- AT-74
-- AT-76
-- AT-77
-- AT-82
-- AT-84
-- AT-85
+Pass 5 adds:
+- AT-38 — partial poll no deletion;
+- AT-39 — checkpoint atomicity;
+- AT-40 — invalid provider cursor / full resync.
 
-Existing Pass 0–3 acceptance/integration/unit coverage remains active.
+Additional provider/concurrency regression coverage:
+- old successful session cannot overwrite a newer checkpoint;
+- old failed session cannot downgrade newer connector health;
+- old 410 cannot clear a newer checkpoint;
+- a completed session cannot be rewritten by repeated terminal calls;
+- explicit cancelled event is evidence, not local hard delete;
+- deleted event with only `id` is supported;
+- auth failure preserves checkpoint;
+- HTTP transport maps 410 to invalid-sync-token behavior;
+- access token is carried only in the Authorization header, not the request URL.
 
-Explicitly deferred to Pass 5:
-- AT-38
-- AT-39
-- AT-40
+All Pass 0–4 tests remain active.
 
-## Verification
+## Security / privacy boundary
 
-### Independent local verifier
-
-Machine: Fedora remote verifier, fresh clone of the GitHub branch.
-
-Verified implementation content HEAD:
-`fd8cc222ead73c377b09c4f87f5f1f697694a551`
-
-Command:
-`make verify`
-
-Result:
-- static compile: PASS
-- unit/integration/acceptance: 105 tests PASS
-- health smoke: PASS
-- canonical-domain SQLite smoke: PASS, schema_version=3
-- planning feasibility smoke: PASS
-- planner vertical-slice smoke: PASS
-- evidence reconciliation smoke: PASS
-- git diff --check before commit: PASS
-
-The reconciliation smoke preserved visible CONFLICT truth while producing a separately labelled conservative planning cutoff.
-
-### GitHub Actions
-
-Exact implementation HEAD push run:
-- run: 35526504345
-- URL: https://github.com/Misha1302/student-execution-os/actions/runs/35526504345
-- head: fd8cc222ead73c377b09c4f87f5f1f697694a551
-- conclusion reported by GitHub: FAILURE
-- verify job runner_id: 0
-- runner_name: empty
-- steps: []
-
-Exact implementation HEAD pull_request run:
-- run: 35526575110
-- URL: https://github.com/Misha1302/student-execution-os/actions/runs/35526575110
-- head: fd8cc222ead73c377b09c4f87f5f1f697694a551
-- conclusion reported by GitHub: FAILURE
-- verify job runner_id: 0
-- runner_name: empty
-- steps: []
-
-Interpretation: both Actions jobs failed before any runner/step execution. GitHub check-run annotations state: `The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the Billing & plans section in your settings`. This is an account billing/spending-limit blocker, not a workflow or Python-test failure. The independent local verification above is the executable verification evidence for this checkpoint.
+- Intended OAuth scope: `https://www.googleapis.com/auth/calendar.events.readonly`.
+- OAuth token acquisition, refresh-token persistence, consent UI, rotation, and revocation are not implemented in Pass 5.
+- Access token strings are not stored in connector SQLite state.
+- The raw Google calendar identifier is not persisted in connector workflow state.
+- Connector content cannot authorize commands or widen scopes.
+- No write-capable Google Calendar operation exists in Pass 5.
 
 ## Scope explicitly not implemented
 
-- real provider connector
-- connector cursor/retry/deletion polling implementation beyond the Pass-4 evidence contracts
-- LLM extraction/action adapter
-- travel routing / location transitions
-- recurrence
-- notifications
-- offline replication
-- production-scale optimizer
-- generalized event-sourcing or plugin framework
+- OAuth consent / refresh-token secret store;
+- calendar discovery / multi-calendar account UI;
+- webhook/watch delivery;
+- recurrence expansion into canonical Event instances;
+- automatic canonical Event/Task creation from imported Calendar events;
+- LLM extraction/action adapter;
+- travel routing / location transitions;
+- notifications;
+- offline replication;
+- additional provider connectors;
+- generalized plugin framework.
 
-## Known limitations / operational blockers
+## Known limitations
 
-- GitHub Actions check-run annotations identify the blocker as failed recent account payments or an Actions spending limit that needs to be increased; GitHub therefore does not assign the ubuntu-latest runner.
-- A normal hosted-CI PASS is therefore still absent even though the same branch passes the full repository verification suite on the independent Fedora verifier.
-- Reconciliation is intentionally implemented first for the critical actual_cutoff field rather than as a speculative generic reconciliation engine for every future field.
-- Pass 5 must consume these contracts rather than bypass them with connector-owned canonical writes.
+- Provider integration tests are deterministic HTTP/fixture tests plus a real REST transport; this checkpoint does not claim a live end-user OAuth account test.
+- Connector evidence currently captures a bounded event field set (status/summary/start/end/eventType plus provenance metadata); it is not a complete Calendar event mirror.
+- Recurring-event semantics remain evidence-level only until recurrence is deliberately implemented.
+- Pass 5 is read-only by design.
 
 ## Next pass
 
-Pass 5 — one real connector.
+Pass 6 — LLM extraction / authorized action boundary.
 
-Do not start Pass 5 from this checkpoint until Pass 4 review/merge authority is explicitly given.
+Do not start Pass 6 merely from this checkpoint. First re-read terminal Pass 5 PR/head and CI, and merge Pass 5 only with separate merge authority.
 
-### First concrete actions for Pass 5
+### First concrete actions for Pass 6
 
-1. Re-read current main, PR #6, terminal Pass 4 head/CI, this handoff, and SPEC v2.1.
-2. Choose one provider and implement its adapter against SourceSystem / SourceRecord / Observation / SourceBinding boundaries.
-3. Preserve source revision ordering, staleness/unavailability, explicit deletion evidence, retry/idempotency, and account scoping.
-4. Never let imported content become an actor or authorization.
-5. Complete AT-38 / AT-39 / AT-40 and provider-specific integration fixtures before expanding connector breadth.
+1. Keep extraction contexts tool-less and treat imported Calendar/source content as untrusted data.
+2. Convert model extraction into typed observations/candidates, not direct canonical mutations.
+3. Keep action/tool execution in a separately authenticated and authorized boundary.
+4. Bind every mutation to authenticated actor, expected entity version, and idempotency policy.
+5. Add prompt-injection negative tests before exposing any LLM-driven mutation path.
 
 ## Inspect first
 
 - docs/SPECIFICATION.md
 - docs/adr/0005-evidence-reconciliation-provenance.md
-- src/student_execution_os/reconciliation/model.py
+- docs/adr/0006-google-calendar-connector-sync.md
+- src/student_execution_os/connectors/google_calendar.py
+- src/student_execution_os/connectors/model.py
+- src/student_execution_os/connectors/repository.py
+- src/student_execution_os/persistence/migrations/004_connector_sync.sql
 - src/student_execution_os/reconciliation/repository.py
-- src/student_execution_os/persistence/migrations/003_evidence_reconciliation.sql
-- src/student_execution_os/persistence/sqlite.py
-- src/student_execution_os/planning/state.py
-- src/student_execution_os/planning/snapshot.py
-- src/student_execution_os/planning/risk.py
-- tests/acceptance/test_pass4_reconciliation.py
+- tests/acceptance/test_pass5_google_calendar_connector.py
+- tests/unit/test_google_calendar_transport.py
+- tests/integration/test_migration_v4.py
 - tests/acceptance/acceptance_registry.json
-- tests/integration/test_migration_v3.py
 
 ## Do not trust without fresh verification
 
-- terminal Pass 4 branch HEAD after this handoff commit
-- final CI status on terminal HEAD
-- PR #6 state / mergeability
-- current main
-- any PASS statement in this checkpoint without matching executable evidence
+- terminal Pass 5 branch HEAD;
+- final PR number/state/mergeability;
+- exact terminal-head GitHub Actions status;
+- current main;
+- any PASS statement in this checkpoint without matching executable evidence.

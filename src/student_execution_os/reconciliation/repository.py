@@ -191,6 +191,40 @@ class SQLiteReconciliationRepository:
             created_at=_dt(row["created_at"]),
         )
 
+    def _mark_source_availability_in_tx(
+        self,
+        conn,
+        *,
+        account_id: str,
+        source_system_id: str,
+        status: SourceAvailability,
+        actor: ActorCategory,
+    ) -> None:
+        if conn.execute(
+            "SELECT 1 FROM source_systems WHERE account_id=? AND id=?",
+            (account_id, source_system_id),
+        ).fetchone() is None:
+            raise EntityNotFound("source system not found")
+        conn.execute(
+            "INSERT INTO source_status_history(account_id,source_system_id,status,recorded_at,actor_category) "
+            "VALUES (?,?,?,?,?)",
+            (
+                account_id,
+                source_system_id,
+                status.value,
+                _iso(self.clock.now()),
+                actor.value,
+            ),
+        )
+        self._audit(
+            conn,
+            account_id=account_id,
+            action="SOURCE_AVAILABILITY",
+            actor=actor,
+            entity_ref=source_system_id,
+            payload={"status": status.value},
+        )
+
     def mark_source_availability(
         self,
         *,
@@ -201,17 +235,12 @@ class SQLiteReconciliationRepository:
     ) -> None:
         self.get_source_system(account_id, source_system_id)
         with self.canonical._tx() as conn:
-            conn.execute(
-                "INSERT INTO source_status_history(account_id,source_system_id,status,recorded_at,actor_category) VALUES (?,?,?,?,?)",
-                (account_id, source_system_id, status.value, _iso(self.clock.now()), actor.value),
-            )
-            self._audit(
+            self._mark_source_availability_in_tx(
                 conn,
                 account_id=account_id,
-                action="SOURCE_AVAILABILITY",
+                source_system_id=source_system_id,
+                status=status,
                 actor=actor,
-                entity_ref=source_system_id,
-                payload={"status": status.value},
             )
 
     def current_source_availability(self, account_id: str, source_system_id: str) -> SourceAvailability:

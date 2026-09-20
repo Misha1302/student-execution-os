@@ -7,6 +7,9 @@ from student_execution_os.domain.model import ActorCategory
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 from student_execution_os.reconciliation import SourceAvailability, SQLiteReconciliationRepository
 
+_CONCURRENT_SYNC_CONFLICT = "CONCURRENT_SYNC_CONFLICT"
+
+
 from .model import (
     ConnectorEntityState,
     ConnectorHealth,
@@ -115,15 +118,16 @@ class SQLiteConnectorRepository:
         with self.canonical._tx() as conn:
             conn.execute(
                 "INSERT INTO connector_sync_sessions("
-                "id,account_id,connector_id,scope,cursor_before,cursor_after,is_full_sync,status,"
-                "started_at,completed_at,error_code,page_count,record_count,deletion_count"
-                ") VALUES (?,?,?,?,?,?,?,'FAILED',?,NULL,NULL,0,0,0)",
+                "id,account_id,connector_id,scope,cursor_before,state_version_before,cursor_after,"
+                "is_full_sync,status,started_at,completed_at,error_code,page_count,record_count,deletion_count"
+                ") VALUES (?,?,?,?,?,?,?,?,'FAILED',?,NULL,NULL,0,0,0)",
                 (
                     sid,
                     account_id,
                     connector_id,
                     state.scope,
                     state.checkpoint,
+                    state.version,
                     None,
                     1 if is_full_sync else 0,
                     _iso(now),
@@ -144,6 +148,7 @@ class SQLiteConnectorRepository:
             connector_id=row["connector_id"],
             scope=row["scope"],
             cursor_before=row["cursor_before"],
+            state_version_before=int(row["state_version_before"]),
             cursor_after=row["cursor_after"],
             is_full_sync=bool(row["is_full_sync"]),
             status=ConnectorSessionStatus(row["status"]),
@@ -176,41 +181,58 @@ class SQLiteConnectorRepository:
         if not checkpoint_after:
             raise ValidationError("complete connector session requires a checkpoint")
         session = self.get_session(account_id, session_id)
+        state = self.get_state(account_id, session.connector_id)
         now = self.clock.now()
         with self.canonical._tx() as conn:
-            conn.execute(
-                "UPDATE connector_sync_sessions SET status='COMPLETE',cursor_after=?,completed_at=?,"
-                "error_code=NULL,page_count=?,record_count=?,deletion_count=? "
-                "WHERE account_id=? AND id=?",
-                (
-                    checkpoint_after,
-                    _iso(now),
-                    page_count,
-                    record_count,
-                    deletion_count,
-                    account_id,
-                    session_id,
-                ),
-            )
-            conn.execute(
+            update = conn.execute(
                 "UPDATE connector_states SET checkpoint=?,health_status='CURRENT',"
                 "last_successful_complete_sync_at=?,latest_failure_reason=NULL,updated_at=?,"
-                "version=version+1 WHERE account_id=? AND id=?",
+                "version=version+1 WHERE account_id=? AND id=? AND version=?",
                 (
                     checkpoint_after,
                     _iso(now),
                     _iso(now),
                     account_id,
                     session.connector_id,
+                    session.state_version_before,
                 ),
             )
-        source_id = self.get_state(account_id, session.connector_id).source_system_id
-        self.reconciliation.mark_source_availability(
-            account_id=account_id,
-            source_system_id=source_id,
-            status=SourceAvailability.ACTIVE,
-            actor=ActorCategory.CONNECTOR_INGESTION,
-        )
+            if update.rowcount == 1:
+                conn.execute(
+                    "UPDATE connector_sync_sessions SET status='COMPLETE',cursor_after=?,completed_at=?,"
+                    "error_code=NULL,page_count=?,record_count=?,deletion_count=? "
+                    "WHERE account_id=? AND id=? AND completed_at IS NULL",
+                    (
+                        checkpoint_after,
+                        _iso(now),
+                        page_count,
+                        record_count,
+                        deletion_count,
+                        account_id,
+                        session_id,
+                    ),
+                )
+                self.reconciliation._mark_source_availability_in_tx(
+                    conn,
+                    account_id=account_id,
+                    source_system_id=state.source_system_id,
+                    status=SourceAvailability.ACTIVE,
+                    actor=ActorCategory.CONNECTOR_INGESTION,
+                )
+            else:
+                conn.execute(
+                    "UPDATE connector_sync_sessions SET status='FAILED',completed_at=?,error_code=?,"
+                    "page_count=?,record_count=?,deletion_count=? WHERE account_id=? AND id=? AND completed_at IS NULL",
+                    (
+                        _iso(now),
+                        _CONCURRENT_SYNC_CONFLICT,
+                        page_count,
+                        record_count,
+                        deletion_count,
+                        account_id,
+                        session_id,
+                    ),
+                )
         return self.get_session(account_id, session_id)
 
     def finish_failure(
@@ -225,21 +247,21 @@ class SQLiteConnectorRepository:
         unavailable: bool,
     ) -> ConnectorSyncSession:
         session = self.get_session(account_id, session_id)
+        state = self.get_state(account_id, session.connector_id)
         status = (
             ConnectorSessionStatus.PARTIAL
             if page_count > 0
             else ConnectorSessionStatus.FAILED
         )
-        health = (
-            ConnectorHealth.UNAVAILABLE
-            if unavailable
-            else ConnectorHealth.STALE
+        health = ConnectorHealth.UNAVAILABLE if unavailable else ConnectorHealth.STALE
+        source_status = (
+            SourceAvailability.UNAVAILABLE if unavailable else SourceAvailability.STALE
         )
         now = self.clock.now()
         with self.canonical._tx() as conn:
             conn.execute(
                 "UPDATE connector_sync_sessions SET status=?,completed_at=?,error_code=?,"
-                "page_count=?,record_count=?,deletion_count=? WHERE account_id=? AND id=?",
+                "page_count=?,record_count=?,deletion_count=? WHERE account_id=? AND id=? AND completed_at IS NULL",
                 (
                     status.value,
                     _iso(now),
@@ -251,53 +273,75 @@ class SQLiteConnectorRepository:
                     session_id,
                 ),
             )
-            conn.execute(
+            update = conn.execute(
                 "UPDATE connector_states SET health_status=?,latest_failure_reason=?,updated_at=?,"
-                "version=version+1 WHERE account_id=? AND id=?",
+                "version=version+1 WHERE account_id=? AND id=? AND version=?",
                 (
                     health.value,
                     error_code,
                     _iso(now),
                     account_id,
                     session.connector_id,
+                    session.state_version_before,
                 ),
             )
-        source_status = (
-            SourceAvailability.UNAVAILABLE
-            if unavailable
-            else SourceAvailability.STALE
-        )
-        source_id = self.get_state(account_id, session.connector_id).source_system_id
-        self.reconciliation.mark_source_availability(
-            account_id=account_id,
-            source_system_id=source_id,
-            status=source_status,
-            actor=ActorCategory.CONNECTOR_INGESTION,
-        )
+            if update.rowcount == 1:
+                self.reconciliation._mark_source_availability_in_tx(
+                    conn,
+                    account_id=account_id,
+                    source_system_id=state.source_system_id,
+                    status=source_status,
+                    actor=ActorCategory.CONNECTOR_INGESTION,
+                )
         return self.get_session(account_id, session_id)
 
-    def invalidate_checkpoint(
+    def finish_invalid_cursor(
         self,
         *,
         account_id: str,
-        connector_id: str,
-        reason: str,
-    ) -> None:
-        state = self.get_state(account_id, connector_id)
+        session_id: str,
+        page_count: int,
+        record_count: int,
+        deletion_count: int,
+    ) -> tuple[ConnectorSyncSession, bool]:
+        session = self.get_session(account_id, session_id)
+        state = self.get_state(account_id, session.connector_id)
         now = self.clock.now()
         with self.canonical._tx() as conn:
-            conn.execute(
+            update = conn.execute(
                 "UPDATE connector_states SET checkpoint=NULL,health_status='STALE',"
-                "latest_failure_reason=?,updated_at=?,version=version+1 "
-                "WHERE account_id=? AND id=?",
-                (reason, _iso(now), account_id, connector_id),
+                "latest_failure_reason='INVALID_SYNC_TOKEN',updated_at=?,version=version+1 "
+                "WHERE account_id=? AND id=? AND version=?",
+                (
+                    _iso(now),
+                    account_id,
+                    session.connector_id,
+                    session.state_version_before,
+                ),
             )
-        self.reconciliation.mark_source_availability(
-            account_id=account_id,
-            source_system_id=state.source_system_id,
-            status=SourceAvailability.STALE,
-            actor=ActorCategory.CONNECTOR_INGESTION,
-        )
+            invalidated = update.rowcount == 1
+            conn.execute(
+                "UPDATE connector_sync_sessions SET status='FAILED',completed_at=?,error_code=?,"
+                "page_count=?,record_count=?,deletion_count=? WHERE account_id=? AND id=? AND completed_at IS NULL",
+                (
+                    _iso(now),
+                    "INVALID_SYNC_TOKEN" if invalidated else _CONCURRENT_SYNC_CONFLICT,
+                    page_count,
+                    record_count,
+                    deletion_count,
+                    account_id,
+                    session_id,
+                ),
+            )
+            if invalidated:
+                self.reconciliation._mark_source_availability_in_tx(
+                    conn,
+                    account_id=account_id,
+                    source_system_id=state.source_system_id,
+                    status=SourceAvailability.STALE,
+                    actor=ActorCategory.CONNECTOR_INGESTION,
+                )
+        return self.get_session(account_id, session_id), invalidated
 
     def has_receipt(
         self,

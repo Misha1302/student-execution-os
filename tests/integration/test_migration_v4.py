@@ -67,6 +67,13 @@ class MigrationV4IntegrationTests(unittest.TestCase):
                 self.assertIn("connector_sync_sessions", tables)
                 self.assertIn("connector_entities", tables)
                 self.assertIn("connector_ingestion_receipts", tables)
+                session_columns = {
+                    row["name"]
+                    for row in repo.connection.execute(
+                        "PRAGMA table_info(connector_sync_sessions)"
+                    ).fetchall()
+                }
+                self.assertIn("state_version_before", session_columns)
 
 
 if __name__ == "__main__":

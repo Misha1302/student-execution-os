@@ -199,11 +199,6 @@ class GoogleCalendarConnector:
                 full_resync_performed=False,
             )
         except GoogleCalendarInvalidSyncToken:
-            self.connectors.invalidate_checkpoint(
-                account_id=self.account_id,
-                connector_id=self.connector_id,
-                reason=GoogleCalendarInvalidSyncToken.code,
-            )
             return self._run_once(
                 sync_token=None,
                 full_sync=True,
@@ -290,16 +285,25 @@ class GoogleCalendarConnector:
                 full_resync_performed=full_resync_performed,
             )
         except GoogleCalendarInvalidSyncToken:
-            self.connectors.finish_failure(
+            failed, invalidated = self.connectors.finish_invalid_cursor(
                 account_id=self.account_id,
                 session_id=session.id,
-                error_code=GoogleCalendarInvalidSyncToken.code,
                 page_count=page_count,
                 record_count=record_count,
                 deletion_count=deletion_count,
-                unavailable=False,
             )
-            raise
+            if invalidated:
+                raise
+            state = self.connectors.get_state(
+                self.account_id,
+                self.connector_id,
+            )
+            return ConnectorSyncResult(
+                session=failed,
+                checkpoint=state.checkpoint,
+                health=state.health,
+                full_resync_performed=full_resync_performed,
+            )
         except GoogleCalendarAuthError:
             failed = self.connectors.finish_failure(
                 account_id=self.account_id,

@@ -328,6 +328,178 @@ class Pass5GoogleCalendarConnectorTests(unittest.TestCase):
             LifecycleStatus.ACTIVE,
         )
 
+    def test_concurrent_older_success_cannot_overwrite_newer_checkpoint(self):
+        self.seed_complete_sync("e1")
+        older = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="older-success",
+        )
+        newer = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="newer-success",
+        )
+        self.assertEqual(older.state_version_before, newer.state_version_before)
+
+        completed = self.connector_repo.finish_complete(
+            account_id="a",
+            session_id=newer.id,
+            checkpoint_after="token-2",
+            page_count=1,
+            record_count=0,
+            deletion_count=0,
+        )
+        stale = self.connector_repo.finish_complete(
+            account_id="a",
+            session_id=older.id,
+            checkpoint_after="stale-token",
+            page_count=1,
+            record_count=0,
+            deletion_count=0,
+        )
+
+        state = self.connector_repo.get_state("a", "gcal")
+        self.assertEqual(completed.status, ConnectorSessionStatus.COMPLETE)
+        self.assertEqual(stale.status, ConnectorSessionStatus.FAILED)
+        self.assertEqual(stale.error_code, "CONCURRENT_SYNC_CONFLICT")
+        self.assertEqual(state.checkpoint, "token-2")
+        self.assertEqual(state.health, ConnectorHealth.CURRENT)
+        self.assertEqual(
+            self.recon.current_source_availability("a", "gcal-source"),
+            SourceAvailability.ACTIVE,
+        )
+
+    def test_concurrent_older_failure_cannot_regress_newer_health(self):
+        self.seed_complete_sync("e1")
+        older = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="older-failure",
+        )
+        newer = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="newer-complete",
+        )
+        self.connector_repo.finish_complete(
+            account_id="a",
+            session_id=newer.id,
+            checkpoint_after="token-2",
+            page_count=1,
+            record_count=0,
+            deletion_count=0,
+        )
+        failed = self.connector_repo.finish_failure(
+            account_id="a",
+            session_id=older.id,
+            error_code="AUTH_UNAVAILABLE",
+            page_count=0,
+            record_count=0,
+            deletion_count=0,
+            unavailable=True,
+        )
+
+        state = self.connector_repo.get_state("a", "gcal")
+        self.assertEqual(failed.status, ConnectorSessionStatus.FAILED)
+        self.assertEqual(state.checkpoint, "token-2")
+        self.assertEqual(state.health, ConnectorHealth.CURRENT)
+        self.assertIsNone(state.latest_failure_reason)
+        self.assertEqual(
+            self.recon.current_source_availability("a", "gcal-source"),
+            SourceAvailability.ACTIVE,
+        )
+
+    def test_concurrent_stale_410_cannot_clear_newer_checkpoint(self):
+        self.seed_complete_sync("e1")
+        older = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="older-410",
+        )
+        newer = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="newer-after-410",
+        )
+        self.connector_repo.finish_complete(
+            account_id="a",
+            session_id=newer.id,
+            checkpoint_after="token-2",
+            page_count=1,
+            record_count=0,
+            deletion_count=0,
+        )
+        failed, invalidated = self.connector_repo.finish_invalid_cursor(
+            account_id="a",
+            session_id=older.id,
+            page_count=0,
+            record_count=0,
+            deletion_count=0,
+        )
+
+        state = self.connector_repo.get_state("a", "gcal")
+        self.assertFalse(invalidated)
+        self.assertEqual(failed.status, ConnectorSessionStatus.FAILED)
+        self.assertEqual(failed.error_code, "CONCURRENT_SYNC_CONFLICT")
+        self.assertEqual(state.checkpoint, "token-2")
+        self.assertEqual(state.health, ConnectorHealth.CURRENT)
+        self.assertEqual(
+            self.recon.current_source_availability("a", "gcal-source"),
+            SourceAvailability.ACTIVE,
+        )
+
+    def test_completed_session_is_terminal_and_repeat_finish_is_idempotent(self):
+        self.seed_complete_sync("e1")
+        session = self.connector_repo.start_session(
+            account_id="a",
+            connector_id="gcal",
+            is_full_sync=False,
+            session_id="terminal-session",
+        )
+        completed = self.connector_repo.finish_complete(
+            account_id="a",
+            session_id=session.id,
+            checkpoint_after="token-2",
+            page_count=1,
+            record_count=0,
+            deletion_count=0,
+        )
+        replayed_failure = self.connector_repo.finish_failure(
+            account_id="a",
+            session_id=session.id,
+            error_code="AUTH_UNAVAILABLE",
+            page_count=0,
+            record_count=0,
+            deletion_count=0,
+            unavailable=True,
+        )
+        replayed_complete = self.connector_repo.finish_complete(
+            account_id="a",
+            session_id=session.id,
+            checkpoint_after="stale-token",
+            page_count=1,
+            record_count=0,
+            deletion_count=0,
+        )
+
+        state = self.connector_repo.get_state("a", "gcal")
+        self.assertEqual(completed.status, ConnectorSessionStatus.COMPLETE)
+        self.assertEqual(replayed_failure.status, ConnectorSessionStatus.COMPLETE)
+        self.assertEqual(replayed_complete.status, ConnectorSessionStatus.COMPLETE)
+        self.assertEqual(state.checkpoint, "token-2")
+        self.assertEqual(state.health, ConnectorHealth.CURRENT)
+        self.assertEqual(
+            self.recon.current_source_availability("a", "gcal-source"),
+            SourceAvailability.ACTIVE,
+        )
+
     def test_auth_failure_marks_unavailable_without_advancing_checkpoint(self):
         self.seed_complete_sync("e1")
         from student_execution_os.connectors import GoogleCalendarAuthError
