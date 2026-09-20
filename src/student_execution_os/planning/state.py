@@ -17,6 +17,8 @@ from student_execution_os.domain.model import (
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt
 from student_execution_os.planning.model import CutoffReconciliationContext
 from student_execution_os.reconciliation.repository import SQLiteReconciliationRepository
+from student_execution_os.travel.projection import TravelProjectionBuilder
+from student_execution_os.travel.repository import SQLiteTravelRepository
 
 
 class PlanningStateSource(Protocol):
@@ -27,6 +29,7 @@ class PlanningStateSource(Protocol):
     def list_milestones(self, account_id: str) -> list[Milestone]: ...
     def list_time_constraints(self, account_id: str) -> list[UserTimeConstraint]: ...
     def list_cutoff_reconciliation(self, account_id: str) -> list[CutoffReconciliationContext]: ...
+    def build_travel_projection(self, account_id: str, events: tuple[Event, ...], analysis_horizon_start, analysis_horizon_end): ...
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,22 @@ class SQLitePlanningStateSource:
             "SELECT id FROM obligations WHERE account_id=? AND kind='EVENT' ORDER BY id", (account_id,)
         ).fetchall()
         return [self.repository.get_event(account_id, row["id"]) for row in rows]
+
+    def build_travel_projection(
+        self,
+        account_id: str,
+        events: tuple[Event, ...],
+        analysis_horizon_start,
+        analysis_horizon_end,
+    ):
+        travel = SQLiteTravelRepository(self.repository)
+        return TravelProjectionBuilder(travel).build(
+            account_id=account_id,
+            events=events,
+            current_location=travel.current_location(account_id),
+            analysis_horizon_start=analysis_horizon_start,
+            analysis_horizon_end=analysis_horizon_end,
+        )
 
     def list_dependencies(self, account_id: str) -> list[Dependency]:
         self.repository._require_account(account_id)

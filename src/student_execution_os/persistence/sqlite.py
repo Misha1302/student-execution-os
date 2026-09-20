@@ -49,7 +49,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _UNSET = object()
 
 
@@ -99,6 +99,7 @@ class SQLiteCanonicalRepository:
             (3, Path(__file__).with_name("migrations") / "003_evidence_reconciliation.sql"),
             (4, Path(__file__).with_name("migrations") / "004_connector_sync.sql"),
             (5, Path(__file__).with_name("migrations") / "005_llm_action_boundary.sql"),
+            (6, Path(__file__).with_name("migrations") / "006_travel_planning.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -554,6 +555,33 @@ class SQLiteCanonicalRepository:
     def reopen_obligation(self, **kwargs) -> Obligation:
         return self._transition_obligation(action="REOPEN", **kwargs)
 
+    def _validate_location_effect_places(
+        self,
+        *,
+        account_id: str,
+        location_effect: LocationEffect,
+    ) -> None:
+        place_ids: tuple[str, ...]
+        if location_effect.kind is LocationEffectKind.STAY:
+            assert location_effect.destination_place_id is not None
+            place_ids = (location_effect.destination_place_id,)
+        elif location_effect.kind is LocationEffectKind.MOVE:
+            assert location_effect.origin_place_id is not None
+            assert location_effect.destination_place_id is not None
+            place_ids = (
+                location_effect.origin_place_id,
+                location_effect.destination_place_id,
+            )
+        else:
+            return
+        for place_id in place_ids:
+            row = self.connection.execute(
+                "SELECT 1 FROM places WHERE account_id=? AND id=?",
+                (account_id, place_id),
+            ).fetchone()
+            if row is None:
+                raise EntityNotFound("location effect place not found")
+
     def create_event(
         self,
         *,
@@ -567,6 +595,7 @@ class SQLiteCanonicalRepository:
         importance: Importance = Importance.NORMAL,
         attendance_policy: AttendancePolicy = AttendancePolicy.REQUIRED,
         location_effect: LocationEffect | None = None,
+        arrival_requirement_minutes: int = 0,
         description: str | None = None,
         obligation_id: str | None = None,
     ) -> Event:
@@ -584,6 +613,7 @@ class SQLiteCanonicalRepository:
             importance=importance,
             attendance_policy=attendance_policy,
             location_effect=location_effect,
+            arrival_requirement_minutes=arrival_requirement_minutes,
             description=description,
             obligation_id=obligation_id,
         )
@@ -600,9 +630,16 @@ class SQLiteCanonicalRepository:
         importance: Importance = Importance.NORMAL,
         attendance_policy: AttendancePolicy = AttendancePolicy.REQUIRED,
         location_effect: LocationEffect | None = None,
+        arrival_requirement_minutes: int = 0,
         description: str | None = None,
         obligation_id: str | None = None,
     ) -> Event:
+        self._require_account(account_id)
+        resolved_location_effect = location_effect or LocationEffect()
+        self._validate_location_effect_places(
+            account_id=account_id,
+            location_effect=resolved_location_effect,
+        )
         obligation = self._new_obligation(
             account_id=account_id,
             kind=ObligationKind.EVENT,
@@ -617,13 +654,14 @@ class SQLiteCanonicalRepository:
             time_semantics=EventTimeSemantics.FIXED_INTERVAL,
             interval=HalfOpenInterval(starts_at, ends_at),
             attendance_policy=attendance_policy,
-            location_effect=location_effect or LocationEffect(),
+            location_effect=resolved_location_effect,
+            arrival_requirement_minutes=arrival_requirement_minutes,
         )
         with self._tx() as conn:
             self._require_account(account_id)
             self._insert_obligation(conn, obligation)
             conn.execute(
-                "INSERT INTO events(obligation_id,time_semantics,starts_at,ends_at,attendance_policy,location_effect_kind,origin_place_id,destination_place_id) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO events(obligation_id,time_semantics,starts_at,ends_at,attendance_policy,location_effect_kind,origin_place_id,destination_place_id,arrival_requirement_minutes) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     obligation.id,
                     event.time_semantics.value,
@@ -633,6 +671,7 @@ class SQLiteCanonicalRepository:
                     event.location_effect.kind.value,
                     event.location_effect.origin_place_id,
                     event.location_effect.destination_place_id,
+                    event.arrival_requirement_minutes,
                 ),
             )
             self._record_change(
@@ -687,7 +726,7 @@ class SQLiteCanonicalRepository:
 
     def get_event(self, account_id: str, obligation_id: str) -> Event:
         row = self.connection.execute(
-            "SELECT o.*,e.time_semantics,e.starts_at,e.ends_at,e.attendance_policy,e.location_effect_kind,e.origin_place_id,e.destination_place_id "
+            "SELECT o.*,e.time_semantics,e.starts_at,e.ends_at,e.attendance_policy,e.location_effect_kind,e.origin_place_id,e.destination_place_id,e.arrival_requirement_minutes "
             "FROM obligations o JOIN events e ON e.obligation_id=o.id WHERE o.account_id=? AND o.id=? AND o.kind='EVENT'",
             (account_id, obligation_id),
         ).fetchone()
@@ -703,6 +742,7 @@ class SQLiteCanonicalRepository:
                 row["origin_place_id"],
                 row["destination_place_id"],
             ),
+            arrival_requirement_minutes=int(row["arrival_requirement_minutes"]),
         )
 
     def create_project(

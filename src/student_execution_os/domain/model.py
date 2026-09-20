@@ -279,12 +279,15 @@ class Event:
     interval: HalfOpenInterval
     attendance_policy: AttendancePolicy
     location_effect: LocationEffect
+    arrival_requirement_minutes: int = 0
 
     def __post_init__(self) -> None:
         if self.obligation.kind is not ObligationKind.EVENT:
             raise ValidationError("Event requires EVENT obligation kind")
         if self.time_semantics is not EventTimeSemantics.FIXED_INTERVAL:
             raise ValidationError("Event model currently materializes FIXED_INTERVAL only")
+        if self.arrival_requirement_minutes < 0:
+            raise ValidationError("arrival requirement cannot be negative")
 
 
 class ProjectStatus(StrEnum):

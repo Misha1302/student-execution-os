@@ -5,13 +5,13 @@
 ## Identity
 
 - Repository: Misha1302/student-execution-os
-- Main baseline for Pass 6: `1d648be20ea3b0ecc416a5d3175facda72e97386`
-- Main baseline content: merged Pass 5 / PR #7
+- Main baseline for Pass 7: `306f060ecbe5b4fca91c51c4a77c1fc770dcd0d5`
+- Main baseline content: merged Pass 6 / PR #8
 - Normative specification: v2.1, blob `9bb0d0934b0810b198dc67fc147b384347f44887`
-- Pass 6 branch: `impl/pass-6-llm-action-boundary`
+- Pass 7 branch: `impl/pass-7-travel-aware-planning`
 - Date: 2026-09-21
 
-A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after the final Pass 6 commit.
+A tracked Git file cannot contain the SHA of the commit that contains itself. Re-read the terminal branch/PR head after the final Pass 7 commit.
 
 ## Completed passes
 
@@ -22,75 +22,66 @@ A tracked Git file cannot contain the SHA of the commit that contains itself. Re
 - [x] Pass 4 — evidence / reconciliation / provenance
 - [x] Pass 5 — one real provider connector
 - [x] Pass 6 — LLM extraction / authenticated action boundary
-- [ ] Pass 7 — travel-aware planning
+- [x] Pass 7 — travel-aware planning
 - [ ] Pass 8 — recurrence / notifications
 - [ ] Pass 9 — reliability / security / hardening
 - [ ] Pass 10 — conformance closure
 
-## Pass 6 status
+## Pass 7 status
 
 IMPLEMENTED AND LOCALLY VERIFIED on the current pre-commit candidate. Final branch push / PR / exact-head CI must be re-read after the final commit.
 
-## Architecture decisions
+## Ownership model
 
-- Extraction and action capability remain separate.
-- `ToollessExtractionContext` has no canonical repository/action gateway.
-- Source content and extractor identity remain data/provenance, never mutation authority.
-- Trusted server ingestion persists typed extraction candidates as immutable observations.
-- Model-facing action requests do not contain account, principal, target authority, actor category, or intent strength.
-- `AuthenticatedPrincipal` is supplied by the server/application boundary, not asserted by the LLM.
-- Durable `ActionIntent` binds one account/principal/client/command/target/version.
-- Ambiguous or inferred destructive intent cannot execute until separate authenticated confirmation.
-- Pass 6 intentionally implements only one destructive command: `CANCEL_OBLIGATION`.
-- Canonical lifecycle mutation remains owned by `SQLiteCanonicalRepository`; the gateway reuses its in-transaction transition owner.
-- LLM mutation audit uses `ActorCategory.USER_VIA_LLM` plus server intent id.
-- Action idempotency is scoped by account + principal + client + command family + key.
-- Canonical mutation, intent consumption, and idempotency receipt are committed atomically.
-- Same-key/same-semantic request replays the original logical result without re-running the mutation.
-- Same-key/different-semantic request fails deterministically.
-- Authorization lifecycle is stored in `action_intent_history` without changing planning revision.
-- Private place context exposes opaque alias only by default; exact location needs a server-issued `ExactLocationGrant`.
-- Cross-account guessed entity/intent ids fail through account-scoped lookup.
+- `Place` is account-scoped canonical local place identity/private metadata.
+- `CurrentLocationContext` is planning-input history with KNOWN / ASSUMED / UNKNOWN state.
+- `TravelEstimate` is source-backed route evidence/history, not a canonical journey.
+- New location-bearing Events validate origin/destination Place ids inside the same account and fail closed on missing/cross-account references.
+- A booked train/flight remains a canonical Event with `LocationEffectKind.MOVE`.
+- Ordinary commute and arrival buffers are derived `PlanBlock` state.
+- Replanning cannot delete or rewrite a canonical MOVE Event merely because adjacency changes.
+- There is no automatic “return home/origin” rule.
 
 ## Implemented capabilities
 
-- SQLite schema v5.
-- Durable `action_intents`.
-- Durable scoped `action_idempotency_records`.
-- Durable `action_intent_history`.
-- Tool-less typed extraction proposal boundary.
-- Server-side immutable observation ingestion.
-- Explicit/ambiguous/inferred intent model.
-- Authenticated confirmation path for ambiguous destructive intent.
-- Scoped cancellation action with expected-version enforcement.
-- Dry-run surface for destructive action preview.
-- Idempotent replay across later entity changes and process restart.
-- Prompt-injection negative coverage.
-- Private place alias redaction with operation-bound exact-location grant.
-- Cross-account read/mutation isolation at the gateway.
-- `agent-smoke` in Makefile and GitHub Actions.
+- SQLite schema v6.
+- Canonical/account-scoped `places`.
+- Version-affecting current-location history.
+- Route estimate history with expected/safe durations, source, revision, calculated_at, expires_at.
+- `Event.arrival_requirement_minutes`.
+- `TravelProjectionBuilder` over required chronological location-bearing Events.
+- Location semantics for NONE / REMOTE / STAY / MOVE.
+- Exact latest-safe-departure calculation from safe travel + arrival requirement.
+- Fail-closed unknown-origin behavior.
+- Fail-closed missing/stale route behavior.
+- Derived TRAVEL_TRANSITION and BUFFER PlanBlocks.
+- Persisted `travel_estimate_id` provenance on travel blocks.
+- Travel projection included in PlanningSnapshot input hash.
+- Travel and arrival buffer inserted into hard occupancy before feasibility search.
+- Independent witness validation rejects WORK overlapping travel.
+- Required travel conflicts can produce INFEASIBLE; routing uncertainty produces UNKNOWN.
+- Existing WORK / EVENT_PROJECTION plan history survives schema migration.
+- `travel-smoke` wired into Makefile and GitHub Actions.
 
 ## Acceptance coverage
 
-Pass 6 adds executable coverage for:
+Pass 7 adds executable coverage for:
 
-- AT-41 optimistic concurrency;
-- AT-42 idempotency replay;
-- AT-43 idempotency misuse;
-- AT-44 restart durability;
-- AT-45 prompt injection cannot authorize;
-- AT-46 ambiguous destructive intent;
-- AT-47 explicit scoped action;
-- AT-48 private place alias;
-- AT-49 cross-account isolation.
+- AT-33 — HSE travel: 45m safe route + 10m arrival → 15:05 latest safe departure;
+- AT-34 — unknown feasibility-material origin → UNKNOWN, no fabricated origin;
+- AT-35 — actual next location is used; no fake return;
+- AT-36 — booked MOVE journey stays canonical through replanning;
+- AT-37 — expired route estimate cannot silently retain safe status.
 
-All Pass 0–5 tests remain active.
+Additional adversarial coverage proves travel occupancy can make an otherwise feasible day INFEASIBLE.
+
+All Pass 0–6 tests remain active.
 
 ## Verification checkpoint
 
-Observed on Fedora against the current Pass 6 pre-commit candidate:
+Observed on Fedora against the current Pass 7 pre-doc/pre-commit candidate:
 
-- full unit/integration/acceptance suite: 129 tests PASS;
+- full unit/integration/acceptance suite: 137 tests PASS;
 - health smoke: PASS;
 - canonical-domain smoke: PASS;
 - feasibility smoke: PASS;
@@ -98,69 +89,95 @@ Observed on Fedora against the current Pass 6 pre-commit candidate:
 - reconciliation smoke: PASS;
 - connector smoke: PASS;
 - agent smoke: PASS;
-- schema_version=5.
+- travel smoke: PASS;
+- travel smoke latest safe departure: 2026-09-21T15:05:00+00:00;
+- schema_version=6;
+- `git diff --check`: PASS.
 
 Do not treat this pre-commit result as terminal exact-head evidence. Re-run `make verify` after the final commit and inspect GitHub Actions on the exact pushed SHA.
 
-## Security / privacy boundary
+## Migration contract
 
-- Imported/retrieved/connector content never mints or confirms an action intent.
-- The LLM action payload cannot self-assert principal/account/actor.
-- Exact private address/coordinates are absent from default LLM context.
-- Long-lived credentials are not introduced by Pass 6.
-- The action gateway exposes no generic arbitrary SQL/CRUD tool.
-- Only one scoped cancellation action is implemented; broader write surfaces remain deferred.
+Migration 006:
 
-## Scope explicitly not implemented
+- adds `events.arrival_requirement_minutes`;
+- adds places/current_location_context/travel_estimates;
+- rebuilds `plan_blocks` to admit WORK / EVENT_PROJECTION / TRAVEL_TRANSITION / BUFFER;
+- adds `travel_estimate_id`;
+- copies pre-v6 PlanBlock rows unchanged with null travel estimate provenance.
 
-- live OpenAI/Anthropic/other LLM provider integration;
-- production authentication middleware;
-- OAuth/token storage for LLM providers;
-- generic plugin/tool marketplace;
-- broad unrestricted CRUD tools;
-- automatic LLM mutation from extracted content;
-- travel routing / route provider;
+Executable migration test verifies v5 → v6 preservation of old plan history.
+
+## Failure semantics
+
+Travel-related `UNKNOWN` includes:
+
+- unknown current origin for a feasibility-material location-bound Event;
+- missing route estimate;
+- only stale/expired route evidence.
+
+Travel-related `INFEASIBLE` includes:
+
+- required departure before the analysis horizon/current planning boundary;
+- travel/buffer overlap with another required Event;
+- travel/buffer conflict with hard user constraints;
+- exact no-witness result after travel hard occupancy is included.
+
+Search-budget exhaustion remains UNKNOWN.
+
+## Scope intentionally not implemented
+
+- live maps/routing provider connector;
+- traffic webhooks/live refresh;
+- multi-modal optimizer;
+- learned route distributions;
+- task-level place requirements;
+- automatic commute canonicalization;
 - recurrence;
 - notifications;
 - offline replication.
 
 ## Known limitations
 
-- `AuthenticatedPrincipal` is an internal server/application type, not a cryptographic authentication primitive.
-- The tool-less extraction boundary is enforced by application composition/interface separation; Pass 6 does not attempt to sandbox arbitrary Python code.
-- Exact-location grants are server-side capability objects; production issuance policy belongs with the later API/auth layer.
-- Only cancellation is implemented as a destructive action family; additional commands should reuse the same server-bound intent/idempotency/version pattern rather than generalizing prematurely.
+- Route estimate freshness is evaluated against the planning capture time; Pass 7 does not model predictive live-traffic confidence at future departure time.
+- Current-location history is explicit server planning state; no device geolocation ingestion exists yet.
+- Place privacy in LLM context remains governed by the Pass 6 exact-location grant boundary.
+- Arrival requirements are implemented for derived travel transitions; Pass 7 does not introduce a general unrelated pre-event buffer subsystem.
+- Real route-provider availability/fallback selection policy remains a later connector concern.
 
 ## Next pass
 
-Pass 7 — travel-aware planning.
+Pass 8 — recurrence / notifications.
 
-Before Pass 7, re-read terminal Pass 6 PR/head/CI and current main. If Pass 6 is merged, start Pass 7 from the merge commit, not from the feature branch.
+Before Pass 8, re-read terminal Pass 7 PR/head/CI and current main. Start Pass 8 from the merge commit if Pass 7 is merged.
 
-### First concrete actions for Pass 7
+### First concrete actions for Pass 8
 
-1. Re-read Place, LocationEffect, TravelEstimate, Journey and AT-33–37 in SPEC v2.1.
-2. Introduce canonical/private Place storage without exposing exact location to LLM context by default.
-3. Keep route provider state/evidence distinct from canonical journeys.
-4. Add route staleness/unknown-origin semantics before any commute optimization.
-5. Prove canonical MOVE Event ownership and latest-safe-departure behavior with AT-33–37.
+1. Re-read recurrence/notification owners and acceptance identifiers from SPEC v2.1.
+2. Keep recurrence rules canonical while generated occurrences remain derived/materialized with stable identity.
+3. Separate notification policy/state from Task/Event truth.
+4. Define missed/delivered notification idempotency before provider delivery.
+5. Preserve existing PlanningSnapshot/travel semantics when recurrence expands Events.
 
 ## Inspect first
 
 - docs/SPECIFICATION.md
-- docs/adr/0007-llm-extraction-action-boundary.md
-- src/student_execution_os/agent/model.py
-- src/student_execution_os/agent/extraction.py
-- src/student_execution_os/agent/action.py
-- src/student_execution_os/persistence/migrations/005_llm_action_boundary.sql
-- src/student_execution_os/persistence/sqlite.py
-- tests/acceptance/test_pass6_llm_action_boundary.py
-- tests/integration/test_migration_v5.py
+- docs/adr/0008-travel-aware-planning.md
+- src/student_execution_os/travel/model.py
+- src/student_execution_os/travel/repository.py
+- src/student_execution_os/travel/projection.py
+- src/student_execution_os/persistence/migrations/006_travel_planning.sql
+- src/student_execution_os/planning/snapshot.py
+- src/student_execution_os/planning/feasibility.py
+- src/student_execution_os/planning/witness.py
+- src/student_execution_os/planning/planner.py
+- tests/acceptance/test_pass7_travel_planning.py
+- tests/integration/test_migration_v6.py
 - tests/acceptance/acceptance_registry.json
 
 ## Do not trust without fresh verification
 
-- terminal Pass 6 branch HEAD;
+- terminal Pass 7 branch HEAD;
 - final PR number/state/mergeability;
 - exact terminal-head GitHub Actions status;
 - current main;

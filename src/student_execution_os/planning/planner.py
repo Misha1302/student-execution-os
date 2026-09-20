@@ -69,6 +69,53 @@ class Planner:
                     explanation="REQUIRED_EVENT_PROJECTION",
                 ))
 
+        for transition in snapshot.travel_projection.transitions:
+            if (
+                transition.travel_interval.starts_at < snapshot.plan_output_horizon_end
+                and snapshot.plan_output_horizon_start < transition.travel_interval.ends_at
+            ):
+                blocks.append(
+                    PlanBlock(
+                        starts_at=transition.travel_interval.starts_at,
+                        ends_at=transition.travel_interval.ends_at,
+                        id=_block_id(
+                            snapshot.input_hash,
+                            "TRAVEL",
+                            transition.target_event_id,
+                            transition.travel_estimate_id,
+                            transition.travel_interval.starts_at,
+                            transition.travel_interval.ends_at,
+                        ),
+                        type=PlanBlockType.TRAVEL_TRANSITION,
+                        source_event_id=transition.target_event_id,
+                        travel_estimate_id=transition.travel_estimate_id,
+                        explanation="REQUIRED_TRAVEL_TRANSITION",
+                    )
+                )
+            if (
+                transition.arrival_buffer is not None
+                and transition.arrival_buffer.starts_at < snapshot.plan_output_horizon_end
+                and snapshot.plan_output_horizon_start < transition.arrival_buffer.ends_at
+            ):
+                blocks.append(
+                    PlanBlock(
+                        starts_at=transition.arrival_buffer.starts_at,
+                        ends_at=transition.arrival_buffer.ends_at,
+                        id=_block_id(
+                            snapshot.input_hash,
+                            "BUFFER",
+                            transition.target_event_id,
+                            transition.travel_estimate_id,
+                            transition.arrival_buffer.starts_at,
+                            transition.arrival_buffer.ends_at,
+                        ),
+                        type=PlanBlockType.BUFFER,
+                        source_event_id=transition.target_event_id,
+                        travel_estimate_id=transition.travel_estimate_id,
+                        explanation="HARD_ARRIVAL_BUFFER",
+                    )
+                )
+
         if feasibility.status is FeasibilityStatus.FEASIBLE:
             pins = [c for c in snapshot.constraints if c.type is UserTimeConstraintType.PINNED_WORK]
             for placement in feasibility.witness:

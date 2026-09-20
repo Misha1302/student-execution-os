@@ -14,6 +14,7 @@ from student_execution_os.domain.model import (
     UserTimeConstraint,
     require_aware,
 )
+from student_execution_os.travel.model import TravelProjection
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class PlanningSnapshot:
     milestones: tuple[Milestone, ...]
     policy: PlanningPolicy
     cutoff_reconciliation: tuple[CutoffReconciliationContext, ...] = ()
+    travel_projection: TravelProjection = TravelProjection()
 
     def __post_init__(self) -> None:
         for name in (
@@ -134,6 +136,8 @@ class FeasibilityResult:
 class PlanBlockType(StrEnum):
     WORK = "WORK"
     EVENT_PROJECTION = "EVENT_PROJECTION"
+    TRAVEL_TRANSITION = "TRAVEL_TRANSITION"
+    BUFFER = "BUFFER"
 
 
 @dataclass(frozen=True, order=True)
@@ -145,6 +149,7 @@ class PlanBlock:
     obligation_id: str | None = None
     source_constraint_ids: tuple[str, ...] = ()
     source_event_id: str | None = None
+    travel_estimate_id: str | None = None
     explanation: str = ""
 
     def __post_init__(self) -> None:
@@ -156,6 +161,11 @@ class PlanBlock:
             raise ValueError("WORK PlanBlock requires obligation_id")
         if self.type is PlanBlockType.EVENT_PROJECTION and not self.source_event_id:
             raise ValueError("EVENT_PROJECTION requires source_event_id")
+        if self.type is PlanBlockType.TRAVEL_TRANSITION:
+            if not self.source_event_id or not self.travel_estimate_id:
+                raise ValueError("TRAVEL_TRANSITION requires event and travel estimate")
+        if self.type is PlanBlockType.BUFFER and not self.source_event_id:
+            raise ValueError("BUFFER requires source_event_id")
 
     @property
     def duration_minutes(self) -> int:
