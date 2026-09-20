@@ -340,12 +340,90 @@ class Pass4ReconciliationTests(unittest.TestCase):
         self.make_task("task-2")
         first = self.bind("s1", "e1", "task")
         second = self.bind("s1", "e1", "task-2")
-        self.assertEqual(self.recon.get_binding("a", first.id).state, BindingState.DETACHED)
+        first_after = self.recon.get_binding("a", first.id)
+        self.assertEqual(first_after.state, BindingState.DETACHED)
+        self.assertEqual(first_after.version, 2)
         self.assertEqual(self.recon.get_binding("a", second.id).state, BindingState.ACTIVE)
+        self.assertEqual(self.recon.get_binding("a", second.id).version, 1)
         active = self.repo.connection.execute(
             "SELECT count(*) FROM source_bindings WHERE account_id='a' AND source_system_id='s1' AND external_entity_id='e1' AND state='ACTIVE'"
         ).fetchone()[0]
         self.assertEqual(active, 1)
+
+    def test_unspecified_source_authority_fails_closed(self):
+        untrusted = self.recon.create_source_system(
+            account_id="a",
+            source_system_id="unspecified",
+            kind="UNKNOWN_SOURCE",
+            policy_context={"authority_group": "not-declared"},
+            actor=ActorCategory.SYSTEM,
+        )
+        self.bind("unspecified", "e-unknown")
+        self.observe_cutoff(
+            "unspecified",
+            "e-unknown",
+            HardCutoff.known(BASE + timedelta(hours=2)),
+            revision_order=1,
+        )
+        effective = self.recon.get_effective_cutoff("a", "task")
+        self.assertEqual(effective.state, EffectiveFieldState.UNKNOWN)
+        self.assertIsNone(effective.planning_projection)
+
+    def test_semantically_equivalent_newer_evidence_updates_provenance_without_plan_invalidation(self):
+        self.bind("s1", "e1")
+        cutoff = HardCutoff.known(BASE + timedelta(hours=3))
+        first = self.observe_cutoff("s1", "e1", cutoff, revision_order=1)
+        before = self.snapshot()
+        revision_before = self.repo.get_server_revision("a")
+        second = self.observe_cutoff("s1", "e1", cutoff, revision_order=2)
+        after = self.snapshot()
+        effective = self.recon.get_effective_cutoff("a", "task")
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(effective.evidence_ids, (second.id,))
+        self.assertEqual(self.repo.get_server_revision("a"), revision_before)
+        self.assertEqual(before.input_hash, after.input_hash)
+
+    def test_observation_binding_is_account_scoped_even_at_schema_boundary(self):
+        self.repo.create_account("b")
+        task_b = self.repo.create_task(
+            account_id="b",
+            obligation_id="task-b",
+            title="b",
+            category=ObligationCategory.GENERAL,
+            importance=Importance.NORMAL,
+            estimated_total_effort_minutes=30,
+            remaining_effort_minutes=30,
+            splittable=False,
+            actual_cutoff=HardCutoff.unknown(),
+            actor=ActorCategory.USER_UI,
+        )
+        recon_b = SQLiteReconciliationRepository(self.repo)
+        recon_b.create_source_system(
+            account_id="b",
+            source_system_id="source-b",
+            kind="B",
+            actor=ActorCategory.SYSTEM,
+        )
+        binding_b = recon_b.bind_source_entity(
+            account_id="b",
+            source_system_id="source-b",
+            external_entity_id="external-b",
+            local_entity_id=task_b.obligation.id,
+            match_decision_id="match-b",
+            actor=ActorCategory.RECONCILER,
+        )
+        record_a = self.recon.add_source_record(
+            account_id="a",
+            source_system_id="s1",
+            external_entity_id="e1",
+            actor=ActorCategory.CONNECTOR_INGESTION,
+        )
+        with self.assertRaises(Exception):
+            self.repo.connection.execute(
+                "INSERT INTO observations(id,account_id,source_record_id,binding_id,field_path,value_type,value_json,extraction_certainty,observed_at,extractor_id) "
+                "VALUES ('cross-account','a',?,?,'title_hint','STRING','\"x\"','HIGH',?,'extractor')",
+                (record_a.id, binding_b.id, BASE.isoformat()),
+            )
 
     def test_at72_override_supersession_and_revoke_preserve_history(self):
         self.bind("s1", "e1")
