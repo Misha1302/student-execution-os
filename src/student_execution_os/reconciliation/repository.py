@@ -1194,6 +1194,20 @@ class SQLiteReconciliationRepository:
         if current_sig == signature:
             return effective
 
+        material_keys = (
+            "state",
+            "value_type",
+            "value",
+            "policy_version",
+            "planning_projection",
+            "admissible_cutoffs",
+            "reason",
+        )
+        material_changed = (
+            current_sig is None
+            or any(current_sig[key] != signature[key] for key in material_keys)
+        )
+
         now = _iso(self.clock.now())
         conn.execute(
             "INSERT INTO effective_fields(account_id,entity_ref,field_path,state,selected_value_type,selected_value_json,evidence_ids_json,policy_version,planning_projection_json,admissible_cutoffs_json,reason,conflict_id,updated_at) "
@@ -1247,20 +1261,21 @@ class SQLiteReconciliationRepository:
                 now,
             ),
         )
-        self.canonical._record_change(
-            conn,
-            account_id=account_id,
-            entity_type="EFFECTIVE_FIELD",
-            entity_id=f"{entity_ref}:{_FIELD_ACTUAL_CUTOFF}",
-            action="RECONCILE_FIELD",
-            actor=actor,
-            payload={
-                "state": effective.state.value,
-                "policy_version": effective.policy_version,
-                "evidence_ids": list(effective.evidence_ids),
-                "conflict_id": conflict_id,
-            },
-        )
+        if material_changed:
+            self.canonical._record_change(
+                conn,
+                account_id=account_id,
+                entity_type="EFFECTIVE_FIELD",
+                entity_id=f"{entity_ref}:{_FIELD_ACTUAL_CUTOFF}",
+                action="RECONCILE_FIELD",
+                actor=actor,
+                payload={
+                    "state": effective.state.value,
+                    "policy_version": effective.policy_version,
+                    "evidence_ids": list(effective.evidence_ids),
+                    "conflict_id": conflict_id,
+                },
+            )
         return effective
 
     def reconcile_cutoff(
