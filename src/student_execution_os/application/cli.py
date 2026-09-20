@@ -13,6 +13,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
+from student_execution_os.planning import FeasibilityEngine, SQLitePlanningStateSource, build_planning_snapshot
 
 
 def health_payload() -> dict[str, str]:
@@ -63,6 +64,36 @@ def run_domain_smoke(database: str) -> dict[str, object]:
         }
 
 
+def run_feasibility_smoke() -> dict[str, object]:
+    """Exercise repository -> immutable snapshot -> sound feasibility witness."""
+    account_id = "feasibility-smoke-account"
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    with SQLiteCanonicalRepository(":memory:") as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        repo.create_task(
+            account_id=account_id, obligation_id="smoke-task", title="Pass 2 smoke task",
+            category=ObligationCategory.GENERAL, importance=Importance.NORMAL,
+            estimated_total_effort_minutes=60, remaining_effort_minutes=60, splittable=True,
+            min_chunk_minutes=30, max_chunk_minutes=60, actionable_from=now, target_at=None,
+            actual_cutoff=HardCutoff.known(now + timedelta(hours=2)), actor=ActorCategory.SYSTEM,
+        )
+        snapshot = build_planning_snapshot(
+            SQLitePlanningStateSource(repo), account_id=account_id, analysis_horizon_start=now,
+            analysis_horizon_end=now + timedelta(hours=2),
+            plan_output_horizon_end=now + timedelta(hours=1),
+        )
+        result = FeasibilityEngine().evaluate(snapshot)
+        return {
+            "status": result.status.value,
+            "input_hash": snapshot.input_hash,
+            "server_revision": snapshot.input_server_revision,
+            "witness_blocks": len(result.witness),
+            "analysis_horizon_end": snapshot.analysis_horizon_end.isoformat(),
+            "display_horizon_end": snapshot.plan_output_horizon_end.isoformat(),
+        }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="student-execution-os",
@@ -75,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
         "domain-smoke", help="Exercise Pass 1 canonical-domain persistence in SQLite."
     )
     domain_smoke.add_argument("--database", default=":memory:")
+    subparsers.add_parser("feasibility-smoke", help="Exercise Pass 2 snapshot and feasibility core.")
     return parser
 
 
@@ -88,5 +120,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "domain-smoke":
         print(json.dumps(run_domain_smoke(args.database), sort_keys=True))
+        return 0
+    if args.command == "feasibility-smoke":
+        print(json.dumps(run_feasibility_smoke(), sort_keys=True))
         return 0
     raise AssertionError(f"Unhandled command: {args.command}")

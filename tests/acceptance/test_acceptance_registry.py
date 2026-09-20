@@ -24,10 +24,8 @@ class AcceptanceRegistryTests(unittest.TestCase):
     def test_pass1_supplemental_acceptance_ids_are_tracked(self) -> None:
         path = Path(__file__).with_name("acceptance_registry.json")
         registry = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(
-            registry["supplemental_pass_tests"],
-            {"AT-73": "PASS_PASS1_DOMAIN", "AT-83": "PASS_PASS1_DOMAIN"},
-        )
+        self.assertEqual(registry["supplemental_pass_tests"]["AT-73"], "PASS_PASS1_DOMAIN")
+        self.assertEqual(registry["supplemental_pass_tests"]["AT-83"], "PASS_PASS1_DOMAIN")
 
 
 if __name__ == "__main__":
