@@ -317,6 +317,13 @@ class SQLiteReconciliationRepository:
         observation_id: str | None = None,
     ) -> Observation:
         source_record = self.get_source_record(account_id, source_record_id)
+        if binding_id is not None:
+            binding = self.get_binding(account_id, binding_id)
+            if (
+                binding.source_system_id != source_record.source_system_id
+                or binding.external_entity_id != source_record.external_entity_id
+            ):
+                raise ValidationError("observation binding must match its source-native entity")
         if not extractor_id:
             raise ValidationError("extractor_id is required and is distinct from source/actor")
         encoded = _encode_value(value_type, value)
@@ -438,7 +445,7 @@ class SQLiteReconciliationRepository:
                     return self.get_binding(account_id, row["id"])
                 old_entities.append(row["local_entity_id"])
                 conn.execute(
-                    "UPDATE source_bindings SET state='DETACHED',updated_at=? WHERE id=?",
+                    "UPDATE source_bindings SET state='DETACHED',updated_at=?,version=version+1 WHERE id=?",
                     (_iso(now), row["id"]),
                 )
                 conn.execute(
@@ -452,8 +459,8 @@ class SQLiteReconciliationRepository:
                     ),
                 )
             conn.execute(
-                "INSERT INTO source_bindings(id,account_id,source_system_id,external_entity_id,local_entity_id,state,match_decision_id,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,'ACTIVE',?,?,?)",
+                "INSERT INTO source_bindings(id,account_id,source_system_id,external_entity_id,local_entity_id,state,match_decision_id,created_at,updated_at,version) "
+                "VALUES (?,?,?,?,?,'ACTIVE',?,?,?,1)",
                 (
                     new_id,
                     account_id,
@@ -505,6 +512,7 @@ class SQLiteReconciliationRepository:
             local_entity_id=row["local_entity_id"],
             state=BindingState(row["state"]),
             match_decision_id=row["match_decision_id"],
+            version=int(row["version"]),
         )
 
     def list_bindings(self, account_id: str) -> list[SourceBinding]:
@@ -1405,7 +1413,7 @@ class SQLiteReconciliationRepository:
         if active is not None:
             with self.canonical._tx() as conn:
                 conn.execute(
-                    "UPDATE source_bindings SET state='SOURCE_REMOVED',updated_at=? WHERE id=?",
+                    "UPDATE source_bindings SET state='SOURCE_REMOVED',updated_at=?,version=version+1 WHERE id=?",
                     (_iso(self.clock.now()), active["id"]),
                 )
                 conn.execute(
