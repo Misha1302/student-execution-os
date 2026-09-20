@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Student Execution OS</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <a class="brand" href="#today" data-nav="today" aria-label="Student Execution OS home">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span class="brand-copy"><strong>Execution OS</strong><small>trusted planning</small></span>
+      </a>
+      <nav class="nav-list">
+        <button data-nav="today" class="nav-item active"><span aria-hidden="true">◉</span><span>Today</span></button>
+        <button data-nav="plan" class="nav-item"><span aria-hidden="true">⌁</span><span>Plan</span></button>
+        <button data-nav="tasks" class="nav-item"><span aria-hidden="true">✓</span><span>Tasks</span></button>
+        <button data-nav="calendar" class="nav-item"><span aria-hidden="true">□</span><span>Calendar</span></button>
+        <button data-nav="evidence" class="nav-item"><span aria-hidden="true">≋</span><span>Evidence</span></button>
+        <button data-nav="places" class="nav-item"><span aria-hidden="true">⌖</span><span>Places</span></button>
+        <button data-nav="ask" class="nav-item"><span aria-hidden="true">✦</span><span>Ask</span></button>
+      </nav>
+      <div class="sidebar-spacer"></div>
+      <button data-nav="settings" class="nav-item"><span aria-hidden="true">⚙</span><span>Settings</span></button>
+      <div id="revision-chip" class="revision-chip" aria-live="polite">connecting…</div>
+    </aside>
+
+    <section class="workspace-shell">
+      <header class="topbar">
+        <div>
+          <p id="eyebrow" class="eyebrow">Execution cockpit</p>
+          <h1 id="page-title">Today</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="sync-indicator" class="top-status">Server-bound account</span>
+          <button id="refresh-button" class="icon-button" aria-label="Refresh current view" title="Refresh">↻</button>
+        </div>
+      </header>
+      <main id="workspace" class="workspace" tabindex="-1" aria-live="polite"></main>
+    </section>
+
+    <aside id="inspector" class="inspector" aria-label="Inspector" aria-hidden="true">
+      <div class="inspector-head">
+        <div><p class="eyebrow">Inspector</p><h2 id="inspector-title">Details</h2></div>
+        <button id="inspector-close" class="icon-button" aria-label="Close inspector">×</button>
+      </div>
+      <div id="inspector-body" class="inspector-body"></div>
+    </aside>
+  </div>
+
+  <nav class="mobile-nav" aria-label="Mobile navigation">
+    <button data-nav="today" class="active">Today</button>
+    <button data-nav="plan">Plan</button>
+    <button data-nav="tasks">Tasks</button>
+    <button data-nav="more">More</button>
+  </nav>
+
+  <dialog id="modal" class="modal">
+    <form method="dialog" class="modal-frame" id="modal-form">
+      <div class="modal-head">
+        <div><p id="modal-eyebrow" class="eyebrow"></p><h2 id="modal-title"></h2></div>
+        <button value="cancel" class="icon-button" aria-label="Close dialog">×</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+      <div id="modal-actions" class="modal-actions"></div>
+    </form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
