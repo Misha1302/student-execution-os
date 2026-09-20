@@ -103,6 +103,10 @@ class SourceRecord:
     def __post_init__(self) -> None:
         if not self.id or not self.account_id or not self.source_system_id:
             raise ValueError("source record identity/account/source are required")
+        if self.source_revision is not None and self.revision_order is None:
+            raise ValueError("source_revision requires an explicit comparable revision_order in Pass 4")
+        if self.revision_order is not None and self.revision_order < 0:
+            raise ValueError("revision_order cannot be negative")
         require_aware(self.observed_at, "observed_at")
 
 
@@ -134,6 +138,11 @@ class SourceBinding:
     local_entity_id: str
     state: BindingState
     match_decision_id: str
+    version: int
+
+    def __post_init__(self) -> None:
+        if self.version < 1:
+            raise ValueError("source binding version must be >= 1")
 
 
 @dataclass(frozen=True)
