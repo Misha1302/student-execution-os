@@ -86,9 +86,7 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
             {
                 "task_id": item.task_id,
                 "truth_state": item.truth_state,
-                "evidence_ids": list(item.evidence_ids),
                 "policy_version": item.policy_version,
-                "conflict_id": item.conflict_id,
                 "admissible_cutoffs": [
                     {
                         "state": cutoff.state.value,
