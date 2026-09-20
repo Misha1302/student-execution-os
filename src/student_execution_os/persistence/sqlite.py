@@ -49,7 +49,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _UNSET = object()
 
 
@@ -93,7 +93,10 @@ class SQLiteCanonicalRepository:
             row[0]
             for row in self.connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         }
-        migrations = [(1, Path(__file__).with_name("migrations") / "001_initial.sql")]
+        migrations = [
+            (1, Path(__file__).with_name("migrations") / "001_initial.sql"),
+            (2, Path(__file__).with_name("migrations") / "002_planning_projection.sql"),
+        ]
         for version, path in migrations:
             if version in applied:
                 continue
@@ -260,6 +263,10 @@ class SQLiteCanonicalRepository:
         actionable_from: datetime | None = None,
         target_at: datetime | None = None,
         obligation_id: str | None = None,
+        estimated_total_effort_low_minutes: int | None = None,
+        estimated_total_effort_high_minutes: int | None = None,
+        remaining_effort_low_minutes: int | None = None,
+        remaining_effort_high_minutes: int | None = None,
     ) -> Task:
         obligation = self._new_obligation(
             account_id=account_id,
@@ -280,13 +287,17 @@ class SQLiteCanonicalRepository:
             actionable_from=actionable_from,
             actual_cutoff=actual_cutoff,
             target_at=target_at,
+            estimated_total_effort_low_minutes=estimated_total_effort_low_minutes,
+            estimated_total_effort_high_minutes=estimated_total_effort_high_minutes,
+            remaining_effort_low_minutes=remaining_effort_low_minutes,
+            remaining_effort_high_minutes=remaining_effort_high_minutes,
         )
         with self._tx() as conn:
             self._require_account(account_id)
             self._insert_obligation(conn, obligation)
             conn.execute(
-                "INSERT INTO tasks(obligation_id,estimated_total_effort_minutes,remaining_effort_minutes,splittable,min_chunk_minutes,max_chunk_minutes,actionable_from,cutoff_state,actual_cutoff_at,cutoff_boundary,cutoff_precision,target_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO tasks(obligation_id,estimated_total_effort_minutes,remaining_effort_minutes,splittable,min_chunk_minutes,max_chunk_minutes,actionable_from,cutoff_state,actual_cutoff_at,cutoff_boundary,cutoff_precision,target_at,estimated_total_effort_low_minutes,estimated_total_effort_high_minutes,remaining_effort_low_minutes,remaining_effort_high_minutes) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     obligation.id,
                     task.estimated_total_effort_minutes,
@@ -300,6 +311,10 @@ class SQLiteCanonicalRepository:
                     task.actual_cutoff.boundary.value if task.actual_cutoff.boundary else None,
                     task.actual_cutoff.precision.value if task.actual_cutoff.precision else None,
                     _iso(task.target_at),
+                    task.estimated_total_effort_low_minutes,
+                    task.estimated_total_effort_high_minutes,
+                    task.remaining_effort_low_minutes,
+                    task.remaining_effort_high_minutes,
                 ),
             )
             self._record_change(
@@ -314,7 +329,7 @@ class SQLiteCanonicalRepository:
 
     def get_task(self, account_id: str, obligation_id: str) -> Task:
         row = self.connection.execute(
-            "SELECT o.*, t.estimated_total_effort_minutes,t.remaining_effort_minutes,t.splittable,t.min_chunk_minutes,t.max_chunk_minutes,t.actionable_from,t.cutoff_state,t.actual_cutoff_at,t.cutoff_boundary,t.cutoff_precision,t.target_at "
+            "SELECT o.*, t.estimated_total_effort_minutes,t.remaining_effort_minutes,t.splittable,t.min_chunk_minutes,t.max_chunk_minutes,t.actionable_from,t.cutoff_state,t.actual_cutoff_at,t.cutoff_boundary,t.cutoff_precision,t.target_at,t.estimated_total_effort_low_minutes,t.estimated_total_effort_high_minutes,t.remaining_effort_low_minutes,t.remaining_effort_high_minutes "
             "FROM obligations o JOIN tasks t ON t.obligation_id=o.id WHERE o.account_id=? AND o.id=? AND o.kind='TASK'",
             (account_id, obligation_id),
         ).fetchone()
@@ -337,6 +352,10 @@ class SQLiteCanonicalRepository:
             actionable_from=_dt(row["actionable_from"]),
             actual_cutoff=cutoff,
             target_at=_dt(row["target_at"]),
+            estimated_total_effort_low_minutes=row["estimated_total_effort_low_minutes"],
+            estimated_total_effort_high_minutes=row["estimated_total_effort_high_minutes"],
+            remaining_effort_low_minutes=row["remaining_effort_low_minutes"],
+            remaining_effort_high_minutes=row["remaining_effort_high_minutes"],
         )
 
     def _obligation_from_row(self, row: sqlite3.Row) -> Obligation:
@@ -366,6 +385,8 @@ class SQLiteCanonicalRepository:
         actionable_from: datetime | None | object = _UNSET,
         actual_cutoff: HardCutoff | object = _UNSET,
         remaining_effort_minutes: int | object = _UNSET,
+        remaining_effort_low_minutes: int | None | object = _UNSET,
+        remaining_effort_high_minutes: int | None | object = _UNSET,
     ) -> Task:
         current = self.get_task(account_id, obligation_id)
         if current.obligation.version != expected_version:
@@ -388,6 +409,10 @@ class SQLiteCanonicalRepository:
             actionable_from=current.actionable_from if actionable_from is _UNSET else actionable_from,
             actual_cutoff=current.actual_cutoff if actual_cutoff is _UNSET else actual_cutoff,
             target_at=current.target_at if target_at is _UNSET else target_at,
+            estimated_total_effort_low_minutes=current.estimated_total_effort_low_minutes,
+            estimated_total_effort_high_minutes=current.estimated_total_effort_high_minutes,
+            remaining_effort_low_minutes=(current.remaining_effort_low_minutes if remaining_effort_low_minutes is _UNSET else remaining_effort_low_minutes),
+            remaining_effort_high_minutes=(current.remaining_effort_high_minutes if remaining_effort_high_minutes is _UNSET else remaining_effort_high_minutes),
         )
         with self._tx() as conn:
             cur = conn.execute(
@@ -397,9 +422,11 @@ class SQLiteCanonicalRepository:
             if cur.rowcount != 1:
                 raise VersionConflict("obligation version changed before commit")
             conn.execute(
-                "UPDATE tasks SET remaining_effort_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=? WHERE obligation_id=?",
+                "UPDATE tasks SET remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=? WHERE obligation_id=?",
                 (
                     candidate.remaining_effort_minutes,
+                    candidate.remaining_effort_low_minutes,
+                    candidate.remaining_effort_high_minutes,
                     _iso(candidate.actionable_from),
                     candidate.actual_cutoff.state.value,
                     _iso(candidate.actual_cutoff.at),

@@ -21,13 +21,22 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
         "input_server_revision": revision,
         "analysis_horizon": [_iso(analysis_start), _iso(analysis_end)],
         "plan_output_horizon": [_iso(output_start), _iso(output_end)],
-        "policy": {"version": policy.version, "minute_grid": policy.minute_grid},
+        "policy": {
+            "version": policy.version,
+            "minute_grid": policy.minute_grid,
+            "start_soon_lead_minutes": policy.start_soon_lead_minutes,
+            "max_next_actions": policy.max_next_actions,
+        },
         "tasks": [
             {
                 "id": t.obligation.id,
                 "version": t.obligation.version,
                 "status": t.obligation.lifecycle_status.value,
                 "remaining": t.remaining_effort_minutes,
+                "estimated_low": t.estimated_total_effort_low_minutes,
+                "estimated_high": t.estimated_total_effort_high_minutes,
+                "remaining_low": t.remaining_effort_low_minutes,
+                "remaining_high": t.remaining_effort_high_minutes,
                 "splittable": t.splittable,
                 "min_chunk": t.min_chunk_minutes,
                 "max_chunk": t.max_chunk_minutes,

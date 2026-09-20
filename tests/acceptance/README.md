@@ -18,3 +18,5 @@ Pass 1 provides executable acceptance coverage for:
 A status is marked PASS only where the complete acceptance statement is implemented. Partial statuses name the remaining owning pass rather than treating scaffolding or a narrower assertion as full conformance.
 
 Pass 2 adds executable coverage for `AT-12`, `AT-15`, `AT-19`–`AT-21`, `AT-27`, `AT-78`, and `AT-79`, plus supplemental `AT-58`, `AT-70`, and `AT-86`. The engine deliberately returns `UNKNOWN` for unsupported/sub-minute inputs, exhausted exact-search budgets, and no-cutoff horizon exhaustion rather than converting uncertainty into `INFEASIBLE`.
+
+Pass 3 closes the enabled first vertical slice matrix AT-11–32 plus AT-75/78–81. PASS labels are backed by executable acceptance/integration tests; later-product acceptance IDs remain outside this registry.

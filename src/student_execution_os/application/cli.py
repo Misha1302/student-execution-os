@@ -6,14 +6,29 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from student_execution_os import __version__
+from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.domain.model import (
     ActorCategory,
+    AttendancePolicy,
     HardCutoff,
     Importance,
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
-from student_execution_os.planning import FeasibilityEngine, SQLitePlanningStateSource, build_planning_snapshot
+from student_execution_os.planning import (
+    FeasibilityEngine,
+    PlanningService,
+    SQLitePlanStore,
+    SQLitePlanningStateSource,
+    build_planning_snapshot,
+)
+
+
+def _dt(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("datetime must include an offset")
+    return parsed
 
 
 def health_payload() -> dict[str, str]:
@@ -26,7 +41,6 @@ def health_payload() -> dict[str, str]:
 
 
 def run_domain_smoke(database: str) -> dict[str, object]:
-    """Exercise the real Pass 1 domain/persistence/concurrency path."""
     account_id = "smoke-account"
     now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
     with SQLiteCanonicalRepository(database) as repo:
@@ -65,21 +79,31 @@ def run_domain_smoke(database: str) -> dict[str, object]:
 
 
 def run_feasibility_smoke() -> dict[str, object]:
-    """Exercise repository -> immutable snapshot -> sound feasibility witness."""
     account_id = "feasibility-smoke-account"
     now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
     with SQLiteCanonicalRepository(":memory:") as repo:
         repo.initialize()
         repo.create_account(account_id)
         repo.create_task(
-            account_id=account_id, obligation_id="smoke-task", title="Pass 2 smoke task",
-            category=ObligationCategory.GENERAL, importance=Importance.NORMAL,
-            estimated_total_effort_minutes=60, remaining_effort_minutes=60, splittable=True,
-            min_chunk_minutes=30, max_chunk_minutes=60, actionable_from=now, target_at=None,
-            actual_cutoff=HardCutoff.known(now + timedelta(hours=2)), actor=ActorCategory.SYSTEM,
+            account_id=account_id,
+            obligation_id="smoke-task",
+            title="Pass 2 smoke task",
+            category=ObligationCategory.GENERAL,
+            importance=Importance.NORMAL,
+            estimated_total_effort_minutes=60,
+            remaining_effort_minutes=60,
+            splittable=True,
+            min_chunk_minutes=30,
+            max_chunk_minutes=60,
+            actionable_from=now,
+            target_at=None,
+            actual_cutoff=HardCutoff.known(now + timedelta(hours=2)),
+            actor=ActorCategory.SYSTEM,
         )
         snapshot = build_planning_snapshot(
-            SQLitePlanningStateSource(repo), account_id=account_id, analysis_horizon_start=now,
+            SQLitePlanningStateSource(repo),
+            account_id=account_id,
+            analysis_horizon_start=now,
             analysis_horizon_end=now + timedelta(hours=2),
             plan_output_horizon_end=now + timedelta(hours=1),
         )
@@ -94,19 +118,120 @@ def run_feasibility_smoke() -> dict[str, object]:
         }
 
 
+def run_planner_smoke() -> dict[str, object]:
+    account_id = "planner-smoke-account"
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    with SQLiteCanonicalRepository(":memory:", clock=FrozenClock(now)) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        repo.create_task(
+            account_id=account_id,
+            obligation_id="plan-task",
+            title="Pass 3 smoke task",
+            category=ObligationCategory.HOMEWORK,
+            importance=Importance.HIGH,
+            estimated_total_effort_minutes=60,
+            remaining_effort_minutes=60,
+            remaining_effort_low_minutes=45,
+            remaining_effort_high_minutes=75,
+            splittable=True,
+            min_chunk_minutes=30,
+            max_chunk_minutes=60,
+            actionable_from=now,
+            target_at=now + timedelta(hours=2),
+            actual_cutoff=HardCutoff.known(now + timedelta(hours=4)),
+            actor=ActorCategory.SYSTEM,
+        )
+        repo.create_fixed_event(
+            account_id=account_id,
+            obligation_id="lecture",
+            title="Lecture",
+            starts_at=now + timedelta(hours=2),
+            ends_at=now + timedelta(hours=3),
+            attendance_policy=AttendancePolicy.REQUIRED,
+            actor=ActorCategory.SYSTEM,
+        )
+        snapshot = build_planning_snapshot(
+            SQLitePlanningStateSource(repo),
+            account_id=account_id,
+            analysis_horizon_start=now,
+            analysis_horizon_end=now + timedelta(hours=4),
+        )
+        outcome = PlanningService().build(snapshot, now=now)
+        store = SQLitePlanStore(repo)
+        store.save(outcome.plan)
+        return {
+            "status": outcome.plan.feasibility_status.value,
+            "plan_id": outcome.plan.id,
+            "blocks": len(outcome.plan.blocks),
+            "risks": {r.task_id: r.state.value for r in outcome.risks},
+            "next_actions": len(outcome.next_actions),
+            "persisted_current": store.get_current(account_id, snapshot.input_hash) is not None,
+            "schema_version": repo.schema_version(),
+        }
+
+
+def _cutoff(value: str) -> HardCutoff:
+    if value.upper() == "ABSENT":
+        return HardCutoff.absent()
+    if value.upper() == "UNKNOWN":
+        return HardCutoff.unknown()
+    return HardCutoff.known(_dt(value))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="student-execution-os",
         description="Student Execution OS command-line entrypoint.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("health", help="Print a machine-readable smoke/health payload.")
-    subparsers.add_parser("version", help="Print the application version.")
-    domain_smoke = subparsers.add_parser(
-        "domain-smoke", help="Exercise Pass 1 canonical-domain persistence in SQLite."
-    )
+    subparsers.add_parser("health")
+    subparsers.add_parser("version")
+
+    domain_smoke = subparsers.add_parser("domain-smoke")
     domain_smoke.add_argument("--database", default=":memory:")
-    subparsers.add_parser("feasibility-smoke", help="Exercise Pass 2 snapshot and feasibility core.")
+    subparsers.add_parser("feasibility-smoke")
+    subparsers.add_parser("planner-smoke")
+
+    account = subparsers.add_parser("account-init")
+    account.add_argument("--database", required=True)
+    account.add_argument("--account", required=True)
+
+    task = subparsers.add_parser("task-add")
+    task.add_argument("--database", required=True)
+    task.add_argument("--account", required=True)
+    task.add_argument("--id")
+    task.add_argument("--title", required=True)
+    task.add_argument("--minutes", type=int, required=True)
+    task.add_argument("--low-minutes", type=int)
+    task.add_argument("--high-minutes", type=int)
+    task.add_argument("--cutoff", required=True, help="ISO offset datetime, ABSENT, or UNKNOWN")
+    task.add_argument("--target")
+    task.add_argument("--actionable")
+    task.add_argument("--importance", choices=[x.value for x in Importance], default=Importance.NORMAL.value)
+    task.add_argument("--splittable", action="store_true")
+    task.add_argument("--min-chunk", type=int)
+    task.add_argument("--max-chunk", type=int)
+
+    event = subparsers.add_parser("event-add")
+    event.add_argument("--database", required=True)
+    event.add_argument("--account", required=True)
+    event.add_argument("--id")
+    event.add_argument("--title", required=True)
+    event.add_argument("--starts", required=True)
+    event.add_argument("--ends", required=True)
+
+    complete = subparsers.add_parser("task-complete")
+    complete.add_argument("--database", required=True)
+    complete.add_argument("--account", required=True)
+    complete.add_argument("--id", required=True)
+
+    plan = subparsers.add_parser("plan")
+    plan.add_argument("--database", required=True)
+    plan.add_argument("--account", required=True)
+    plan.add_argument("--now", required=True)
+    plan.add_argument("--analysis-end", required=True)
+    plan.add_argument("--display-end")
     return parser
 
 
@@ -124,4 +249,110 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "feasibility-smoke":
         print(json.dumps(run_feasibility_smoke(), sort_keys=True))
         return 0
+    if args.command == "planner-smoke":
+        print(json.dumps(run_planner_smoke(), sort_keys=True))
+        return 0
+
+    if args.command == "account-init":
+        with SQLiteCanonicalRepository(args.database) as repo:
+            repo.initialize()
+            repo.create_account(args.account)
+            print(json.dumps({"account_id": args.account, "status": "ok"}, sort_keys=True))
+        return 0
+
+    if args.command == "task-add":
+        with SQLiteCanonicalRepository(args.database) as repo:
+            repo.initialize()
+            task = repo.create_task(
+                account_id=args.account,
+                obligation_id=args.id,
+                title=args.title,
+                category=ObligationCategory.GENERAL,
+                importance=Importance(args.importance),
+                estimated_total_effort_minutes=args.minutes,
+                remaining_effort_minutes=args.minutes,
+                remaining_effort_low_minutes=args.low_minutes,
+                remaining_effort_high_minutes=args.high_minutes,
+                splittable=args.splittable,
+                min_chunk_minutes=args.min_chunk,
+                max_chunk_minutes=args.max_chunk,
+                actionable_from=_dt(args.actionable) if args.actionable else None,
+                target_at=_dt(args.target) if args.target else None,
+                actual_cutoff=_cutoff(args.cutoff),
+                actor=ActorCategory.USER_UI,
+            )
+            print(json.dumps({"id": task.obligation.id, "version": task.obligation.version}, sort_keys=True))
+        return 0
+
+    if args.command == "event-add":
+        with SQLiteCanonicalRepository(args.database) as repo:
+            repo.initialize()
+            event = repo.create_fixed_event(
+                account_id=args.account,
+                obligation_id=args.id,
+                title=args.title,
+                starts_at=_dt(args.starts),
+                ends_at=_dt(args.ends),
+                actor=ActorCategory.USER_UI,
+            )
+            print(json.dumps({"id": event.obligation.id, "version": event.obligation.version}, sort_keys=True))
+        return 0
+
+    if args.command == "task-complete":
+        with SQLiteCanonicalRepository(args.database) as repo:
+            repo.initialize()
+            task = repo.get_task(args.account, args.id)
+            obligation = repo.complete_obligation(
+                account_id=args.account,
+                obligation_id=args.id,
+                expected_version=task.obligation.version,
+                actor=ActorCategory.USER_UI,
+            )
+            print(json.dumps({"id": obligation.id, "status": obligation.lifecycle_status.value}, sort_keys=True))
+        return 0
+
+    if args.command == "plan":
+        now = _dt(args.now)
+        with SQLiteCanonicalRepository(args.database, clock=FrozenClock(now)) as repo:
+            repo.initialize()
+            source = SQLitePlanningStateSource(repo)
+            snapshot = build_planning_snapshot(
+                source,
+                account_id=args.account,
+                analysis_horizon_start=now,
+                analysis_horizon_end=_dt(args.analysis_end),
+                plan_output_horizon_end=_dt(args.display_end) if args.display_end else None,
+            )
+            store = SQLitePlanStore(repo)
+            previous = store.get_latest(args.account)
+            outcome = PlanningService().build(snapshot, now=now, previous_plan=previous)
+            store.save(outcome.plan)
+            print(json.dumps({
+                "plan_id": outcome.plan.id,
+                "plan_revision": outcome.plan.plan_revision,
+                "input_hash": outcome.plan.input_hash,
+                "feasibility": outcome.plan.feasibility_status.value,
+                "blocks": [
+                    {
+                        "id": b.id,
+                        "type": b.type.value,
+                        "obligation_id": b.obligation_id,
+                        "starts_at": b.starts_at.isoformat(),
+                        "ends_at": b.ends_at.isoformat(),
+                    }
+                    for b in outcome.plan.blocks
+                ],
+                "risks": {r.task_id: r.state.value for r in outcome.risks},
+                "next_actions": [
+                    {
+                        "task_id": a.task_id,
+                        "what": a.what,
+                        "duration_minutes": a.recommended_duration_minutes,
+                        "why_now": a.why_now,
+                    }
+                    for a in outcome.next_actions
+                ],
+            }, sort_keys=True))
+        return 0
+
     raise AssertionError(f"Unhandled command: {args.command}")
