@@ -24,3 +24,10 @@ class DependencyCycleError(ValidationError):
 
 class DuplicateHardCutoffOwner(ValidationError):
     """A final hard cutoff would gain two independently mutable owners."""
+
+class AuthorizationDenied(DomainError):
+    """Authenticated principal lacks a server-bound authorization for the action."""
+
+
+class IdempotencyConflict(DomainError):
+    """An idempotency key was reused for a different semantic action request."""

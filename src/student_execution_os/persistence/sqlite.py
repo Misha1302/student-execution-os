@@ -49,7 +49,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _UNSET = object()
 
 
@@ -98,6 +98,7 @@ class SQLiteCanonicalRepository:
             (2, Path(__file__).with_name("migrations") / "002_planning_projection.sql"),
             (3, Path(__file__).with_name("migrations") / "003_evidence_reconciliation.sql"),
             (4, Path(__file__).with_name("migrations") / "004_connector_sync.sql"),
+            (5, Path(__file__).with_name("migrations") / "005_llm_action_boundary.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -457,23 +458,37 @@ class SQLiteCanonicalRepository:
             )
         return candidate
 
-    def _transition_obligation(
+    def get_obligation(self, account_id: str, obligation_id: str) -> Obligation:
+        row = self.connection.execute(
+            "SELECT * FROM obligations WHERE account_id=? AND id=?",
+            (account_id, obligation_id),
+        ).fetchone()
+        if row is None:
+            raise EntityNotFound("obligation not found")
+        return self._obligation_from_row(row)
+
+    def _transition_obligation_in_tx(
         self,
+        conn: sqlite3.Connection,
         *,
         account_id: str,
         obligation_id: str,
         expected_version: int,
         actor: ActorCategory,
         action: str,
+        audit_payload: dict[str, object] | None = None,
     ) -> Obligation:
-        row = self.connection.execute(
-            "SELECT * FROM obligations WHERE account_id=? AND id=?", (account_id, obligation_id)
+        row = conn.execute(
+            "SELECT * FROM obligations WHERE account_id=? AND id=?",
+            (account_id, obligation_id),
         ).fetchone()
         if row is None:
             raise EntityNotFound("obligation not found")
         current = self._obligation_from_row(row)
         if current.version != expected_version:
-            raise VersionConflict(f"expected version {expected_version}, current {current.version}")
+            raise VersionConflict(
+                f"expected version {expected_version}, current {current.version}"
+            )
         now = self.clock.now()
         if action == "COMPLETE":
             candidate = current.completed(now)
@@ -483,31 +498,52 @@ class SQLiteCanonicalRepository:
             candidate = current.reopened(now)
         else:
             raise AssertionError(action)
+        cur = conn.execute(
+            "UPDATE obligations SET lifecycle_status=?,completed_at=?,updated_at=?,version=? "
+            "WHERE account_id=? AND id=? AND version=?",
+            (
+                candidate.lifecycle_status.value,
+                _iso(candidate.completed_at),
+                _iso(candidate.updated_at),
+                candidate.version,
+                account_id,
+                obligation_id,
+                expected_version,
+            ),
+        )
+        if cur.rowcount != 1:
+            raise VersionConflict("obligation version changed before commit")
+        self._record_change(
+            conn,
+            account_id=account_id,
+            entity_type="OBLIGATION",
+            entity_id=obligation_id,
+            action=action,
+            actor=actor,
+            payload=audit_payload,
+        )
+        return candidate
+
+    def _transition_obligation(
+        self,
+        *,
+        account_id: str,
+        obligation_id: str,
+        expected_version: int,
+        actor: ActorCategory,
+        action: str,
+        audit_payload: dict[str, object] | None = None,
+    ) -> Obligation:
         with self._tx() as conn:
-            cur = conn.execute(
-                "UPDATE obligations SET lifecycle_status=?,completed_at=?,updated_at=?,version=? "
-                "WHERE account_id=? AND id=? AND version=?",
-                (
-                    candidate.lifecycle_status.value,
-                    _iso(candidate.completed_at),
-                    _iso(candidate.updated_at),
-                    candidate.version,
-                    account_id,
-                    obligation_id,
-                    expected_version,
-                ),
-            )
-            if cur.rowcount != 1:
-                raise VersionConflict("obligation version changed before commit")
-            self._record_change(
+            return self._transition_obligation_in_tx(
                 conn,
                 account_id=account_id,
-                entity_type="OBLIGATION",
-                entity_id=obligation_id,
-                action=action,
+                obligation_id=obligation_id,
+                expected_version=expected_version,
                 actor=actor,
+                action=action,
+                audit_payload=audit_payload,
             )
-        return candidate
 
     def complete_obligation(self, **kwargs) -> Obligation:
         return self._transition_obligation(action="COMPLETE", **kwargs)

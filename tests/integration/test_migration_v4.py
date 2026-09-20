@@ -52,7 +52,7 @@ class MigrationV4IntegrationTests(unittest.TestCase):
             with SQLiteCanonicalRepository(db, clock=FrozenClock(BASE)) as repo:
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 4)
+                self.assertGreaterEqual(SCHEMA_VERSION, 4)
                 source_record = repo.connection.execute(
                     "SELECT external_entity_id FROM source_records WHERE id='r'"
                 ).fetchone()

@@ -6,6 +6,13 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from student_execution_os import __version__
+from student_execution_os.agent import (
+    ActionRequest,
+    AgentCommand,
+    AuthenticatedPrincipal,
+    IntentStrength,
+    SQLiteActionGateway,
+)
 from student_execution_os.connectors import (
     GoogleCalendarConnector,
     GoogleCalendarPage,
@@ -325,6 +332,64 @@ def run_connector_smoke() -> dict[str, object]:
         }
 
 
+def run_agent_smoke() -> dict[str, object]:
+    account_id = "agent-smoke-account"
+    now = datetime(2026, 9, 20, 9, 0, tzinfo=timezone.utc)
+    principal = AuthenticatedPrincipal(
+        account_id=account_id,
+        principal_id="smoke-user",
+        client_id="smoke-client",
+    )
+    with SQLiteCanonicalRepository(":memory:", clock=FrozenClock(now)) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        task = repo.create_task(
+            account_id=account_id,
+            obligation_id="agent-smoke-task",
+            title="Agent smoke task",
+            category=ObligationCategory.GENERAL,
+            importance=Importance.NORMAL,
+            estimated_total_effort_minutes=10,
+            remaining_effort_minutes=10,
+            splittable=False,
+            actual_cutoff=HardCutoff.unknown(),
+            actor=ActorCategory.USER_UI,
+        )
+        gateway = SQLiteActionGateway(repo)
+        intent = gateway.mint_intent(
+            principal=principal,
+            command=AgentCommand.CANCEL_OBLIGATION,
+            target_entity_id=task.obligation.id,
+            intent_strength=IntentStrength.EXPLICIT_SCOPED,
+            expected_version=task.obligation.version,
+            intent_id="agent-smoke-intent",
+        )
+        request = ActionRequest(
+            intent_id=intent.id,
+            idempotency_key="agent-smoke-key",
+            expected_version=task.obligation.version,
+        )
+        first = gateway.execute_cancel(
+            principal=principal,
+            request=request,
+        )
+        replay = gateway.execute_cancel(
+            principal=principal,
+            request=request,
+        )
+        return {
+            "status": "ok",
+            "schema_version": repo.schema_version(),
+            "lifecycle_status": first.lifecycle_status,
+            "entity_version": first.entity_version,
+            "replay": replay.replayed,
+            "intent_status": gateway.get_intent(
+                principal=principal,
+                intent_id=intent.id,
+            ).status.value,
+        }
+
+
 def _cutoff(value: str) -> HardCutoff:
     if value.upper() == "ABSENT":
         return HardCutoff.absent()
@@ -348,6 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("planner-smoke")
     subparsers.add_parser("reconciliation-smoke")
     subparsers.add_parser("connector-smoke")
+    subparsers.add_parser("agent-smoke")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -413,6 +479,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "connector-smoke":
         print(json.dumps(run_connector_smoke(), sort_keys=True))
+        return 0
+    if args.command == "agent-smoke":
+        print(json.dumps(run_agent_smoke(), sort_keys=True))
         return 0
 
     if args.command == "account-init":
