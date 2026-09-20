@@ -401,6 +401,36 @@ class Pass4ReconciliationTests(unittest.TestCase):
         self.assertNotEqual(after.input_hash, before.input_hash)
         self.assertEqual(after.cutoff_reconciliation[0].policy_version, "cutoff-v2")
 
+    def test_reconciled_cutoff_has_one_writable_owner_and_target_remains_independent(self):
+        self.bind("s1", "e1")
+        self.observe_cutoff(
+            "s1",
+            "e1",
+            HardCutoff.known(BASE + timedelta(hours=3)),
+            revision_order=1,
+        )
+        current = self.repo.get_task("a", "task")
+        with self.assertRaisesRegex(Exception, "reconciliation-owned"):
+            self.repo.update_task(
+                account_id="a",
+                obligation_id="task",
+                expected_version=current.obligation.version,
+                actual_cutoff=HardCutoff.known(BASE + timedelta(hours=5)),
+                actor=ActorCategory.USER_UI,
+            )
+        updated = self.repo.update_task(
+            account_id="a",
+            obligation_id="task",
+            expected_version=current.obligation.version,
+            target_at=BASE + timedelta(hours=1),
+            actor=ActorCategory.USER_UI,
+        )
+        self.assertEqual(updated.target_at, BASE + timedelta(hours=1))
+        self.assertEqual(
+            self.recon.get_effective_cutoff("a", "task").planning_projection,
+            HardCutoff.known(BASE + timedelta(hours=3)),
+        )
+
     def test_at76_conflicting_cutoffs_straddling_now_keep_risk_unknown(self):
         self.conflict(
             HardCutoff.known(BASE - timedelta(hours=1)),
