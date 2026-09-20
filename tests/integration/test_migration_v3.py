@@ -59,7 +59,7 @@ class MigrationV3IntegrationTests(unittest.TestCase):
             with SQLiteCanonicalRepository(db, clock=FrozenClock(BASE)) as repo:
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 3)
+                self.assertGreaterEqual(SCHEMA_VERSION, 3)
                 loaded = repo.get_task("a", "t")
                 self.assertEqual(loaded.obligation.title, "preserved task")
                 self.assertEqual(loaded.remaining_effort_minutes, 60)

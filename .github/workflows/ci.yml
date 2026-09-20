@@ -36,3 +36,5 @@ jobs:
         run: python -m student_execution_os planner-smoke
       - name: Evidence reconciliation smoke
         run: python -m student_execution_os reconciliation-smoke
+      - name: Google Calendar connector smoke
+        run: python -m student_execution_os connector-smoke
