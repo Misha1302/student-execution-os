@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 import unittest
 
+from student_execution_os.persistence.sqlite import SCHEMA_VERSION
+
 
 class DomainCliSmokeTests(unittest.TestCase):
     def test_domain_smoke_uses_real_sqlite_repository(self) -> None:
@@ -27,7 +29,7 @@ class DomainCliSmokeTests(unittest.TestCase):
             )
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["status"], "ok")
-            self.assertEqual(payload["schema_version"], 2)
+            self.assertEqual(payload["schema_version"], SCHEMA_VERSION)
             self.assertEqual(payload["server_revision"], 2)
             self.assertEqual(payload["task_version"], 2)
             self.assertEqual(payload["cutoff_state"], "KNOWN")

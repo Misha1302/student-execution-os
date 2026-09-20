@@ -40,6 +40,7 @@ class CutoffReconciliationContext:
     truth_state: str
     evidence_ids: tuple[str, ...]
     policy_version: str
+    override_id: str | None
     conflict_id: str | None
     admissible_cutoffs: tuple[HardCutoff, ...]
     planning_projection: HardCutoff | None

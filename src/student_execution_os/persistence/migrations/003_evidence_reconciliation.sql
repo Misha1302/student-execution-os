@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS effective_fields (
     planning_projection_json TEXT,
     admissible_cutoffs_json TEXT NOT NULL,
     reason TEXT,
+    override_id TEXT REFERENCES user_overrides(id) ON DELETE SET NULL,
     conflict_id TEXT REFERENCES reconciliation_conflicts(id) ON DELETE SET NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY(account_id, entity_ref, field_path),
@@ -181,6 +182,7 @@ CREATE TABLE IF NOT EXISTS effective_field_history (
     planning_projection_json TEXT,
     admissible_cutoffs_json TEXT NOT NULL,
     reason TEXT,
+    override_id TEXT REFERENCES user_overrides(id) ON DELETE SET NULL,
     conflict_id TEXT,
     recorded_at TEXT NOT NULL
 );

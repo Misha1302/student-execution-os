@@ -205,6 +205,7 @@ class EffectiveField:
     admissible_cutoffs: tuple[HardCutoff, ...]
     reason: str | None
     conflict_id: str | None = None
+    override_id: str | None = None
 
 
 def cutoff_evidence(

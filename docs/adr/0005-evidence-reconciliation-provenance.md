@@ -18,7 +18,7 @@ Pass 4 introduces a bounded reconciliation subsystem with these owners:
 3. `FieldPolicy` is immutable and versioned. Authority is evaluated per field and explicit source/source-context; unspecified authority fails closed.
 4. `UserOverride` is explicit local interpretation state with ACTIVE/SUPERSEDED/REVOKED history.
 5. `Conflict` is durable workflow state, not a competing fact.
-6. `effective_fields` is materialized only by the reconciliation boundary. It retains effective state, policy version, evidence references, conflict reference, and any separately labelled planning projection.
+6. `effective_fields` is materialized only by the reconciliation boundary. It retains effective state, policy version, evidence references, exact active `override_id` when overridden, conflict reference, and any separately labelled planning projection.
 
 The first implemented reconciled critical field is `actual_cutoff`. Its effective state is one of `RESOLVED | OVERRIDDEN | ABSENT | CONFLICT | UNKNOWN`.
 

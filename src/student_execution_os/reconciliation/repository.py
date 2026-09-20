@@ -880,6 +880,7 @@ class SQLiteReconciliationRepository:
                 (cutoff,) if cutoff.state is CutoffState.KNOWN else (),
                 "ACTIVE_USER_OVERRIDE",
                 None,
+                override["id"],
             )
 
         usable = []
@@ -1067,6 +1068,7 @@ class SQLiteReconciliationRepository:
                 for cutoff in effective.admissible_cutoffs
             ],
             "reason": effective.reason,
+            "override_id": effective.override_id,
         }
 
     def _manage_conflict_in_tx(
@@ -1139,12 +1141,18 @@ class SQLiteReconciliationRepository:
                 )
                 else "SUPERSEDED"
             )
+            resolution_ref = (
+                f"override:{effective.override_id}"
+                if effective.state is EffectiveFieldState.OVERRIDDEN
+                and effective.override_id is not None
+                else f"effective:{effective.state.value}"
+            )
             conn.execute(
                 "UPDATE reconciliation_conflicts SET status=?,resolved_at=?,resolution_ref=?,version=version+1 WHERE id=?",
                 (
                     status,
                     _iso(self.clock.now()),
-                    f"effective:{effective.state.value}",
+                    resolution_ref,
                     row["id"],
                 ),
             )
@@ -1155,7 +1163,7 @@ class SQLiteReconciliationRepository:
                     status,
                     _iso(self.clock.now()),
                     actor.value,
-                    f"effective:{effective.state.value}",
+                    resolution_ref,
                 ),
             )
         return None
@@ -1198,6 +1206,7 @@ class SQLiteReconciliationRepository:
                 ),
                 "admissible_cutoffs": json.loads(current["admissible_cutoffs_json"]),
                 "reason": current["reason"],
+                "override_id": current["override_id"],
             }
         if current_sig == signature:
             return effective
@@ -1218,14 +1227,14 @@ class SQLiteReconciliationRepository:
 
         now = _iso(self.clock.now())
         conn.execute(
-            "INSERT INTO effective_fields(account_id,entity_ref,field_path,state,selected_value_type,selected_value_json,evidence_ids_json,policy_version,planning_projection_json,admissible_cutoffs_json,reason,conflict_id,updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO effective_fields(account_id,entity_ref,field_path,state,selected_value_type,selected_value_json,evidence_ids_json,policy_version,planning_projection_json,admissible_cutoffs_json,reason,override_id,conflict_id,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(account_id,entity_ref,field_path) DO UPDATE SET "
             "state=excluded.state,selected_value_type=excluded.selected_value_type,"
             "selected_value_json=excluded.selected_value_json,evidence_ids_json=excluded.evidence_ids_json,"
             "policy_version=excluded.policy_version,planning_projection_json=excluded.planning_projection_json,"
             "admissible_cutoffs_json=excluded.admissible_cutoffs_json,reason=excluded.reason,"
-            "conflict_id=excluded.conflict_id,updated_at=excluded.updated_at",
+            "override_id=excluded.override_id,conflict_id=excluded.conflict_id,updated_at=excluded.updated_at",
             (
                 account_id,
                 entity_ref,
@@ -1242,13 +1251,14 @@ class SQLiteReconciliationRepository:
                 ),
                 _json(signature["admissible_cutoffs"]),
                 effective.reason,
+                effective.override_id,
                 conflict_id,
                 now,
             ),
         )
         conn.execute(
-            "INSERT INTO effective_field_history(account_id,entity_ref,field_path,state,selected_value_type,selected_value_json,evidence_ids_json,policy_version,planning_projection_json,admissible_cutoffs_json,reason,conflict_id,recorded_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO effective_field_history(account_id,entity_ref,field_path,state,selected_value_type,selected_value_json,evidence_ids_json,policy_version,planning_projection_json,admissible_cutoffs_json,reason,override_id,conflict_id,recorded_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 account_id,
                 entity_ref,
@@ -1265,6 +1275,7 @@ class SQLiteReconciliationRepository:
                 ),
                 _json(signature["admissible_cutoffs"]),
                 effective.reason,
+                effective.override_id,
                 conflict_id,
                 now,
             ),
@@ -1344,6 +1355,7 @@ class SQLiteReconciliationRepository:
             admissible_cutoffs=admissible,
             reason=row["reason"],
             conflict_id=row["conflict_id"],
+            override_id=row["override_id"],
         )
 
     def list_conflicts(

@@ -70,6 +70,7 @@ class SQLitePlanningStateSource:
                     truth_state=effective.state.value,
                     evidence_ids=effective.evidence_ids,
                     policy_version=effective.policy_version,
+                    override_id=effective.override_id,
                     conflict_id=effective.conflict_id,
                     admissible_cutoffs=effective.admissible_cutoffs,
                     planning_projection=effective.planning_projection,

@@ -215,7 +215,7 @@ class Pass4ReconciliationTests(unittest.TestCase):
         )
         before = [(o.id, o.value) for o in self.recon.list_observations("a")]
         override_cutoff = HardCutoff.known(BASE + timedelta(hours=3))
-        self.recon.create_override(
+        override = self.recon.create_override(
             account_id="a",
             entity_ref="task",
             field_path="actual_cutoff",
@@ -226,9 +226,14 @@ class Pass4ReconciliationTests(unittest.TestCase):
         )
         effective = self.recon.get_effective_cutoff("a", "task")
         self.assertEqual(effective.state, EffectiveFieldState.OVERRIDDEN)
+        self.assertEqual(effective.override_id, override.id)
         self.assertEqual(effective.planning_projection, override_cutoff)
         self.assertEqual(before, [(o.id, o.value) for o in self.recon.list_observations("a")])
-        self.assertEqual(self.recon.list_conflicts("a", entity_ref="task")[-1]["status"], "RESOLVED")
+        resolved_conflict = self.recon.list_conflicts("a", entity_ref="task")[-1]
+        self.assertEqual(resolved_conflict["status"], "RESOLVED")
+        self.assertEqual(resolved_conflict["resolution_ref"], f"override:{override.id}")
+        context = next(x for x in self.snapshot().cutoff_reconciliation if x.task_id == "task")
+        self.assertEqual(context.override_id, override.id)
 
     def test_at07_low_certainty_critical_inference_does_not_become_effective(self):
         self.bind("s1", "e1")
@@ -255,7 +260,9 @@ class Pass4ReconciliationTests(unittest.TestCase):
         )
         self.bind("s1", "shared", other.obligation.id)
         bindings = self.recon.list_bindings("a")
-        self.assertEqual([b.state for b in bindings], [BindingState.DETACHED, BindingState.ACTIVE])
+        self.assertEqual({b.state for b in bindings}, {BindingState.DETACHED, BindingState.ACTIVE})
+        self.assertEqual(sum(b.state == BindingState.ACTIVE for b in bindings), 1)
+        self.assertEqual(sum(b.state == BindingState.DETACHED for b in bindings), 1)
         self.assertEqual(len(self.recon.list_observations("a")), 1)
         self.assertEqual(self.recon.list_observations("a")[0].id, observation.id)
         self.assertEqual(self.recon.get_effective_cutoff("a", "task").state, EffectiveFieldState.UNKNOWN)
