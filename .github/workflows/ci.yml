@@ -34,3 +34,5 @@ jobs:
         run: python -m student_execution_os feasibility-smoke
       - name: Planner vertical-slice smoke
         run: python -m student_execution_os planner-smoke
+      - name: Evidence reconciliation smoke
+        run: python -m student_execution_os reconciliation-smoke
