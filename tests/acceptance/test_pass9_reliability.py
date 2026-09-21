@@ -85,7 +85,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             self.assertTrue(restore.sha256_verified)
             self.assertEqual(restore.integrity_check, "ok")
             self.assertEqual(restore.foreign_key_violations, 0)
-            self.assertEqual(restore.restored_schema_version, 8)
+            self.assertEqual(restore.restored_schema_version, SCHEMA_VERSION)
             if os.name == "posix":
                 self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
 
