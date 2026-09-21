@@ -32,6 +32,8 @@ from student_execution_os.domain.model import (
     TemporalPrecision,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.notifications import SQLiteNotificationRepository
+from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     PlanningService,
     SQLitePlanStore,
@@ -63,6 +65,19 @@ def _dt(value: str | None) -> datetime | None:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("datetime must include an offset")
     return parsed
+
+
+def _local_dt(value: str | None) -> datetime | None:
+    if value is None or value == "":
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        raise ValueError("local civil datetime must not include an offset")
+    return parsed
+
+
+def _local_iso(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
 
 
 def _cutoff(payload: dict[str, Any] | None) -> HardCutoff:
@@ -324,6 +339,67 @@ class UiService:
         with self._repo() as repo:
             return [self._event(e) for e in SQLitePlanningStateSource(repo).list_events(self.account_id)]
 
+    @staticmethod
+    def _recurring_template_payload(template) -> dict[str, Any]:
+        return {
+            "id": template.id,
+            "title": template.title,
+            "description": template.description,
+            "category": template.category.value,
+            "importance": template.importance.value,
+            "dtstart_local": _local_iso(template.dtstart_local),
+            "duration_minutes": template.duration_minutes,
+            "recurrence_rule": template.recurrence_rule.canonical(),
+            "timezone_name": template.timezone_name,
+            "attendance_policy": template.attendance_policy.value,
+            "location_effect": {
+                "kind": template.location_effect.kind.value,
+                "origin_place_id": template.location_effect.origin_place_id,
+                "destination_place_id": template.location_effect.destination_place_id,
+            },
+            "arrival_requirement_minutes": template.arrival_requirement_minutes,
+            "resolution_policy": template.resolution_policy.value,
+            "series_end_before_local": _local_iso(template.series_end_before_local),
+            "version": template.version,
+            "ownership": "CANONICAL_RULE",
+        }
+
+    def calendar(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            source = SQLitePlanningStateSource(repo)
+            recurrence = SQLiteRecurrenceRepository(repo)
+            start = self._now() - timedelta(days=1)
+            end = self._now() + timedelta(days=30)
+            templates = recurrence.list_templates(self.account_id)
+            occurrences: list[dict[str, Any]] = []
+            for template in templates:
+                for item in recurrence.expand(
+                    account_id=self.account_id, template_id=template.id,
+                    horizon_start=start, horizon_end=end,
+                ):
+                    occurrences.append({
+                        "template_id": item.template_id,
+                        "original_recurrence_id": item.original_recurrence_id,
+                        "starts_at": _jsonify(item.starts_at),
+                        "ends_at": _jsonify(item.ends_at),
+                        "cancelled": item.cancelled,
+                        "override_id": item.override_id,
+                        "identity": [item.template_id, item.original_recurrence_id],
+                        "ownership": "DERIVED_OCCURRENCE",
+                    })
+            occurrences.sort(key=lambda item: (item["starts_at"], item["template_id"], item["original_recurrence_id"]))
+            return {
+                "events": [self._event(e) for e in source.list_events(self.account_id)],
+                "recurring_templates": [self._recurring_template_payload(t) for t in templates],
+                "occurrences": occurrences,
+                "horizon_start": _jsonify(start),
+                "horizon_end": _jsonify(end),
+            }
+
+    def notifications(self) -> list[dict[str, Any]]:
+        with self._repo() as repo:
+            return [_jsonify(item) for item in SQLiteNotificationRepository(repo).list(self.account_id)]
+
     def evidence(self) -> dict[str, Any]:
         with self._repo() as repo:
             recon = SQLiteReconciliationRepository(repo)
@@ -457,7 +533,86 @@ class UiService:
                     "generated_at": _jsonify(latest.generated_at),
                 },
                 "connector_health": self._source_health(repo),
+                "recurring_template_count": repo.connection.execute(
+                    "SELECT count(*) FROM recurring_templates WHERE account_id=?", (self.account_id,)
+                ).fetchone()[0],
+                "notification_state": [
+                    dict(row) for row in repo.connection.execute(
+                        "SELECT state,count(*) AS count FROM notifications WHERE account_id=? GROUP BY state ORDER BY state",
+                        (self.account_id,),
+                    ).fetchall()
+                ],
             }
+
+    def create_recurring_template(self, payload: dict[str, Any]) -> dict[str, Any]:
+        start = _local_dt(payload.get("dtstart_local"))
+        if start is None:
+            raise ValueError("dtstart_local is required")
+        location = payload.get("location_effect") or {}
+        with self._repo() as repo:
+            template = SQLiteRecurrenceRepository(repo).create_template(
+                account_id=self.account_id,
+                template_id=payload.get("id"),
+                title=str(payload["title"]),
+                description=payload.get("description"),
+                category=ObligationCategory(payload.get("category", ObligationCategory.GENERAL.value)),
+                importance=Importance(payload.get("importance", Importance.NORMAL.value)),
+                dtstart_local=start,
+                duration_minutes=int(payload["duration_minutes"]),
+                recurrence_rule=str(payload["recurrence_rule"]),
+                timezone_name=str(payload["timezone_name"]),
+                attendance_policy=AttendancePolicy(payload.get("attendance_policy", AttendancePolicy.REQUIRED.value)),
+                location_effect=LocationEffect(
+                    kind=LocationEffectKind(location.get("kind", LocationEffectKind.NONE.value)),
+                    origin_place_id=location.get("origin_place_id"),
+                    destination_place_id=location.get("destination_place_id"),
+                ),
+                arrival_requirement_minutes=int(payload.get("arrival_requirement_minutes", 0)),
+                actor=ActorCategory.USER_UI,
+            )
+            return self._recurring_template_payload(template)
+
+    def override_recurring_occurrence(
+        self, template_id: str, original_recurrence_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self._repo() as repo:
+            item = SQLiteRecurrenceRepository(repo).set_override(
+                account_id=self.account_id, template_id=template_id,
+                original_recurrence_id=original_recurrence_id,
+                action=OccurrenceOverrideAction(payload["action"]),
+                replacement_start_local=_local_dt(payload.get("replacement_start_local")),
+                replacement_duration_minutes=payload.get("replacement_duration_minutes"),
+                expected_version=int(payload.get("expected_version", 0)),
+                actor=ActorCategory.USER_UI,
+            )
+            return _jsonify(item)
+
+    def split_recurring_series(self, template_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            old, successor = SQLiteRecurrenceRepository(repo).split_this_and_future(
+                account_id=self.account_id, template_id=template_id,
+                original_recurrence_id=str(payload["original_recurrence_id"]),
+                successor_id=str(payload.get("successor_id") or uuid4()),
+                replacement_start_local=_local_dt(payload.get("replacement_start_local")),
+                recurrence_rule=payload.get("recurrence_rule"),
+                expected_version=int(payload["expected_version"]),
+                actor=ActorCategory.USER_UI,
+            )
+            return {
+                "old_template": self._recurring_template_payload(old),
+                "successor_template": self._recurring_template_payload(successor),
+            }
+
+    def snooze_notification(self, notification_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        until = _dt(payload.get("until"))
+        if until is None:
+            raise ValueError("snooze until is required")
+        with self._repo() as repo:
+            item = SQLiteNotificationRepository(repo).snooze(
+                account_id=self.account_id, notification_id=notification_id, until=until,
+                expected_version=int(payload["expected_version"]),
+            )
+            return _jsonify(item)
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:

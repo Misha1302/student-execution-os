@@ -29,6 +29,8 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
+from student_execution_os.notifications import NotificationKind, SQLiteNotificationRepository
+from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     FeasibilityEngine,
     PlanningService,
@@ -470,6 +472,60 @@ def run_travel_smoke() -> dict[str, object]:
         }
 
 
+def run_recurrence_notification_smoke() -> dict[str, object]:
+    account_id = "recurrence-notification-smoke-account"
+    now = datetime(2026, 10, 18, 7, 0, tzinfo=timezone.utc)
+    clock = FrozenClock(now)
+    with SQLiteCanonicalRepository(":memory:", clock=clock) as repo:
+        repo.initialize()
+        repo.create_account(account_id)
+        recurrence = SQLiteRecurrenceRepository(repo)
+        template = recurrence.create_template(
+            account_id=account_id,
+            template_id="weekly-review",
+            title="Weekly review",
+            dtstart_local=datetime(2026, 10, 18, 9, 0),
+            duration_minutes=30,
+            recurrence_rule="FREQ=WEEKLY;COUNT=2",
+            timezone_name="Europe/Amsterdam",
+            actor=ActorCategory.SYSTEM,
+        )
+        original = "2026-10-25T09:00:00"
+        recurrence.set_override(
+            account_id=account_id, template_id=template.id,
+            original_recurrence_id=original, action=OccurrenceOverrideAction.MODIFY,
+            replacement_start_local=datetime(2026, 10, 25, 10, 0),
+            actor=ActorCategory.SYSTEM,
+        )
+        occurrences = recurrence.expand(
+            account_id=account_id, template_id=template.id,
+            horizon_start=now, horizon_end=now + timedelta(days=9),
+        )
+        notifications = SQLiteNotificationRepository(repo)
+        key = notifications.transition_suppression_key(
+            kind=NotificationKind.SOURCE_CHANGE, entity_ref=template.id, transition_token="created",
+        )
+        item = notifications.schedule(
+            account_id=account_id, suppression_key=key, kind=NotificationKind.SOURCE_CHANGE,
+            scheduled_for=now + timedelta(minutes=10),
+            domain_revision=repo.get_server_revision(account_id), entity_ref=template.id,
+        )
+        item = notifications.snooze(
+            account_id=account_id, notification_id=item.id,
+            until=now + timedelta(minutes=30), expected_version=item.version,
+        )
+        moved = next(o for o in occurrences if o.original_recurrence_id == original)
+        return {
+            "status": "ok",
+            "schema_version": repo.schema_version(),
+            "occurrence_identity": list(moved.identity),
+            "moved_start": moved.starts_at.isoformat(),
+            "notification_state": item.state.value,
+            "notification_version": item.version,
+            "server_revision": repo.get_server_revision(account_id),
+        }
+
+
 def _cutoff(value: str) -> HardCutoff:
     if value.upper() == "ABSENT":
         return HardCutoff.absent()
@@ -495,6 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("connector-smoke")
     subparsers.add_parser("agent-smoke")
     subparsers.add_parser("travel-smoke")
+    subparsers.add_parser("recurrence-notification-smoke")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -566,6 +623,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "travel-smoke":
         print(json.dumps(run_travel_smoke(), sort_keys=True))
+        return 0
+    if args.command == "recurrence-notification-smoke":
+        print(json.dumps(run_recurrence_notification_smoke(), sort_keys=True))
         return 0
 
     if args.command == "account-init":

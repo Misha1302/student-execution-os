@@ -155,15 +155,23 @@ async function navigate(view, { refresh = false } = {}) {
 
 async function loadView(view, refresh) {
   if (!refresh && state.data.has(view)) return state.data.get(view);
+  if (view === 'settings') {
+    const [diagnostics, notifications] = await Promise.all([
+      api('/api/v1/settings/diagnostics'),
+      api('/api/v1/notifications'),
+    ]);
+    const data = { ...diagnostics, notifications };
+    state.data.set(view, data);
+    return data;
+  }
   const routes = {
     today: '/api/v1/today',
     plan: '/api/v1/plan/current',
     tasks: '/api/v1/tasks',
-    calendar: '/api/v1/events',
+    calendar: '/api/v1/calendar',
     evidence: '/api/v1/evidence',
     places: '/api/v1/places',
     ask: '/api/v1/ask/capabilities',
-    settings: '/api/v1/settings/diagnostics',
   };
   const data = await api(routes[view]);
   state.data.set(view, data);
@@ -328,7 +336,10 @@ function renderTasks(tasks) {
     </section>`;
 }
 
-function renderCalendar(events) {
+function renderCalendar(data) {
+  const events = data.events || [];
+  const templates = data.recurring_templates || [];
+  const occurrences = (data.occurrences || []).filter(item => !item.cancelled);
   const cards = events.map(e => `<div class="panel source-card" data-action="inspect-event" data-id="${esc(e.id)}">
     <div class="source-head"><div><p class="eyebrow">${e.location_effect.kind === 'MOVE' ? 'Booked journey' : 'Fixed event'}</p><h3>${esc(e.title)}</h3></div>${badge('CANONICAL','canonical')}</div>
     <div class="key-value"><dt>When</dt><dd>${esc(fmtDate(e.starts_at))} → ${esc(fmtDate(e.ends_at))}</dd></div>
@@ -336,7 +347,22 @@ function renderCalendar(events) {
     <div class="key-value"><dt>Location effect</dt><dd>${esc(e.location_effect.kind)}${e.location_effect.origin_place_id ? ` · ${esc(e.location_effect.origin_place_id)} → ${esc(e.location_effect.destination_place_id)}` : e.location_effect.destination_place_id ? ` · ${esc(e.location_effect.destination_place_id)}` : ''}</dd></div>
     <div class="key-value"><dt>Arrival requirement</dt><dd>${esc(fmtDuration(e.arrival_requirement_minutes))}</dd></div>
   </div>`).join('');
-  $('#workspace').innerHTML = `<section class="section"><div class="section-head"><div><h2>Calendar facts</h2><p>Canonical fixed commitments. A booked MOVE journey is not a derived commute.</p></div><button class="button primary" data-action="new-event">New event</button></div>${events.length ? `<div class="grid grid-2">${cards}</div>` : `<div class="empty"><div><strong>No fixed events.</strong>Add a canonical event. Flexible-window events remain unsupported and are not silently coerced.</div></div>`}</section>`;
+  const series = templates.map(t => `<div class="panel source-card">
+    <div class="source-head"><div><p class="eyebrow">Recurring rule · v${esc(t.version)}</p><h3>${esc(t.title)}</h3></div>${badge('CANONICAL RULE','canonical')}</div>
+    <div class="key-value"><dt>DTSTART (local)</dt><dd>${esc(t.dtstart_local)}</dd></div>
+    <div class="key-value"><dt>RRULE</dt><dd><span class="mono">${esc(t.recurrence_rule)}</span></dd></div>
+    <div class="key-value"><dt>Timezone</dt><dd>${esc(t.timezone_name)}</dd></div>
+    <div class="key-value"><dt>Duration</dt><dd>${esc(fmtDuration(t.duration_minutes))}</dd></div>
+    <p class="muted">The rule is canonical; expanded occurrences are derived and keep their original recurrence identity when moved.</p>
+  </div>`).join('');
+  const occurrenceRows = occurrences.slice(0, 24).map(o => {
+    const template = templates.find(t => t.id === o.template_id);
+    return `<tr><td><strong>${esc(template?.title || o.template_id)}</strong><small class="table-sub">${o.override_id ? 'moved/overridden' : 'generated'}</small></td><td>${esc(fmtDate(o.starts_at))}</td><td><span class="mono">${esc(o.original_recurrence_id)}</span></td><td>${badge('DERIVED OCCURRENCE','derived')}</td></tr>`;
+  }).join('');
+  $('#workspace').innerHTML = `
+    <section class="section"><div class="section-head"><div><h2>Calendar facts</h2><p>Canonical fixed commitments. A booked MOVE journey is not a derived commute.</p></div><div class="inline-actions"><button class="button" data-action="new-recurring-event">New recurring event</button><button class="button primary" data-action="new-event">New fixed event</button></div></div>${events.length ? `<div class="grid grid-2">${cards}</div>` : `<div class="empty"><div><strong>No fixed events.</strong>Add a canonical event. Flexible-window events remain unsupported and are not silently coerced.</div></div>`}</section>
+    <section class="section"><div class="section-head"><div><h2>Recurring series</h2><p>Local civil DTSTART + IANA timezone remain canonical. Occurrence identity is separate from its moved start time.</p></div></div>${templates.length ? `<div class="grid grid-2">${series}</div>` : '<div class="empty">No recurring templates yet.</div>'}</section>
+    <section class="section"><div class="section-head"><div><h2>Expanded occurrences</h2><p>Derived planning instances for the current 30-day horizon; original recurrence id remains inspectable.</p></div></div>${occurrenceRows ? `<div class="table-wrap"><table><thead><tr><th>Series</th><th>Effective start</th><th>Original recurrence id</th><th>Ownership</th></tr></thead><tbody>${occurrenceRows}</tbody></table></div>` : '<div class="empty">No occurrences in the current horizon.</div>'}</section>`;
 }
 
 function renderEvidence(data) {
@@ -384,11 +410,17 @@ async function renderAsk(capabilities) {
 function renderSettings(data) {
   $('#revision-chip').textContent = `schema v${data.schema_version}\nrev ${data.server_revision}`;
   const connectors = (data.connector_health || []).map(c => `<div class="panel-subtle"><div class="source-head"><strong>${esc(c.id)}</strong>${badge(c.health_status,c.health_status==='CURRENT'?'safe':'stale')}</div><div class="key-value"><dt>Provider</dt><dd>${esc(c.provider)}</dd></div><div class="key-value"><dt>Last success</dt><dd>${esc(fmtDate(c.last_successful_complete_sync_at))}</dd></div></div>`).join('');
+  const notifications = (data.notifications || []).map(n => {
+    const effective = n.snoozed_until || n.scheduled_for;
+    const canSnooze = !['DELIVERED','SUPPRESSED'].includes(n.state);
+    return `<div class="panel-subtle"><div class="source-head"><div><strong>${esc(titleCase(n.kind))}</strong><small>${esc(n.entity_ref || 'system')}</small></div>${badge(n.state,n.state==='DELIVERED'?'safe':n.state==='SUPPRESSED'?'stale':'')}</div><div class="key-value"><dt>Delivery</dt><dd>${esc(fmtDate(effective))}</dd></div><div class="key-value"><dt>Revision binding</dt><dd>domain ${esc(n.domain_revision)} · workflow v${esc(n.version)}</dd></div>${n.last_error ? `<div class="warning-strip">${esc(n.last_error)}</div>` : ''}${canSnooze ? `<div class="inline-actions" style="margin-top:10px"><button class="button ghost" data-action="snooze-notification" data-id="${esc(n.id)}" data-version="${esc(n.version)}">Snooze</button></div>` : ''}</div>`;
+  }).join('');
   $('#workspace').innerHTML = `
     <section class="section grid grid-2">
-      <div class="panel"><h2>Runtime</h2><dl>${kv('Version',data.version)}${kv('Schema',`v${data.schema_version}`)}${kv('Server revision',data.server_revision)}${kv('Account scope',data.account_binding)}${kv('Principal scope',data.principal_binding)}</dl></div>
+      <div class="panel"><h2>Runtime</h2><dl>${kv('Version',data.version)}${kv('Schema',`v${data.schema_version}`)}${kv('Server revision',data.server_revision)}${kv('Recurring templates',data.recurring_template_count)}${kv('Account scope',data.account_binding)}${kv('Principal scope',data.principal_binding)}</dl></div>
       <div class="panel"><h2>Current plan</h2>${data.latest_plan ? `<dl>${kv('Plan',data.latest_plan.id)}${kv('Revision',data.latest_plan.plan_revision)}${kv('Feasibility',data.latest_plan.feasibility_status)}${kv('Input hash',`<span class="mono">${esc(data.latest_plan.input_hash)}</span>`,true)}</dl>` : '<p class="muted">No derived plan persisted yet.</p>'}</div>
     </section>
+    <section class="section"><div class="section-head"><div><h2>Notifications</h2><p>Workflow state is revision-bound and separate from Task/Event truth. Snooze changes delivery time only.</p></div></div>${notifications ? `<div class="grid grid-2">${notifications}</div>` : '<div class="empty">No notification workflow state.</div>'}</section>
     <section class="section"><div class="section-head"><div><h2>Connections</h2><p>Health only; no fake OAuth setup flow is exposed.</p></div></div>${connectors ? `<div class="grid grid-2">${connectors}</div>` : '<div class="empty">No connector workflow state.</div>'}</section>
     <section class="section"><div class="panel"><h2>Privacy boundary</h2><p class="muted">Exact private locations are not serialized by the normal Places endpoint. Imported content is untrusted evidence. Browser requests cannot self-assert account/principal identity.</p></div></section>`;
 }
@@ -508,6 +540,24 @@ function newEventModal() {
   openModal({eyebrow:'Canonical state',title:'New fixed event',body:`<div class="form-grid"><div class="field full"><label>Title</label><input id="ev-title"></div><div class="field"><label>Starts</label><input id="ev-start" type="datetime-local"></div><div class="field"><label>Ends</label><input id="ev-end" type="datetime-local"></div><div class="field"><label>Attendance</label><select id="ev-att"><option>REQUIRED</option><option>OPTIONAL</option><option>PREFERRED</option></select></div><div class="field"><label>Location effect</label><select id="ev-location"><option>NONE</option><option>REMOTE</option></select></div><div class="field"><label>Arrival requirement (min)</label><input id="ev-arrival" type="number" min="0" value="0"></div><div class="field full"><p class="help">The current UI intentionally does not offer FLEXIBLE_WINDOW because the current planner rejects it. STAY/MOVE require existing Place IDs and are inspected from imported/canonical data until a dedicated place picker lands.</p></div></div>`,actions:`<button value="cancel" class="button ghost">Cancel</button><button type="button" class="button primary" data-action="save-event">Create event</button>`});
 }
 
+function newRecurringEventModal() {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  openModal({eyebrow:'Canonical recurrence rule',title:'New recurring event',body:`<div class="form-grid"><div class="field full"><label>Title</label><input id="rec-title"></div><div class="field"><label>DTSTART · local civil time</label><input id="rec-start" type="datetime-local"></div><div class="field"><label>Duration (min)</label><input id="rec-duration" type="number" min="1" value="60"></div><div class="field"><label>IANA timezone</label><input id="rec-zone" value="${esc(zone)}"></div><div class="field"><label>RRULE</label><input id="rec-rule" value="FREQ=WEEKLY"></div><div class="field"><label>Attendance</label><select id="rec-att"><option>REQUIRED</option><option>OPTIONAL</option><option>PREFERRED</option></select></div><div class="field"><label>Location effect</label><select id="rec-location"><option>NONE</option><option>REMOTE</option></select></div><div class="field full"><p class="help">Supported RRULE subset: DAILY/WEEKLY with INTERVAL, COUNT or UNTIL. DTSTART stays a local civil time plus IANA timezone; generated occurrences remain derived.</p></div></div>`,actions:`<button value="cancel" class="button ghost">Cancel</button><button type="button" class="button primary" data-action="save-recurring-event">Create series</button>`});
+}
+
+async function saveRecurringEvent() {
+  const payload={title:$('#rec-title').value.trim(),dtstart_local:$('#rec-start').value ? `${$('#rec-start').value}:00` : null,duration_minutes:Number($('#rec-duration').value),recurrence_rule:$('#rec-rule').value.trim(),timezone_name:$('#rec-zone').value.trim(),attendance_policy:$('#rec-att').value,location_effect:{kind:$('#rec-location').value}};
+  try{await api('/api/v1/recurrence/templates',{method:'POST',body:payload});$('#modal').close();invalidate();toast('Recurring series created');navigate('calendar',{refresh:true});}catch(err){toast(`${err.code}: ${err.message}`,true);}
+}
+
+function snoozeNotificationModal(id, version) {
+  openModal({eyebrow:`Notification workflow · v${version}`,title:'Snooze notification',body:`<div class="form-grid"><div class="field full"><label>Deliver instead at</label><input id="notif-snooze" type="datetime-local"></div><div class="field full"><p class="help">Snooze mutates notification workflow state only. It cannot change a Task cutoff/target or fixed Event time.</p></div></div>`,actions:`<button value="cancel" class="button ghost">Cancel</button><button type="button" class="button primary" data-action="save-notification-snooze" data-id="${esc(id)}" data-version="${esc(version)}">Snooze</button>`});
+}
+
+async function saveNotificationSnooze(id, version) {
+  try{await api(`/api/v1/notifications/${encodeURIComponent(id)}/snooze`,{method:'POST',body:{until:toIsoLocal($('#notif-snooze')),expected_version:Number(version)}});$('#modal').close();invalidate('settings');toast('Notification snoozed; canonical task/event state unchanged');navigate('settings',{refresh:true});}catch(err){toast(`${err.code}: ${err.message}`,true);}
+}
+
 async function saveEvent() {
   const payload={title:$('#ev-title').value.trim(),starts_at:toIsoLocal($('#ev-start')),ends_at:toIsoLocal($('#ev-end')),attendance_policy:$('#ev-att').value,arrival_requirement_minutes:Number($('#ev-arrival').value||0),location_effect:{kind:$('#ev-location').value}};
   try{await api('/api/v1/events',{method:'POST',body:payload});$('#modal').close();invalidate();toast('Event created');navigate('calendar',{refresh:true});}catch(err){toast(`${err.code}: ${err.message}`,true);}
@@ -551,6 +601,10 @@ document.addEventListener('click', async (event) => {
   else if (action === 'save-task-edit') saveTaskEdit(el.dataset.id,el.dataset.version);
   else if (action === 'new-event') newEventModal();
   else if (action === 'save-event') saveEvent();
+  else if (action === 'new-recurring-event') newRecurringEventModal();
+  else if (action === 'save-recurring-event') saveRecurringEvent();
+  else if (action === 'snooze-notification') snoozeNotificationModal(el.dataset.id,el.dataset.version);
+  else if (action === 'save-notification-snooze') saveNotificationSnooze(el.dataset.id,el.dataset.version);
   else if (action === 'lifecycle') lifecycle(el.dataset.id,el.dataset.version,el.dataset.lifecycle);
   else if (action === 'agent-preview') agentPreview();
   else if (action === 'agent-confirm') agentConfirm();

@@ -14,6 +14,8 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
+from student_execution_os.notifications import NotificationKind, SQLiteNotificationRepository
+from student_execution_os.recurrence import SQLiteRecurrenceRepository
 from student_execution_os.reconciliation import (
     ConflictProjection,
     ExtractionCertainty,
@@ -261,4 +263,26 @@ def seed_ui_database(path: str) -> None:
             provider="google_calendar",
             scope="primary-hash",
             connector_version="fixture-v1",
+        )
+        recurrence = SQLiteRecurrenceRepository(repo)
+        recurrence.create_template(
+            account_id=ACCOUNT,
+            template_id="daily-review",
+            title="Daily planning review",
+            dtstart_local=datetime(2026, 9, 21, 17, 30),
+            duration_minutes=30,
+            recurrence_rule="FREQ=DAILY;COUNT=3",
+            timezone_name="UTC",
+            attendance_policy=AttendancePolicy.REQUIRED,
+            actor=ActorCategory.USER_UI,
+        )
+        notifications = SQLiteNotificationRepository(repo)
+        notifications.schedule(
+            account_id=ACCOUNT,
+            suppression_key="fixture:discrete:start-soon",
+            kind=NotificationKind.LATEST_SAFE_START,
+            scheduled_for=NOW + timedelta(minutes=20),
+            domain_revision=repo.get_server_revision(ACCOUNT),
+            entity_ref="discrete",
+            group_key="task:discrete",
         )

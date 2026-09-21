@@ -25,6 +25,7 @@ smoke:
 	PYTHONPATH=src python -m student_execution_os connector-smoke
 	PYTHONPATH=src python -m student_execution_os agent-smoke
 	PYTHONPATH=src python -m student_execution_os travel-smoke
+	PYTHONPATH=src python -m student_execution_os recurrence-notification-smoke
 
 web:
 	PYTHONPATH=src python -m student_execution_os.web.server --help >/dev/null

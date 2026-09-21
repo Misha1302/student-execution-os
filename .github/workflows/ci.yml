@@ -48,5 +48,7 @@ jobs:
         run: python -m student_execution_os agent-smoke
       - name: Travel-aware planning smoke
         run: python -m student_execution_os travel-smoke
+      - name: Recurrence and notification smoke
+        run: python -m student_execution_os recurrence-notification-smoke
       - name: Web host smoke
         run: python -m student_execution_os.web.server --help >/dev/null
