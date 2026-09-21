@@ -31,7 +31,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
-from student_execution_os.reliability import SQLiteDataLifecycle
+from student_execution_os.reliability import AccountDeletionPolicy, SQLiteDataLifecycle
 from student_execution_os.notifications import NotificationKind, SQLiteNotificationRepository
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
@@ -593,6 +593,15 @@ def run_reliability_smoke() -> dict[str, object]:
         lifecycle = SQLiteDataLifecycle(database, now=lambda: now)
         manifest = lifecycle.create_backup(backup)
         export = lifecycle.write_account_export(account_id, export_path)
+        deleted_account = "reliability-smoke-deleted-account"
+        with SQLiteCanonicalRepository(database, clock=FrozenClock(now)) as repo:
+            repo.create_account(deleted_account)
+            deletion_revision = repo.get_server_revision(deleted_account)
+        deletion = lifecycle.delete_account(
+            deleted_account,
+            expected_server_revision=deletion_revision,
+            confirm_account_id=deleted_account,
+        )
         restore = SQLiteDataLifecycle.restore_backup(backup, restored)
         with SQLiteCanonicalRepository(restored, clock=FrozenClock(now)) as repo:
             repo.initialize()
@@ -610,6 +619,8 @@ def run_reliability_smoke() -> dict[str, object]:
             "restored_task": title,
             "restored_checkpoint": checkpoint,
             "restored_notifications": notifications,
+            "deletion_policy_version": deletion.policy_version,
+            "deletion_tombstone_until": deletion.purge_after,
         }
 
 
@@ -656,6 +667,17 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--database", required=True)
     export.add_argument("--account", required=True)
     export.add_argument("--output", required=True)
+
+    delete = subparsers.add_parser("account-delete")
+    delete.add_argument("--database", required=True)
+    delete.add_argument("--account", required=True)
+    delete.add_argument("--expected-revision", type=int, required=True)
+    delete.add_argument("--confirm-account", required=True)
+    delete.add_argument("--tombstone-days", type=int, default=30)
+
+    purge = subparsers.add_parser("deletion-tombstones-purge")
+    purge.add_argument("--database", required=True)
+    purge.add_argument("--at")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -753,6 +775,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "schema_version": result.schema_version,
             "output": args.output,
         }, sort_keys=True))
+        return 0
+    if args.command == "account-delete":
+        result = SQLiteDataLifecycle(args.database).delete_account(
+            args.account,
+            expected_server_revision=args.expected_revision,
+            confirm_account_id=args.confirm_account,
+            policy=AccountDeletionPolicy(tombstone_retention_days=args.tombstone_days),
+        )
+        print(json.dumps(result.to_dict(), sort_keys=True))
+        return 0
+    if args.command == "deletion-tombstones-purge":
+        at = _dt(args.at) if args.at else None
+        purged = SQLiteDataLifecycle(args.database).purge_expired_deletion_tombstones(now=at)
+        print(json.dumps({"purged": purged}, sort_keys=True))
         return 0
 
     if args.command == "account-init":

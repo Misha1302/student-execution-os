@@ -1,6 +1,8 @@
 """Reliability and data-lifecycle operator surfaces."""
 
 from .sqlite_lifecycle import (
+    AccountDeletionPolicy,
+    AccountDeletionResult,
     AccountExport,
     BackupManifest,
     RestoreResult,
@@ -8,6 +10,8 @@ from .sqlite_lifecycle import (
 )
 
 __all__ = [
+    "AccountDeletionPolicy",
+    "AccountDeletionResult",
     "AccountExport",
     "BackupManifest",
     "RestoreResult",

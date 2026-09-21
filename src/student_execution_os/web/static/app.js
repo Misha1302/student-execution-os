@@ -156,11 +156,12 @@ async function navigate(view, { refresh = false } = {}) {
 async function loadView(view, refresh) {
   if (!refresh && state.data.has(view)) return state.data.get(view);
   if (view === 'settings') {
-    const [diagnostics, notifications] = await Promise.all([
+    const [diagnostics, notifications, deletion] = await Promise.all([
       api('/api/v1/settings/diagnostics'),
       api('/api/v1/notifications'),
+      api('/api/v1/account/deletion-policy'),
     ]);
-    const data = { ...diagnostics, notifications };
+    const data = { ...diagnostics, notifications, deletion };
     state.data.set(view, data);
     return data;
   }
@@ -422,7 +423,7 @@ function renderSettings(data) {
     </section>
     <section class="section"><div class="section-head"><div><h2>Notifications</h2><p>Workflow state is revision-bound and separate from Task/Event truth. Snooze changes delivery time only.</p></div></div>${notifications ? `<div class="grid grid-2">${notifications}</div>` : '<div class="empty">No notification workflow state.</div>'}</section>
     <section class="section"><div class="section-head"><div><h2>Connections</h2><p>Health only; no fake OAuth setup flow is exposed.</p></div></div>${connectors ? `<div class="grid grid-2">${connectors}</div>` : '<div class="empty">No connector workflow state.</div>'}</section>
-    <section class="section"><div class="panel"><h2>Data lifecycle</h2><p class="muted">Account export is server-scoped to the authenticated account. It intentionally includes private account data, including exact saved locations, and must be handled as a sensitive artifact.</p><div class="inline-actions" style="margin-top:12px"><a class="button ghost" href="/api/v1/account/export" download="student-execution-os-export.json">Download account export</a></div></div></section>
+    <section class="section"><div class="panel"><h2>Data lifecycle</h2><p class="muted">Account export is server-scoped to the authenticated account. It intentionally includes private account data, including exact saved locations, and must be handled as a sensitive artifact.</p><div class="inline-actions" style="margin-top:12px"><a class="button ghost" href="/api/v1/account/export" download="student-execution-os-export.json">Download account export</a></div><hr class="panel-rule"><div class="source-head"><div><strong>Delete local account</strong><small>${esc(data.deletion.policy_version)} · server revision ${esc(data.deletion.server_revision)}</small></div>${badge('DESTRUCTIVE','stale')}</div><p class="muted">Deletion immediately purges account-scoped operational/private SQLite state. For ${esc(data.deletion.tombstone_retention_days)} days only a minimal tombstone is retained to reject stale connector/client replay and account-id reuse. Audit/provenance is not retained by this local policy; this release has no OAuth/secret store to revoke.</p><div class="inline-actions" style="margin-top:12px"><button class="button danger" data-action="account-delete-preview">Review account deletion</button></div></div></section>
     <section class="section"><div class="panel"><h2>Privacy boundary</h2><p class="muted">Exact private locations are not serialized by the normal Places endpoint. Imported content is untrusted evidence. Browser requests cannot self-assert account/principal identity.</p></div></section>`;
 }
 
@@ -569,6 +570,39 @@ async function lifecycle(id, version, action) {
   catch(err){ if(err.code==='VERSION_CONFLICT') toast('Entity changed on the server. Current state was reloaded.',true); else toast(`${err.code}: ${err.message}`,true); invalidate(); navigate(state.view,{refresh:true}); }
 }
 
+function accountDeletePreview() {
+  const settings = state.data.get('settings');
+  const deletion = settings?.deletion;
+  if (!deletion) return;
+  openModal({
+    eyebrow:`Account deletion · ${deletion.policy_version}`,
+    title:'Confirm local account deletion',
+    body:`<div class="conflict-strip"><strong>This removes the local account immediately.</strong><br>Tasks, events, evidence/provenance, plans, connector state, places, recurrence and notification workflow are purged for this account.</div><dl>${kv('Account id',deletion.account_id)}${kv('Expected server revision',deletion.server_revision)}${kv('Tombstone retention',`${deletion.tombstone_retention_days} days`)}${kv('Retained audit/provenance',deletion.retained_audit_or_provenance?'yes':'no')}${kv('Secret revocation',deletion.secret_revocation)}</dl><div class="field"><label for="account-delete-confirm">Type the exact account id to confirm</label><input id="account-delete-confirm" autocomplete="off" spellcheck="false" placeholder="${esc(deletion.account_id)}"></div><p class="help">The retained tombstone contains only account id, deletion receipt/timestamps, policy version and retention reason. It is not a recoverable copy of your account.</p>`,
+    actions:`<button value="cancel" class="button ghost">Keep account</button><button type="button" class="button danger" data-action="account-delete-confirm">Delete local account</button>`,
+  });
+}
+
+async function accountDeleteConfirm() {
+  const settings = state.data.get('settings');
+  const deletion = settings?.deletion;
+  if (!deletion) return;
+  const typed = $('#account-delete-confirm')?.value || '';
+  try {
+    const result = await api('/api/v1/account/delete',{method:'POST',body:{expected_server_revision:Number(deletion.server_revision),confirm_account_id:typed}});
+    $('#modal').close();
+    state.data.clear();
+    $('#revision-chip').textContent = 'account deleted';
+    $('#page-title').textContent = 'Account deleted';
+    $('#eyebrow').textContent = 'Data lifecycle';
+    $('#workspace').dataset.view = 'settings';
+    $('#workspace').dataset.viewState = 'ready';
+    $('#workspace').innerHTML = `<section class="section"><div class="panel"><h2>Local account deleted</h2><p>Account-scoped operational/private state was purged.</p><dl>${kv('Deletion id',result.deletion_id)}${kv('Deleted at',fmtDate(result.deleted_at))}${kv('Tombstone until',fmtDate(result.purge_after))}${kv('Policy',result.policy_version)}${kv('Secret revocation',result.secret_revocation_status)}</dl><div class="warning-strip">This UI session is no longer attached to a live account. Restart/reprovision explicitly after the tombstone retention window if you intend to reuse this account id.</div></div></section>`;
+  } catch(err) {
+    if (err.code === 'VERSION_CONFLICT') toast('Account changed on the server. Reload Settings before deleting.',true);
+    else toast(`${err.code}: ${err.message}`,true);
+  }
+}
+
 async function agentPreview() {
   const select=$('#agent-target'); if(!select) return;
   const option=select.options[select.selectedIndex];
@@ -606,6 +640,8 @@ document.addEventListener('click', async (event) => {
   else if (action === 'save-recurring-event') saveRecurringEvent();
   else if (action === 'snooze-notification') snoozeNotificationModal(el.dataset.id,el.dataset.version);
   else if (action === 'save-notification-snooze') saveNotificationSnooze(el.dataset.id,el.dataset.version);
+  else if (action === 'account-delete-preview') accountDeletePreview();
+  else if (action === 'account-delete-confirm') accountDeleteConfirm();
   else if (action === 'lifecycle') lifecycle(el.dataset.id,el.dataset.version,el.dataset.lifecycle);
   else if (action === 'agent-preview') agentPreview();
   else if (action === 'agent-confirm') agentConfirm();
