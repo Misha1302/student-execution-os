@@ -181,7 +181,7 @@ class Pass8RecurrenceNotificationTests(unittest.TestCase):
         sends: list[str] = []
         result = self.notifications.deliver(
             account_id="a", notification_id=notification.id,
-            sender=lambda item: sends.append(item.id) or True,
+            sender=lambda item, _key: sends.append(item.id) or True,
         )
         self.assertEqual(result.state, NotificationState.SUPPRESSED)
         self.assertEqual(result.last_error, "STALE_DOMAIN_REVISION")
@@ -194,7 +194,7 @@ class Pass8RecurrenceNotificationTests(unittest.TestCase):
             scheduled_for=BASE, domain_revision=revision, entity_ref="t1",
         )
         failed = self.notifications.deliver(
-            account_id="a", notification_id=initial.id, sender=lambda _: False,
+            account_id="a", notification_id=initial.id, sender=lambda _item, _key: False,
         )
         self.assertEqual(failed.state, NotificationState.FAILED)
         followup = self.notifications.schedule(
@@ -205,7 +205,7 @@ class Pass8RecurrenceNotificationTests(unittest.TestCase):
         sends: list[str] = []
         blocked = self.notifications.deliver(
             account_id="a", notification_id=followup.id,
-            sender=lambda item: sends.append(item.id) or True,
+            sender=lambda item, _key: sends.append(item.id) or True,
         )
         self.assertEqual(blocked.state, NotificationState.SUPPRESSED)
         self.assertEqual(blocked.last_error, "INITIAL_NOTIFICATION_NOT_DELIVERED")

@@ -16,7 +16,7 @@ from student_execution_os.agent import (
 )
 from student_execution_os.connectors import SQLiteConnectorRepository
 from student_execution_os.domain.clock import FrozenClock
-from student_execution_os.persistence import SQLiteCanonicalRepository
+from student_execution_os.persistence import SCHEMA_VERSION, SQLiteCanonicalRepository
 from student_execution_os.planning import PlanningService, SQLitePlanningStateSource, build_planning_snapshot
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.reliability import AccountDeletionPolicy, SQLiteDataLifecycle
@@ -75,7 +75,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             lifecycle = SQLiteDataLifecycle(db, now=lambda: NOW)
             manifest = lifecycle.create_backup(backup)
             self.assertEqual(manifest.integrity_check, "ok")
-            self.assertEqual(manifest.schema_version, 8)
+            self.assertEqual(manifest.schema_version, SCHEMA_VERSION)
             self.assertTrue(SQLiteDataLifecycle.manifest_path(backup).exists())
             if os.name == "posix":
                 self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
@@ -85,7 +85,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             self.assertTrue(restore.sha256_verified)
             self.assertEqual(restore.integrity_check, "ok")
             self.assertEqual(restore.foreign_key_violations, 0)
-            self.assertEqual(restore.restored_schema_version, 8)
+            self.assertEqual(restore.restored_schema_version, SCHEMA_VERSION)
             if os.name == "posix":
                 self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
 

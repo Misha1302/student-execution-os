@@ -32,7 +32,13 @@ from student_execution_os.domain.model import (
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
 from student_execution_os.reliability import AccountDeletionPolicy, SQLiteDataLifecycle
-from student_execution_os.notifications import NotificationKind, SQLiteNotificationRepository
+from student_execution_os.notifications import (
+    DeliveryReceipt,
+    NotificationDeliveryPolicy,
+    NotificationKind,
+    SQLiteNotificationDeliveryOutbox,
+    SQLiteNotificationRepository,
+)
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     FeasibilityEngine,
@@ -529,6 +535,75 @@ def run_recurrence_notification_smoke() -> dict[str, object]:
         }
 
 
+
+def run_notification_delivery_smoke() -> dict[str, object]:
+    account_id = "notification-delivery-smoke-account"
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    clock = FrozenClock(now)
+    with tempfile.TemporaryDirectory() as tmp:
+        database = Path(tmp) / "notification-delivery.sqlite3"
+        with SQLiteCanonicalRepository(database, clock=clock) as repo:
+            repo.initialize()
+            repo.create_account(account_id)
+            notifications = SQLiteNotificationRepository(repo)
+            item = notifications.schedule(
+                account_id=account_id,
+                suppression_key="smoke:deadline",
+                kind=NotificationKind.DEADLINE_WARNING,
+                scheduled_for=now,
+                domain_revision=repo.get_server_revision(account_id),
+                entity_ref="smoke-task",
+            )
+            outbox = SQLiteNotificationDeliveryOutbox(
+                notifications,
+                policy=NotificationDeliveryPolicy(
+                    lease_seconds=30,
+                    base_retry_seconds=10,
+                    max_retry_seconds=60,
+                    max_attempts=3,
+                ),
+            )
+            first = outbox.claim(
+                account_id=account_id,
+                notification_id=item.id,
+                worker_id="smoke-worker-1",
+            )
+            if first is None:
+                raise RuntimeError("notification delivery smoke did not acquire initial lease")
+            delivery_key = first.delivery.delivery_key
+
+        clock.set(now + timedelta(seconds=31))
+        with SQLiteCanonicalRepository(database, clock=clock) as repo:
+            notifications = SQLiteNotificationRepository(repo)
+            outbox = SQLiteNotificationDeliveryOutbox(
+                notifications,
+                policy=NotificationDeliveryPolicy(
+                    lease_seconds=30,
+                    base_retry_seconds=10,
+                    max_retry_seconds=60,
+                    max_attempts=3,
+                ),
+            )
+            delivered = outbox.dispatch(
+                account_id=account_id,
+                notification_id=item.id,
+                worker_id="smoke-worker-2",
+                sender=lambda _item, key: DeliveryReceipt(
+                    delivered=key == delivery_key,
+                    provider_message_id="smoke-provider-message",
+                ),
+            )
+            persisted = outbox.get(account_id, item.id)
+            return {
+                "status": "ok",
+                "schema_version": repo.schema_version(),
+                "notification_state": delivered.state.value,
+                "delivery_state": persisted.state.value,
+                "attempt_count": persisted.attempt_count,
+                "delivery_key_stable": persisted.delivery_key == delivery_key,
+                "provider_message_id": persisted.provider_message_id,
+            }
+
 def run_reliability_smoke() -> dict[str, object]:
     account_id = "reliability-smoke-account"
     now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
@@ -651,6 +726,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("agent-smoke")
     subparsers.add_parser("travel-smoke")
     subparsers.add_parser("recurrence-notification-smoke")
+    subparsers.add_parser("notification-delivery-smoke")
     subparsers.add_parser("reliability-smoke")
 
     backup = subparsers.add_parser("backup")
@@ -752,6 +828,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "recurrence-notification-smoke":
         print(json.dumps(run_recurrence_notification_smoke(), sort_keys=True))
+        return 0
+    if args.command == "notification-delivery-smoke":
+        print(json.dumps(run_notification_delivery_smoke(), sort_keys=True))
         return 0
     if args.command == "reliability-smoke":
         print(json.dumps(run_reliability_smoke(), sort_keys=True))

@@ -100,7 +100,10 @@ class SQLiteNotificationRepository:
                 )
                 if cur.rowcount != 1:
                     raise VersionConflict("notification version changed during recomputation")
-            return self.get(account_id, existing.id)
+            result = self.get(account_id, existing.id)
+            from .delivery import SQLiteNotificationDeliveryOutbox
+            SQLiteNotificationDeliveryOutbox(self).reset_for_recomputed_notification(result)
+            return result
         now = self.clock.now()
         notification_id = self.stable_id(account_id, suppression_key)
         with self.canonical._tx() as conn:
@@ -143,6 +146,10 @@ class SQLiteNotificationRepository:
         self, *, account_id: str, notification_id: str, until: datetime, expected_version: int
     ) -> Notification:
         current = self.get(account_id, notification_id)
+        from .delivery import SQLiteNotificationDeliveryOutbox
+        outbox = SQLiteNotificationDeliveryOutbox(self)
+        if outbox.has_active_lease(account_id, notification_id):
+            raise ValidationError("notification cannot be snoozed while delivery lease is active")
         if current.version != expected_version:
             raise VersionConflict("notification version changed")
         if current.state in (NotificationState.DELIVERED, NotificationState.SUPPRESSED):
@@ -158,7 +165,9 @@ class SQLiteNotificationRepository:
             )
             if cur.rowcount != 1:
                 raise VersionConflict("notification version changed before snooze commit")
-        return self.get(account_id, notification_id)
+        result = self.get(account_id, notification_id)
+        outbox.reset_for_recomputed_notification(result)
+        return result
 
     def due(self, account_id: str, now: datetime | None = None) -> list[Notification]:
         self.canonical._require_account(account_id)
@@ -179,44 +188,16 @@ class SQLiteNotificationRepository:
         *,
         account_id: str,
         notification_id: str,
-        sender: Callable[[Notification], bool],
+        sender: Callable[[Notification, str], object],
+        worker_id: str = "inline",
     ) -> Notification:
-        current = self.get(account_id, notification_id)
-        if current.state in (NotificationState.DELIVERED, NotificationState.SUPPRESSED):
-            return current
-        now = self.clock.now()
-        effective_due = current.snoozed_until or current.scheduled_for
-        if current.cooldown_until is not None and current.cooldown_until > effective_due:
-            effective_due = current.cooldown_until
-        if effective_due > now:
-            return current
-
-        stale_reason = self._stale_reason(current)
-        if stale_reason is not None:
-            return self._mark_suppressed(current, stale_reason)
-        if current.initial_notification_id is not None:
-            initial = self.get(account_id, current.initial_notification_id)
-            if initial.state is not NotificationState.DELIVERED:
-                return self._mark_suppressed(current, "INITIAL_NOTIFICATION_NOT_DELIVERED")
-
-        try:
-            delivered = bool(sender(current))
-            error = None if delivered else "CHANNEL_DELIVERY_FAILED"
-        except Exception as exc:  # channel boundary: persist one retryable workflow result
-            delivered = False
-            error = f"CHANNEL_ERROR:{type(exc).__name__}"
-        with self.canonical._tx() as conn:
-            cur = conn.execute(
-                "UPDATE notifications SET state=?,delivered_at=?,attempt_count=attempt_count+1,last_error=?,"
-                "version=version+1,updated_at=? WHERE account_id=? AND id=? AND version=?",
-                (
-                    NotificationState.DELIVERED.value if delivered else NotificationState.FAILED.value,
-                    _iso(now) if delivered else None, error, _iso(now), account_id, notification_id, current.version,
-                ),
-            )
-            if cur.rowcount != 1:
-                raise VersionConflict("notification version changed before delivery commit")
-        return self.get(account_id, notification_id)
+        from .delivery import SQLiteNotificationDeliveryOutbox
+        return SQLiteNotificationDeliveryOutbox(self).dispatch(
+            account_id=account_id,
+            notification_id=notification_id,
+            worker_id=worker_id,
+            sender=sender,
+        )
 
     def _stale_reason(self, item: Notification) -> str | None:
         if self.canonical.get_server_revision(item.account_id) != item.domain_revision:

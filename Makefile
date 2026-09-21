@@ -26,6 +26,7 @@ smoke:
 	PYTHONPATH=src python -m student_execution_os agent-smoke
 	PYTHONPATH=src python -m student_execution_os travel-smoke
 	PYTHONPATH=src python -m student_execution_os recurrence-notification-smoke
+	PYTHONPATH=src python -m student_execution_os notification-delivery-smoke
 	PYTHONPATH=src python -m student_execution_os reliability-smoke
 
 web:
