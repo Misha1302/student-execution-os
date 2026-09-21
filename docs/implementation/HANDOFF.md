@@ -1,17 +1,18 @@
 # Student Execution OS — Implementation Handoff
 
-> Checkpoint only. Re-read current repository, specification, PR/branch state and exact-head CI before using this file as current truth.
+> Checkpoint only. Re-read current repository, specification, PR/branch state, exact commit refs and CI before treating this file as current truth.
 
 ## Identity
 
 - Repository: `Misha1302/student-execution-os`
-- UI slice baseline: `fcdd4eb346491501c1c18a90ab5e69e7d0869898` (merged Pass 7)
+- Pass 8 baseline: merged UI/main `a76a2256ed1768fc648123230d184b583a237862`
 - Normative specification: v2.1
-- UI implementation branch: `ui/product-shell-stage2`
-- Schema before this UI slice: v6
+- Pass 8 branch: `impl/pass-8-recurrence-notifications`
+- Schema: v7
+- Package candidate: `0.5.0.dev1`
 - Date: 2026-09-21
 
-## Completed before this slice
+## Completed before Pass 8
 
 - [x] Pass 0 — baseline / stack / skeleton / CI
 - [x] Pass 1 — canonical local domain / persistence / concurrency
@@ -21,76 +22,88 @@
 - [x] Pass 5 — Google Calendar evidence connector
 - [x] Pass 6 — LLM extraction / authenticated action boundary
 - [x] Pass 7 — travel-aware planning
+- [x] Product UI stage — PR #10 merged at `a76a2256ed1768fc648123230d184b583a237862`, post-merge CI green
 
-## UI product slice
+## Pass 8 candidate
 
-Implemented a real server-backed product shell rather than a mock/demo:
+Implemented recurrence and notification workflow ownership without creating another planning or Task/Event truth.
 
-- `Today` — current proof state, 1–5 next actions, safe boundaries and hard travel occupancy;
-- `Plan` — separate canonical facts vs derived WORK / EVENT_PROJECTION / TRAVEL_TRANSITION / BUFFER;
-- `Tasks` — create/edit/lifecycle with expected-version concurrency;
-- `Calendar` — canonical fixed Events and visibly distinct MOVE journeys;
-- `Evidence` — source health, observations, open conflicts, effective interpretation and active overrides;
-- `Places` — aliases, current-location state and route freshness without serializing exact address/coordinates;
-- `Ask` — explicit statement that no live LLM provider is configured plus real authenticated destructive-action preview/confirmation;
-- `Settings` — schema/server revision, current plan and connector diagnostics.
+### Recurrence
 
-### Application boundary
+- canonical account-scoped `RecurringTemplate`;
+- local-civil DTSTART plus IANA timezone;
+- fail-closed RRULE subset: DAILY / WEEKLY with INTERVAL / COUNT / UNTIL;
+- stable occurrence identity `(template_id, original_recurrence_id)`;
+- `CANCEL` / `MODIFY` occurrence overrides;
+- “this and future” split into old + successor template without rewriting history;
+- deterministic ambiguous/nonexistent local-time policy;
+- recurring Event projections enter the ordinary PlanningSnapshot, travel and feasibility path;
+- Calendar UI distinguishes `CANONICAL RULE` from `DERIVED OCCURRENCE`.
 
-`student_execution_os.web.UiService` is an account/principal-bound façade over existing owners. Browser requests cannot self-assert account scope. PlanBlocks are read-only projections. Existing repositories continue to own mutation semantics, feasibility, planning, reconciliation, travel and agent authorization.
+### Notifications
 
-The host uses FastAPI/uvicorn and serves a zero-build native ES-module/CSS frontend. ADR 0009 records why this slice did not introduce an unreproducible npm dependency graph when registry access was unavailable during implementation.
+- notification workflow state persisted separately from canonical Task/Event truth;
+- stable suppression key / deterministic id;
+- captured domain revision plus optional plan id/revision;
+- stale revision suppression immediately before sender invocation;
+- completion follow-up gated on successful initial delivery;
+- snooze with optimistic versioning and no canonical server revision mutation;
+- quiet hours in an IANA timezone;
+- deterministic grouping/cooldown/recomputation behavior;
+- Settings/UI surface exposes notification state and safe snooze semantics.
 
-### Privacy and action safety
+### Risk execution budget repair
 
-- Places API omits exact address/coordinates by construction.
-- Cross-account guessed task ids fail as not-found at the UI boundary.
-- Destructive agent cancellation uses server-minted `ActionIntent`, expected version, explicit confirmation and idempotency.
-- Imported/source text remains data and never authorization.
-- Local host defaults to loopback; non-loopback binding requires an explicit flag and is not a production-auth claim.
+A pre-existing runtime problem became visible once recurrence increased planning complexity: the two-second `RiskEngine` budget was being granted independently to every scenario and every latest-safe-start sub-search. One read could therefore multiply the configured budget many times.
+
+The candidate now uses one wall-clock deadline for the whole risk evaluation. Sub-searches receive only the remaining budget. Exhaustion returns `UNKNOWN` / `RISK_EVALUATION_BUDGET_EXHAUSTED`, preserving the specification’s fail-closed exact-feasibility semantics.
+
+### Browser harness repair
+
+The Chromium suite now owns one Playwright driver/browser per test class and closes per-test pages. This removes repeated driver start/stop churn while preserving real Chromium coverage.
+
+## Acceptance coverage
+
+Pass 8 adds executable coverage for:
+
+- AT-50 — moved occurrence keeps its original recurrence identity;
+- AT-51 — “this and future” preserves historical occurrences;
+- AT-52 — intended local civil time survives DST transition under the declared policy;
+- AT-53 — obsolete revision-bound notification is suppressed before channel delivery;
+- AT-54 — completion follow-up is blocked until the initial reminder was delivered;
+- AT-55 — snooze mutates notification workflow timing only;
+- AT-68 — repeated recomputation rebinds one logical notification rather than duplicating it;
+- recurrence entering the same planning/travel input path;
+- quiet-hours deferral;
+- v6 → v7 migration preservation;
+- risk-engine total budget exhaustion failing closed to UNKNOWN;
+- recurrence/notification API and browser presentation.
 
 ## Local verification checkpoint
 
-The final pre-commit candidate was verified in one `make verify` run on 2026-09-21:
+The current Pass 8 candidate has a terminal `make verify` result with exit code **0** on 2026-09-21:
 
-- existing unit/integration/acceptance suite: **137/137 PASS**;
-- web/API acceptance suite: **9/9 PASS**;
+- core unit/integration/acceptance suite: **148/148 PASS**;
+- web/API acceptance suite: **12/12 PASS**;
 - real Chromium UI suite: **3/3 PASS**;
-- all 8 existing CLI smoke surfaces: **PASS**;
+- all 9 CLI smoke surfaces, including `recurrence-notification-smoke`: **PASS**;
 - web-host CLI smoke: **PASS**;
-- Python compile + frontend JS syntax check: **PASS**;
-- `git diff --check`: **PASS**.
+- Python compile + frontend JS syntax check: **PASS**.
 
-The new automated UI/API coverage includes:
+This remains local candidate evidence until terminal GitHub branch HEAD, exact-head hosted CI, PR mergeability and post-merge CI are freshly observed.
 
-- FEASIBLE / INFEASIBLE / UNKNOWN as distinct first-class states;
-- current plan and latest-safe-departure travel boundary;
-- canonical vs derived timeline ownership;
-- stale Google source plus simultaneous open conflict and active override;
-- stale optimistic-concurrency mutation rejection;
-- cross-account isolation;
-- private-location redaction;
-- destructive agent preview + authenticated confirmation;
-- responsive navigation and mobile Agenda fallback;
-- long-title/narrow-layout containment and short/dense timeline rendering without overlap.
+## Known limits / Pass 9 targets
 
-Fresh desktop/narrow/mobile screenshots were also reviewed on the same candidate. This is local candidate evidence only: terminal branch SHA, pushed exact-head GitHub Actions, PR mergeability and post-merge CI must still be re-read before any merge/completion claim.
+- Production authentication/TLS/secret-management/deployment remains outside this implementation.
+- Google Calendar still lacks production OAuth consent/refresh lifecycle.
+- No live routing/maps provider exists.
+- No live LLM provider exists.
+- No external notification channel is configured.
+- Notification sender execution still needs Pass 9 durable delivery lease/outbox/crash-retry hardening for stronger duplicate-delivery guarantees.
+- Recurrence supports a deliberately limited RRULE subset; unsupported components fail closed.
+- Unbounded recurrence expansion should receive explicit production work budgets if usage requires very distant moved overrides.
+- Restart/backup/restore, export isolation, observability and final production-boundary hardening remain Pass 9/10 work.
 
-## Known external/deployment limitations
+## Next pass after safe Pass 8 merge
 
-- No live LLM provider is configured; the UI does not fake one.
-- Google Calendar Pass 5 still lacks the production OAuth consent/refresh-token lifecycle.
-- No live routing/maps provider exists; the UI uses real persisted route evidence only.
-- Production session authentication, TLS termination, secret management and deployment are not introduced by this local product slice.
-
-## Remaining normative work after safe UI merge
-
-Re-read the current specification and build a fresh conformance ledger. Expected major areas remain:
-
-- recurrence and stable occurrence identity / DST semantics;
-- notification workflow/delivery state, quiet hours, suppression/idempotency;
-- reliability/security hardening, restart/backup/restore and production-boundary requirements;
-- final acceptance/migration/install/restart/conformance closure;
-- UI synchronization for recurrence/notifications/hardening features.
-
-The UI approval authorizes continuing these independent passes after a safe UI merge, but not production deployment, paid services or secret disclosure.
+Pass 9 — reliability / security / hardening. Re-read the current specification, current `main`, Pass 8 merge commit and exact post-merge CI before mutation. Build a fresh gap ledger rather than assuming this handoff is current.

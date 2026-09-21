@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import timedelta
 import unittest
 from pathlib import Path
 
@@ -33,7 +34,7 @@ class WebApiTest(unittest.TestCase):
     def test_health_and_security_headers(self):
         response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["schema_version"], 6)
+        self.assertEqual(response.json()["schema_version"], 7)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
@@ -54,6 +55,73 @@ class WebApiTest(unittest.TestCase):
         self.assertTrue({"WORK", "EVENT_PROJECTION", "TRAVEL_TRANSITION", "BUFFER"}.issubset(block_types))
         move = next(e for e in plan["canonical_events"] if e["id"] == "train")
         self.assertEqual(move["location_effect"]["kind"], "MOVE")
+
+
+    def test_calendar_exposes_canonical_recurrence_rule_and_stable_occurrence_identity(self):
+        body = self.client.get("/api/v1/calendar").json()
+        template = next(item for item in body["recurring_templates"] if item["id"] == "daily-review")
+        self.assertEqual(template["ownership"], "CANONICAL_RULE")
+        self.assertEqual(template["recurrence_rule"], "FREQ=DAILY;COUNT=3")
+        occurrence = next(item for item in body["occurrences"] if item["template_id"] == "daily-review")
+        self.assertEqual(
+            occurrence["identity"],
+            ["daily-review", occurrence["original_recurrence_id"]],
+        )
+        self.assertEqual(occurrence["ownership"], "DERIVED_OCCURRENCE")
+
+    def test_recurrence_write_surface_moves_one_occurrence_without_changing_identity(self):
+        created = self.client.post(
+            "/api/v1/recurrence/templates",
+            json={
+                "id": "ui-series",
+                "title": "UI recurrence",
+                "dtstart_local": "2026-09-21T20:00:00",
+                "duration_minutes": 30,
+                "recurrence_rule": "FREQ=DAILY;COUNT=2",
+                "timezone_name": "UTC",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        original_id = "2026-09-21T20:00:00"
+        moved = self.client.post(
+            f"/api/v1/recurrence/templates/ui-series/occurrences/{original_id}/override",
+            json={
+                "action": "MODIFY",
+                "replacement_start_local": "2026-09-21T21:00:00",
+                "expected_version": 0,
+            },
+        )
+        self.assertEqual(moved.status_code, 200)
+        self.assertEqual(moved.json()["original_recurrence_id"], original_id)
+        body = self.client.get("/api/v1/calendar").json()
+        occurrence = next(
+            item for item in body["occurrences"]
+            if item["template_id"] == "ui-series" and item["original_recurrence_id"] == original_id
+        )
+        self.assertEqual(occurrence["identity"], ["ui-series", original_id])
+        self.assertEqual(occurrence["starts_at"], "2026-09-21T21:00:00+00:00")
+
+    def test_notification_snooze_is_version_checked_and_does_not_advance_domain_revision(self):
+        before_revision = self.client.get("/api/v1/settings/diagnostics").json()["server_revision"]
+        item = self.client.get("/api/v1/notifications").json()[0]
+        snooze_until = (NOW + timedelta(hours=1)).isoformat()
+        response = self.client.post(
+            f"/api/v1/notifications/{item['id']}/snooze",
+            json={"until": snooze_until, "expected_version": item["version"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        snoozed = response.json()
+        self.assertEqual(snoozed["state"], "SNOOZED")
+        self.assertEqual(snoozed["snoozed_until"], snooze_until)
+        self.assertEqual(snoozed["version"], item["version"] + 1)
+        after_revision = self.client.get("/api/v1/settings/diagnostics").json()["server_revision"]
+        self.assertEqual(after_revision, before_revision)
+        stale = self.client.post(
+            f"/api/v1/notifications/{item['id']}/snooze",
+            json={"until": (NOW + timedelta(hours=2)).isoformat(), "expected_version": item["version"]},
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["error"]["code"], "VERSION_CONFLICT")
 
     def test_evidence_surfaces_stale_connector_conflict_and_override(self):
         body = self.client.get("/api/v1/evidence").json()

@@ -17,6 +17,7 @@ from student_execution_os.domain.model import (
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt
 from student_execution_os.planning.model import CutoffReconciliationContext
 from student_execution_os.reconciliation.repository import SQLiteReconciliationRepository
+from student_execution_os.recurrence import SQLiteRecurrenceRepository
 from student_execution_os.travel.projection import TravelProjectionBuilder
 from student_execution_os.travel.repository import SQLiteTravelRepository
 
@@ -88,6 +89,11 @@ class SQLitePlanningStateSource:
             "SELECT id FROM obligations WHERE account_id=? AND kind='EVENT' ORDER BY id", (account_id,)
         ).fetchall()
         return [self.repository.get_event(account_id, row["id"]) for row in rows]
+
+    def list_recurring_events(self, account_id: str, horizon_start, horizon_end) -> list[Event]:
+        return SQLiteRecurrenceRepository(self.repository).expand_as_events(
+            account_id=account_id, horizon_start=horizon_start, horizon_end=horizon_end
+        )
 
     def build_travel_projection(
         self,

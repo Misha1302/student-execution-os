@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
+from time import monotonic
 
 from student_execution_os.domain.model import CutoffBoundary, CutoffState, Task, require_aware
 from student_execution_os.planning.feasibility import FeasibilityEngine
@@ -65,13 +66,17 @@ class RiskEngine:
 
     def evaluate(self, snapshot: PlanningSnapshot, now: datetime) -> dict[str, RiskResult]:
         require_aware(now, "now")
+        deadline_clock = monotonic() + max(0.0, self.timeout_seconds)
         scenario_snaps = {scenario: scenario_snapshot(snapshot, scenario) for scenario in Scenario}
         scenario_results = {}
+        budget_exhausted = False
         for scenario, scenario_snap in scenario_snaps.items():
-            scenario_results[scenario] = (
-                None if scenario_snap is None
-                else FeasibilityEngine(node_limit=self.node_limit, timeout_seconds=self.timeout_seconds).evaluate(scenario_snap)
-            )
+            if scenario_snap is None:
+                scenario_results[scenario] = None
+                continue
+            scenario_results[scenario] = self._evaluate_with_budget(scenario_snap, deadline_clock)
+            if scenario_results[scenario] is None:
+                budget_exhausted = True
 
         results: dict[str, RiskResult] = {}
         reconciliation = {item.task_id: item for item in snapshot.cutoff_reconciliation}
@@ -145,7 +150,8 @@ class RiskEngine:
             expected = scenario_results[Scenario.EXPECTED]
             safe = scenario_results[Scenario.SAFE]
             if optimistic is None or expected is None or safe is None:
-                results[task_id] = self._result(snapshot, task_id, RiskState.UNKNOWN, RiskBasis.RESOLVED_FACTS, ("INVALID_SCENARIO_BOUNDS",))
+                reason = "RISK_EVALUATION_BUDGET_EXHAUSTED" if budget_exhausted else "INVALID_SCENARIO_BOUNDS"
+                results[task_id] = self._result(snapshot, task_id, RiskState.UNKNOWN, RiskBasis.RESOLVED_FACTS, (reason,))
                 continue
             if optimistic.status is FeasibilityStatus.INFEASIBLE:
                 results[task_id] = self._result(snapshot, task_id, RiskState.IMPOSSIBLE, RiskBasis.RESOLVED_FACTS, ("OPTIMISTIC_INFEASIBLE",))
@@ -168,23 +174,39 @@ class RiskEngine:
 
             safe_snapshot = scenario_snaps[Scenario.SAFE]
             assert safe_snapshot is not None
-            latest = self._latest_safe_start(safe_snapshot, task_id, now)
+            latest, latest_budget_exhausted = self._latest_safe_start(safe_snapshot, task_id, now, deadline_clock)
             if latest is None:
-                results[task_id] = self._result(snapshot, task_id, RiskState.UNKNOWN, RiskBasis.RESOLVED_FACTS, ("LATEST_SAFE_START_UNKNOWN",))
+                reason = "RISK_EVALUATION_BUDGET_EXHAUSTED" if latest_budget_exhausted else "LATEST_SAFE_START_UNKNOWN"
+                results[task_id] = self._result(snapshot, task_id, RiskState.UNKNOWN, RiskBasis.RESOLVED_FACTS, (reason,))
                 continue
             lead = now + timedelta(minutes=snapshot.policy.start_soon_lead_minutes)
             state = RiskState.START_SOON if latest <= lead else RiskState.SAFE
             results[task_id] = self._result(snapshot, task_id, state, RiskBasis.RESOLVED_FACTS, ("SAFE_SCENARIO_FEASIBLE",), latest)
         return results
 
-    def _latest_safe_start(self, snapshot: PlanningSnapshot, task_id: str, now: datetime) -> datetime | None:
+    def _evaluate_with_budget(self, snapshot: PlanningSnapshot, deadline_clock: float):
+        remaining = deadline_clock - monotonic()
+        if remaining <= 0:
+            return None
+        return FeasibilityEngine(
+            node_limit=self.node_limit,
+            timeout_seconds=remaining,
+        ).evaluate(snapshot)
+
+    def _latest_safe_start(
+        self,
+        snapshot: PlanningSnapshot,
+        task_id: str,
+        now: datetime,
+        deadline_clock: float,
+    ) -> tuple[datetime | None, bool]:
         task = next((t for t in snapshot.tasks if t.obligation.id == task_id), None)
         if task is None or task.actual_cutoff.state is not CutoffState.KNOWN or task.actual_cutoff.at is None:
-            return None
+            return None, False
         lower = max(now, task.actionable_from or now, snapshot.analysis_horizon_start)
         cutoff = task.actual_cutoff.at
         if lower >= cutoff and task.remaining_effort_minutes > 0:
-            return None
+            return None, False
         max_minutes = max(0, int((cutoff - lower).total_seconds() // 60))
         lo, hi = 0, max_minutes
         best: datetime | None = None
@@ -201,15 +223,18 @@ class RiskEngine:
                 tasks=changed_tasks,
                 input_hash=_derived_hash(snapshot, f"LATEST:{task_id}:{candidate.isoformat()}", changed_tasks),
             )
-            result = FeasibilityEngine(node_limit=self.node_limit, timeout_seconds=self.timeout_seconds).evaluate(candidate_snapshot)
+            result = self._evaluate_with_budget(candidate_snapshot, deadline_clock)
+            if result is None:
+                return None, True
             if result.status is FeasibilityStatus.UNKNOWN:
-                return None
+                budget_reason = "EXACT_SEARCH_BUDGET_EXHAUSTED" in result.reasons
+                return None, budget_reason or monotonic() >= deadline_clock
             if result.status is FeasibilityStatus.FEASIBLE:
                 best = candidate
                 lo = mid + 1
             else:
                 hi = mid - 1
-        return best
+        return best, False
 
     @staticmethod
     def _result(snapshot, task_id, state, basis, reasons, latest=None):

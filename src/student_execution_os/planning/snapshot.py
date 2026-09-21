@@ -157,10 +157,24 @@ def _read_stable_inputs(source, account_id: str, analysis_horizon_start: datetim
             (t for t in source.list_tasks(account_id) if t.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
             key=lambda t: t.obligation.id,
         ))
-        events = tuple(sorted(
-            (e for e in source.list_events(account_id) if e.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
-            key=lambda e: e.obligation.id,
-        ))
+        static_events = [
+            e for e in source.list_events(account_id)
+            if e.obligation.lifecycle_status is LifecycleStatus.ACTIVE
+        ]
+        recurring_reader = getattr(source, "list_recurring_events", None)
+        recurring_events = (
+            [
+                e for e in recurring_reader(account_id, analysis_horizon_start, analysis_horizon_end)
+                if e.obligation.lifecycle_status is LifecycleStatus.ACTIVE
+            ]
+            if recurring_reader is not None else []
+        )
+        by_id: dict[str, object] = {}
+        for event in [*static_events, *recurring_events]:
+            if event.obligation.id in by_id:
+                raise RuntimeError(f"duplicate planning event id: {event.obligation.id}")
+            by_id[event.obligation.id] = event
+        events = tuple(sorted(by_id.values(), key=lambda e: e.obligation.id))
         constraints = tuple(sorted(source.list_time_constraints(account_id), key=lambda c: c.id))
         dependencies = tuple(sorted(source.list_dependencies(account_id), key=lambda d: d.id))
         milestones = tuple(sorted(source.list_milestones(account_id), key=lambda m: m.id))

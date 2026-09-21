@@ -73,7 +73,7 @@ class MigrationV6IntegrationTests(unittest.TestCase):
             ) as repo:
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 6)
+                self.assertGreaterEqual(SCHEMA_VERSION, 6)
                 row = repo.connection.execute(
                     "SELECT block_type,source_event_id,travel_estimate_id "
                     "FROM plan_blocks WHERE id='b'"

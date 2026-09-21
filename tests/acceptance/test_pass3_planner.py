@@ -159,6 +159,12 @@ class Pass3AcceptanceTests(unittest.TestCase):
         self.assertEqual(risk.state, RiskState.SAFE)
         self.assertGreater(risk.latest_safe_start, BASE + timedelta(hours=1))
 
+    def test_risk_engine_total_budget_exhaustion_fails_closed_to_unknown(self):
+        self.task("t", 60, HardCutoff.known(BASE + timedelta(hours=6)), low=60, high=60)
+        risk = RiskEngine(timeout_seconds=0.0).evaluate(self.snap(BASE + timedelta(hours=6)), BASE)["t"]
+        self.assertEqual(risk.state, RiskState.UNKNOWN)
+        self.assertIn("RISK_EVALUATION_BUDGET_EXHAUSTED", risk.reasons)
+
     def test_at28_plan_snapshot_invalidation_and_history(self):
         task = self.task("t", 60, HardCutoff.known(BASE + timedelta(hours=4)))
         first_snapshot = self.snap()

@@ -47,11 +47,11 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Pass 2 adds immutable revision/hash-bound `PlanningSnapshot` inputs plus a sound tri-state feasibility core. Pass 3 completes the first executable vertical slice with immutable `PlanSnapshot` history, derived WORK/Event projections, deterministic risk and colour projections, constraint-aware latest-safe-start, 1–5 explainable next actions, and a persistent CLI capture/plan flow. Pass 4 adds immutable source/evidence records, typed observations, reversible source binding, versioned field reconciliation, explicit override/conflict history, provenance-aware conservative cutoff projections, and reconciliation-bound plan invalidation. Pass 5 adds a read-only Google Calendar Events connector with durable sync tokens, connector health, bounded retry, explicit deletion evidence, HTTP 410 full-resync recovery, idempotent replay, and optimistic concurrency that prevents stale sessions from overwriting newer checkpoint/health state. Pass 6 adds a tool-less typed LLM extraction boundary plus a server-bound authenticated action gateway with durable intents, expected-version checks, atomic idempotency replay, prompt-injection fail-closed behavior, private-place alias redaction, and cross-account isolation. Pass 7 adds canonical Places/current-location inputs, source-backed TravelEstimate history, location-bearing Event semantics, derived travel/buffer PlanBlocks, route staleness and unknown-origin fail-closed behavior, and travel-aware hard feasibility without converting booked MOVE Events into derived commute. The first product UI slice adds a loopback-safe FastAPI application boundary and responsive browser shell for Today, Plan, Tasks, Calendar, Evidence, Places, Ask and Settings while preserving those same owners. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
+Pass 0 established the executable skeleton, CI, and acceptance harness. Pass 1 implements the canonical local domain, SQLite schema/migrations, account-scoped repository boundary, optimistic concurrency, server revisions, and audit/change records. Pass 2 adds immutable revision/hash-bound `PlanningSnapshot` inputs plus a sound tri-state feasibility core. Pass 3 completes the first executable vertical slice with immutable `PlanSnapshot` history, derived WORK/Event projections, deterministic risk and colour projections, constraint-aware latest-safe-start, 1–5 explainable next actions, and a persistent CLI capture/plan flow. Pass 4 adds immutable source/evidence records, typed observations, reversible source binding, versioned field reconciliation, explicit override/conflict history, provenance-aware conservative cutoff projections, and reconciliation-bound plan invalidation. Pass 5 adds a read-only Google Calendar Events connector with durable sync tokens, connector health, bounded retry, explicit deletion evidence, HTTP 410 full-resync recovery, idempotent replay, and optimistic concurrency that prevents stale sessions from overwriting newer checkpoint/health state. Pass 6 adds a tool-less typed LLM extraction boundary plus a server-bound authenticated action gateway with durable intents, expected-version checks, atomic idempotency replay, prompt-injection fail-closed behavior, private-place alias redaction, and cross-account isolation. Pass 7 adds canonical Places/current-location inputs, source-backed TravelEstimate history, location-bearing Event semantics, derived travel/buffer PlanBlocks, route staleness and unknown-origin fail-closed behavior, and travel-aware hard feasibility without converting booked MOVE Events into derived commute. The first product UI slice adds a loopback-safe FastAPI application boundary and responsive browser shell for Today, Plan, Tasks, Calendar, Evidence, Places, Ask and Settings while preserving those same owners. Pass 8 adds canonical recurring templates, stable occurrence identity and overrides, deterministic local-civil/DST expansion into the ordinary planning path, plus revision-bound notification workflow state with suppression, quiet hours, snooze and completion-follow-up gating. The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
 ## Run the current implementation locally
 
-Requires Python 3.12+ and no third-party runtime dependencies.
+Requires Python 3.12+. The web/API and browser-verification surfaces use the pinned dependencies in `requirements.txt` / `requirements-dev.txt`.
 
 ```bash
 make verify
@@ -68,9 +68,10 @@ PYTHONPATH=src python -m student_execution_os reconciliation-smoke
 PYTHONPATH=src python -m student_execution_os connector-smoke
 PYTHONPATH=src python -m student_execution_os agent-smoke
 PYTHONPATH=src python -m student_execution_os travel-smoke
+PYTHONPATH=src python -m student_execution_os recurrence-notification-smoke
 ```
 
-`domain-smoke` verifies canonical persistence/versioning. `feasibility-smoke` exercises repository → immutable snapshot → tri-state feasibility. `planner-smoke` exercises the full first vertical slice: canonical Task/Event → snapshot → plan → risk → next actions → persisted derived plan history. `reconciliation-smoke` exercises immutable evidence → conflicting cutoff reconciliation → separately labelled conservative planning projection while preserving conflict truth. `connector-smoke` exercises Google Calendar-shaped provider data → immutable evidence → durable complete-session checkpoint and health state without live OAuth/network access. `agent-smoke` exercises server-minted explicit intent → version-checked cancellation → durable idempotent replay without exposing a generic LLM mutation surface. `travel-smoke` exercises current location + a fresh route estimate + a location-bound Event → immutable travel projection → 15:05 latest-safe-departure and hard arrival buffer. A persistent manual flow is available through `account-init`, `task-add`, `event-add`, `plan`, and `task-complete`.
+`domain-smoke` verifies canonical persistence/versioning. `feasibility-smoke` exercises repository → immutable snapshot → tri-state feasibility. `planner-smoke` exercises the full first vertical slice: canonical Task/Event → snapshot → plan → risk → next actions → persisted derived plan history. `reconciliation-smoke` exercises immutable evidence → conflicting cutoff reconciliation → separately labelled conservative planning projection while preserving conflict truth. `connector-smoke` exercises Google Calendar-shaped provider data → immutable evidence → durable complete-session checkpoint and health state without live OAuth/network access. `agent-smoke` exercises server-minted explicit intent → version-checked cancellation → durable idempotent replay without exposing a generic LLM mutation surface. `travel-smoke` exercises current location + a fresh route estimate + a location-bound Event → immutable travel projection → 15:05 latest-safe-departure and hard arrival buffer. `recurrence-notification-smoke` exercises stable recurrence identity across a moved occurrence, DST-aware local-civil expansion, schema v7 and versioned notification snooze workflow. A persistent manual flow is available through `account-init`, `task-add`, `event-add`, `plan`, and `task-complete`.
 
 ### Run the local web UI
 
@@ -106,6 +107,7 @@ Open `http://127.0.0.1:8765/` in a browser. `--init-account` is only for first l
 - [LLM extraction and authenticated action boundary ADR](docs/adr/0007-llm-extraction-action-boundary.md)
 - [Travel-aware planning ownership and feasibility ADR](docs/adr/0008-travel-aware-planning.md)
 - [Web application boundary and product UI ADR](docs/adr/0009-web-application-boundary-and-product-ui.md)
+- [Recurrence identity and notification workflow ADR](docs/adr/0010-recurrence-and-notification-workflow.md)
 - [Current implementation handoff](docs/implementation/HANDOFF.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)
@@ -118,8 +120,9 @@ Open `http://127.0.0.1:8765/` in a browser. `--init-account` is only for first l
 3. One reliable real connector with cursor/deletion/staleness semantics.
 4. LLM capture/action adapter behind the established evidence/authorization boundaries.
 5. Travel-aware planning.
-6. Recurrence/notifications as demanded by usage.
-7. Offline client replication only if product evidence justifies it.
+6. Recurrence/notifications as demanded by usage. **Implemented in Pass 8.**
+7. Reliability/security/conformance hardening before any production claim.
+8. Offline client replication only if product evidence justifies it.
 
 ## License
 
