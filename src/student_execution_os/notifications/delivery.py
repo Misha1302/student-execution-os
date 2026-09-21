@@ -291,7 +291,7 @@ class SQLiteNotificationDeliveryOutbox:
             conn.execute(
                 "UPDATE notification_delivery_outbox SET state='READY',lease_owner=NULL,lease_expires_at=NULL,"
                 "next_attempt_at=?,last_error=NULL,version=version+1,updated_at=? "
-                "WHERE account_id=? AND notification_id=? AND state NOT IN ('SENT','SUPPRESSED')",
+                "WHERE account_id=? AND notification_id=? AND state!='SENT'",
                 (_iso(effective_due), _iso(now), notification.account_id, notification.id),
             )
 

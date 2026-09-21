@@ -545,6 +545,23 @@ class SQLiteCanonicalRepository:
             actor=actor,
             payload=audit_payload,
         )
+        if action == "CANCEL":
+            # Cancellation invalidates future notification workflow attributable
+            # only to this obligation without deleting delivered/history rows.
+            conn.execute(
+                "UPDATE notifications SET state='SUPPRESSED',last_error='OBLIGATION_CANCELLED',"
+                "version=version+1,updated_at=? WHERE account_id=? AND entity_ref=? "
+                "AND state IN ('PENDING','SNOOZED','FAILED')",
+                (_iso(now), account_id, obligation_id),
+            )
+            conn.execute(
+                "UPDATE notification_delivery_outbox SET state='SUPPRESSED',lease_owner=NULL,"
+                "lease_expires_at=NULL,last_error='OBLIGATION_CANCELLED',version=version+1,updated_at=? "
+                "WHERE account_id=? AND notification_id IN ("
+                "SELECT id FROM notifications WHERE account_id=? AND entity_ref=?"
+                ") AND state NOT IN ('SENT','SUPPRESSED')",
+                (_iso(now), account_id, account_id, obligation_id),
+            )
         return candidate
 
     def _transition_obligation(
