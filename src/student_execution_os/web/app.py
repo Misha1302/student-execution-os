@@ -91,6 +91,8 @@ def create_app(
             "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         )
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.exception_handler(DomainError)
@@ -188,6 +190,13 @@ def create_app(
     @app.get("/api/v1/settings/diagnostics")
     def diagnostics() -> dict[str, Any]:
         return service.diagnostics()
+
+    @app.get("/api/v1/account/export")
+    def account_export() -> JSONResponse:
+        return JSONResponse(
+            content=service.account_export(),
+            headers={"Content-Disposition": 'attachment; filename="student-execution-os-export.json"'},
+        )
 
     @app.get("/api/v1/ask/capabilities")
     def ask_capabilities() -> dict[str, Any]:

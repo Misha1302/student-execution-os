@@ -32,6 +32,7 @@ from student_execution_os.domain.model import (
     TemporalPrecision,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.notifications import SQLiteNotificationRepository
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
@@ -513,6 +514,9 @@ class UiService:
                     "note": "Exact address and coordinates remain server-side and are not serialized by this endpoint.",
                 },
             }
+
+    def account_export(self) -> dict[str, Any]:
+        return SQLiteDataLifecycle(self.database, now=self._now).export_account(self.account_id).to_dict()
 
     def diagnostics(self) -> dict[str, Any]:
         with self._repo() as repo:

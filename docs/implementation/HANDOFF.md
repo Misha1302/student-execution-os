@@ -5,14 +5,15 @@
 ## Identity
 
 - Repository: `Misha1302/student-execution-os`
-- Pass 8 baseline: merged UI/main `a76a2256ed1768fc648123230d184b583a237862`
+- Pass 9 baseline: merged Pass 8 `f7d9f77d65e886326973eba01df1ca93e3ac734d`
+- Baseline tree: `9cea664eafcaae17a1eb7b0fee86bfc7a55b3046`
 - Normative specification: v2.1
-- Pass 8 branch: `impl/pass-8-recurrence-notifications`
+- Pass 9 branch: `impl/pass-9-reliability-data-lifecycle`
 - Schema: v7
-- Package candidate: `0.5.0.dev1`
+- Package candidate: `0.6.0.dev1`
 - Date: 2026-09-21
 
-## Completed before Pass 8
+## Completed passes
 
 - [x] Pass 0 — baseline / stack / skeleton / CI
 - [x] Pass 1 — canonical local domain / persistence / concurrency
@@ -22,88 +23,88 @@
 - [x] Pass 5 — Google Calendar evidence connector
 - [x] Pass 6 — LLM extraction / authenticated action boundary
 - [x] Pass 7 — travel-aware planning
-- [x] Product UI stage — PR #10 merged at `a76a2256ed1768fc648123230d184b583a237862`, post-merge CI green
+- [x] Product UI stage — PR #10 merged; post-merge CI green
+- [x] Pass 8 — recurrence / notification workflow; PR #11 merged at `f7d9f77d65e886326973eba01df1ca93e3ac734d`; post-merge run #96 green
+- [ ] Pass 9 — reliability / security / hardening; first data-lifecycle slice is the current candidate
+- [ ] Pass 10 — conformance closure
 
-## Pass 8 candidate
+## Current Pass 9 candidate
 
-Implemented recurrence and notification workflow ownership without creating another planning or Task/Event truth.
+This slice establishes an executable data-recovery/export boundary before destructive account-lifecycle work.
 
-### Recurrence
+### Backup / restore
 
-- canonical account-scoped `RecurringTemplate`;
-- local-civil DTSTART plus IANA timezone;
-- fail-closed RRULE subset: DAILY / WEEKLY with INTERVAL / COUNT / UNTIL;
-- stable occurrence identity `(template_id, original_recurrence_id)`;
-- `CANCEL` / `MODIFY` occurrence overrides;
-- “this and future” split into old + successor template without rewriting history;
-- deterministic ambiguous/nonexistent local-time policy;
-- recurring Event projections enter the ordinary PlanningSnapshot, travel and feasibility path;
-- Calendar UI distinguishes `CANONICAL RULE` from `DERIVED OCCURRENCE`.
+- `SQLiteDataLifecycle.create_backup()` uses SQLite's online backup API for a consistent committed whole-database snapshot.
+- Backup is written via a private temporary file then atomically renamed.
+- Sidecar manifest format v1 records application version, UTC creation time, database filename, schema version, SHA-256, `integrity_check`, and account count.
+- Restore fails closed on malformed/missing manifest, digest mismatch, integrity mismatch, account-count mismatch, or a schema newer than the running application.
+- Restored data is copied into a private temporary database, migrated through the ordinary canonical migration owner, then checked with `PRAGMA integrity_check` and `PRAGMA foreign_key_check` before atomic replacement.
+- Overwrite is never implicit; replacing an existing restore destination requires explicit authority.
+- On POSIX, live SQLite files, backup files, manifests and exported JSON are forced to `0600`.
 
-### Notifications
+### Account export
 
-- notification workflow state persisted separately from canonical Task/Event truth;
-- stable suppression key / deterministic id;
-- captured domain revision plus optional plan id/revision;
-- stale revision suppression immediately before sender invocation;
-- completion follow-up gated on successful initial delivery;
-- snooze with optimistic versioning and no canonical server revision mutation;
-- quiet hours in an IANA timezone;
-- deterministic grouping/cooldown/recomputation behavior;
-- Settings/UI surface exposes notification state and safe snooze semantics.
+- User export is not a database copy. `export_account(account_id)` is an explicit one-account JSON contract with a table/query allowlist.
+- Child rows without their own `account_id` are reached only through an account-scoped parent.
+- Export covers canonical state, evidence/provenance, reconciliation workflow, connector checkpoint/state, action/idempotency workflow, plan history, places/travel, recurrence and notification workflow.
+- Exact saved private locations are intentionally included because this is the user's data-export artifact rather than the ordinary redacted Places API. UI explicitly marks the artifact as sensitive.
+- Other accounts, schema migration metadata and connector/OAuth secrets are excluded.
+- The export owner also compares the live schema to its classified-table set and fails closed when a future unclassified table appears. A future secret/data owner therefore cannot silently become exported or silently omitted without updating this contract.
 
-### Risk execution budget repair
+### API / CLI / UI
 
-A pre-existing runtime problem became visible once recurrence increased planning complexity: the two-second `RiskEngine` budget was being granted independently to every scenario and every latest-safe-start sub-search. One read could therefore multiply the configured budget many times.
+- CLI commands: `backup`, `restore`, `account-export`, `reliability-smoke`.
+- Server-bound `GET /api/v1/account/export` exports only the account already bound by the host; browser input cannot choose a different account.
+- API responses are marked `Cache-Control: no-store`.
+- Settings exposes the account-export action and warns that the downloaded artifact includes sensitive private account data, including exact saved locations.
 
-The candidate now uses one wall-clock deadline for the whole risk evaluation. Sub-searches receive only the remaining budget. Exhaustion returns `UNKNOWN` / `RISK_EVALUATION_BUDGET_EXHAUSTED`, preserving the specification’s fail-closed exact-feasibility semantics.
+## Acceptance coverage in this slice
 
-### Browser harness repair
+- AT-61 — existing executable v6 → v7 migration fixture remains tracked as migration evidence.
+- AT-62 — backup/restore recovers canonical state, provenance observations, connector checkpoint, notification workflow and action-idempotency replay, then successfully rebuilds planning input.
+- AT-69 — one-account export includes the documented account state while excluding a second account and database-global migration metadata.
+- Tampered backup bytes are rejected by SHA-256 before restore.
+- Export fails closed if an unclassified future schema table exists.
+- POSIX live database, backup and export artifacts are private-mode files.
+- API export is server-account-scoped and no-store; browser Settings displays the sensitive-export trust contract.
 
-The Chromium suite now owns one Playwright driver/browser per test class and closes per-test pages. This removes repeated driver start/stop churn while preserving real Chromium coverage.
+## Verification checkpoint
 
-## Acceptance coverage
+Focused/current evidence before the final candidate-bound full run:
 
-Pass 8 adds executable coverage for:
+- Pass 9 reliability acceptance tests: **5/5 PASS**;
+- web/API suite after this slice: **13/13 PASS**;
+- Chromium UI suite after this slice: **3/3 PASS** in an isolated terminal run;
+- an earlier full run reached **152/152 core PASS** and **13/13 API PASS** before an external tool timeout during Chromium; this is not treated as terminal full-suite evidence.
 
-- AT-50 — moved occurrence keeps its original recurrence identity;
-- AT-51 — “this and future” preserves historical occurrences;
-- AT-52 — intended local civil time survives DST transition under the declared policy;
-- AT-53 — obsolete revision-bound notification is suppressed before channel delivery;
-- AT-54 — completion follow-up is blocked until the initial reminder was delivered;
-- AT-55 — snooze mutates notification workflow timing only;
-- AT-68 — repeated recomputation rebinds one logical notification rather than duplicating it;
-- recurrence entering the same planning/travel input path;
-- quiet-hours deferral;
-- v6 → v7 migration preservation;
-- risk-engine total budget exhaustion failing closed to UNKNOWN;
-- recurrence/notification API and browser presentation.
+A final `make verify` on the completed candidate, including this handoff/documentation, is still required before commit/PR. Do not promote the earlier partial run into a green-candidate claim.
 
-## Local verification checkpoint
+## Pass 9/10 gap ledger
 
-The current Pass 8 candidate has a terminal `make verify` result with exit code **0** on 2026-09-21:
+See `docs/implementation/PASS9_GAP_LEDGER.md` for the fresh normative gap ledger. Major remaining work after this slice:
 
-- core unit/integration/acceptance suite: **148/148 PASS**;
-- web/API acceptance suite: **12/12 PASS**;
-- real Chromium UI suite: **3/3 PASS**;
-- all 9 CLI smoke surfaces, including `recurrence-notification-smoke`: **PASS**;
-- web-host CLI smoke: **PASS**;
-- Python compile + frontend JS syntax check: **PASS**.
+1. account deletion / retention / tombstone semantics (AT-63), reusing the data classification established by export;
+2. durable notification delivery lease/outbox + crash/restart retry hardening;
+3. cancel/reopen projection cleanup (AT-64);
+4. hybrid occurrence representation (AT-65);
+5. optional-event planning policy (AT-66);
+6. observability / correlation and final install-restart-migration-export-deletion security closure in Pass 10.
 
-This remains local candidate evidence until terminal GitHub branch HEAD, exact-head hosted CI, PR mergeability and post-merge CI are freshly observed.
+## Production boundary / known external limits
 
-## Known limits / Pass 9 targets
+This candidate proves local SQLite recovery/export semantics; it does **not** claim production deployment readiness.
 
-- Production authentication/TLS/secret-management/deployment remains outside this implementation.
-- Google Calendar still lacks production OAuth consent/refresh lifecycle.
-- No live routing/maps provider exists.
-- No live LLM provider exists.
-- No external notification channel is configured.
-- Notification sender execution still needs Pass 9 durable delivery lease/outbox/crash-retry hardening for stronger duplicate-delivery guarantees.
-- Recurrence supports a deliberately limited RRULE subset; unsupported components fail closed.
-- Unbounded recurrence expansion should receive explicit production work budgets if usage requires very distant moved overrides.
-- Restart/backup/restore, export isolation, observability and final production-boundary hardening remain Pass 9/10 work.
+Still intentionally outside the present implementation:
 
-## Next pass after safe Pass 8 merge
+- production authentication and TLS termination;
+- encrypted/remote backup storage and operator key management;
+- production OAuth consent, token encryption, revocation/rotation and secret-store integration;
+- a live external notification channel;
+- live routing/maps provider;
+- live LLM provider.
 
-Pass 9 — reliability / security / hardening. Re-read the current specification, current `main`, Pass 8 merge commit and exact post-merge CI before mutation. Build a fresh gap ledger rather than assuming this handoff is current.
+A production backup store must provide access control and encryption appropriate to the primary data. Future externally stored secrets need their own deletion/revocation/recovery contract and must not be inferred from this SQLite backup/export boundary.
+
+## Next action
+
+Run terminal candidate-bound `make verify`, `git diff --check`, repository hygiene/secret scan and adversarial ownership review. Only after those are green should this slice be committed, reproduced as an exact GitHub tree over the current live `main`, opened as a PR, exact-head CI checked, and merged with a fresh base/head/mergeability check followed by post-merge CI.

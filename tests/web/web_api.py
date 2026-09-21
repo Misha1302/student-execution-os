@@ -37,6 +37,7 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(response.json()["schema_version"], 7)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
+        self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_today_exposes_real_feasibility_and_travel_boundary(self):
         body = self.client.get("/api/v1/today").json()
@@ -171,6 +172,18 @@ class WebApiTest(unittest.TestCase):
         self.assertNotIn("address", body["places"][0])
         self.assertNotIn("latitude", body["places"][0])
         self.assertNotIn("longitude", body["places"][0])
+
+    def test_account_export_is_server_scoped_and_explicitly_sensitive(self):
+        response = self.client.get("/api/v1/account/export")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response.headers["content-disposition"])
+        body = response.json()
+        self.assertEqual(body["account_id"], ACCOUNT)
+        self.assertTrue(body["contract"]["includes_private_locations"])
+        serialized = json.dumps(body)
+        self.assertIn("Secret exact address 123", serialized)
+        self.assertNotIn("Other account secret task", serialized)
+        self.assertNotIn("other-account", serialized)
 
     def test_agent_destructive_action_requires_preview_confirmation(self):
         task = next(t for t in self.client.get("/api/v1/tasks").json() if t["id"] == "discrete")
