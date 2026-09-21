@@ -41,6 +41,7 @@ class BrowserUiTest(unittest.TestCase):
             "/api/v1/evidence": service.evidence(),
             "/api/v1/places": service.places(),
             "/api/v1/settings/diagnostics": service.diagnostics(),
+            "/api/v1/account/deletion-policy": service.account_deletion_policy(),
             "/api/v1/ask/capabilities": {
                 "live_llm_provider": False,
                 "explanations": True,
@@ -127,6 +128,15 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("PENDING", settings)
         self.assertTrue(page.get_by_role("link", name="Download account export").is_visible())
         self.assertIn("includes private account data", settings)
+        self.assertIn("30 days", settings)
+        self.assertIn("minimal tombstone", settings)
+        page.locator('[data-action="account-delete-preview"]').click()
+        page.locator("#modal[open]").wait_for()
+        deletion_preview = page.locator("#modal").inner_text()
+        self.assertIn("Confirm local account deletion", deletion_preview)
+        self.assertIn("Type the exact account id", deletion_preview)
+        self.assertIn("not a recoverable copy", deletion_preview)
+        page.get_by_role('button', name='Keep account', exact=True).click()
         page.locator('[data-action="snooze-notification"]').first.click()
         page.locator("#modal[open]").wait_for()
         self.assertIn("Snooze mutates notification workflow state only", page.locator("#modal").inner_text())

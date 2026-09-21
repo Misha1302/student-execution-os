@@ -66,7 +66,7 @@ class AcceptanceRegistryTests(unittest.TestCase):
         )
         self.assertEqual(
             set(registry["pass9_tests"]),
-            {"AT-61", "AT-62", "AT-69"},
+            {"AT-61", "AT-62", "AT-63", "AT-69"},
         )
         self.assertTrue(
             all(status.startswith("PASS_PASS9_") for status in registry["pass9_tests"].values())

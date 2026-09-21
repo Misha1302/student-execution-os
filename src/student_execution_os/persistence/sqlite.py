@@ -50,7 +50,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _UNSET = object()
 
 
@@ -110,6 +110,7 @@ class SQLiteCanonicalRepository:
             (5, Path(__file__).with_name("migrations") / "005_llm_action_boundary.sql"),
             (6, Path(__file__).with_name("migrations") / "006_travel_planning.sql"),
             (7, Path(__file__).with_name("migrations") / "007_recurrence_notifications.sql"),
+            (8, Path(__file__).with_name("migrations") / "008_account_deletion.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -143,8 +144,18 @@ class SQLiteCanonicalRepository:
     def create_account(self, account_id: str) -> None:
         if not account_id:
             raise ValidationError("account_id is required")
-        self.connection.execute("INSERT OR IGNORE INTO accounts(id) VALUES (?)", (account_id,))
-        self.connection.commit()
+        now = self.clock.now()
+        with self._tx() as conn:
+            tombstone = conn.execute(
+                "SELECT purge_after FROM account_deletion_tombstones WHERE account_id=?",
+                (account_id,),
+            ).fetchone()
+            if tombstone is not None:
+                purge_after = _dt(str(tombstone["purge_after"]))
+                if purge_after is None or purge_after > now:
+                    raise ValidationError("account id is under deletion tombstone retention")
+                conn.execute("DELETE FROM account_deletion_tombstones WHERE account_id=?", (account_id,))
+            conn.execute("INSERT OR IGNORE INTO accounts(id) VALUES (?)", (account_id,))
 
     def get_server_revision(self, account_id: str) -> int:
         row = self.connection.execute("SELECT server_revision FROM accounts WHERE id=?", (account_id,)).fetchone()

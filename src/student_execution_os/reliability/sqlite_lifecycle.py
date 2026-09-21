@@ -6,12 +6,13 @@ import os
 import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from student_execution_os import __version__
-from student_execution_os.domain.errors import EntityNotFound, ValidationError
+from student_execution_os.domain.errors import EntityNotFound, ValidationError, VersionConflict
 from student_execution_os.persistence.sqlite import SCHEMA_VERSION, SQLiteCanonicalRepository
 
 BACKUP_FORMAT_VERSION = 1
@@ -112,6 +113,39 @@ class RestoreResult:
 
 
 @dataclass(frozen=True, slots=True)
+class AccountDeletionPolicy:
+    policy_version: str = "account-deletion-v1"
+    tombstone_retention_days: int = 30
+    retained_reason: str = "reject stale connector/client replay and account-id reuse during deletion propagation"
+
+    def __post_init__(self) -> None:
+        if not self.policy_version.strip():
+            raise ValueError("policy_version is required")
+        if self.tombstone_retention_days < 0:
+            raise ValueError("tombstone_retention_days must be >= 0")
+        if not self.retained_reason.strip():
+            raise ValueError("retained_reason is required")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class AccountDeletionResult:
+    deletion_id: str
+    account_id: str
+    deleted_at: str
+    purge_after: str
+    policy_version: str
+    retained_tombstone_fields: tuple[str, ...]
+    deleted_rows: dict[str, int]
+    secret_revocation_status: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class AccountExport:
     format_version: int
     application_version: str
@@ -190,15 +224,20 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
 }
 
 
-_KNOWN_DATABASE_TABLES = {
+_GLOBAL_LIFECYCLE_TABLES = {
     "schema_migrations",
+    "account_deletion_tombstones",
+}
+
+_KNOWN_DATABASE_TABLES = {
+    *_GLOBAL_LIFECYCLE_TABLES,
     "accounts",
     *_DIRECT_ACCOUNT_TABLES,
     *_CHILD_TABLE_QUERIES.keys(),
 }
 
 
-def _assert_export_schema_known(connection: sqlite3.Connection) -> None:
+def _assert_lifecycle_schema_known(connection: sqlite3.Connection) -> None:
     actual = {
         str(row[0])
         for row in connection.execute(
@@ -208,7 +247,7 @@ def _assert_export_schema_known(connection: sqlite3.Connection) -> None:
     unknown = sorted(actual - _KNOWN_DATABASE_TABLES)
     if unknown:
         raise ValidationError(
-            "account export contract does not classify database tables: " + ", ".join(unknown)
+            "data lifecycle contract does not classify database tables: " + ", ".join(unknown)
         )
 
 
@@ -376,6 +415,145 @@ class SQLiteDataLifecycle:
             foreign_key_violations=foreign_key_violations,
         )
 
+    def deletion_policy(self, policy: AccountDeletionPolicy | None = None) -> dict[str, Any]:
+        policy = policy or AccountDeletionPolicy()
+        return {
+            **policy.to_dict(),
+            "immediate_purge": "all account-scoped SQLite operational/private state",
+            "retained_tombstone_fields": [
+                "account_id",
+                "deletion_id",
+                "deleted_at",
+                "purge_after",
+                "policy_version",
+                "retained_reason",
+            ],
+            "retained_audit_or_provenance": False,
+            "raw_source_store": "NONE_CONFIGURED",
+            "secret_store": "NONE_CONFIGURED",
+            "secret_revocation": "NOT_APPLICABLE_NO_SECRET_STORE",
+        }
+
+    def delete_account(
+        self,
+        account_id: str,
+        *,
+        expected_server_revision: int,
+        confirm_account_id: str,
+        policy: AccountDeletionPolicy | None = None,
+    ) -> AccountDeletionResult:
+        if confirm_account_id != account_id:
+            raise ValidationError("confirm_account_id must exactly match the server-bound account id")
+        if expected_server_revision < 0:
+            raise ValidationError("expected_server_revision must be >= 0")
+        policy = policy or AccountDeletionPolicy()
+        if not self.database.exists():
+            raise ValidationError("source database does not exist")
+
+        now = self._now()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValidationError("deletion clock must be timezone-aware")
+        purge_after = now + timedelta(days=policy.tombstone_retention_days)
+        deletion_id = str(uuid4())
+
+        connection = sqlite3.connect(self.database)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        try:
+            _assert_lifecycle_schema_known(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            account = connection.execute(
+                "SELECT server_revision FROM accounts WHERE id=?", (account_id,)
+            ).fetchone()
+            if account is None:
+                raise EntityNotFound("account not found")
+            if int(account["server_revision"]) != expected_server_revision:
+                raise VersionConflict("account server revision changed")
+
+            deleted_rows: dict[str, int] = {"accounts": 1}
+            for table in _DIRECT_ACCOUNT_TABLES:
+                deleted_rows[table] = int(
+                    connection.execute(
+                        f"SELECT count(*) FROM {table} WHERE account_id=?", (account_id,)
+                    ).fetchone()[0]
+                )
+            for table, query in _CHILD_TABLE_QUERIES.items():
+                deleted_rows[table] = len(_rows(connection, query, (account_id,)))
+
+            connection.execute(
+                "INSERT INTO account_deletion_tombstones("
+                "account_id,deletion_id,deleted_at,purge_after,policy_version,retained_reason"
+                ") VALUES (?,?,?,?,?,?)",
+                (
+                    account_id,
+                    deletion_id,
+                    _iso(now),
+                    _iso(purge_after),
+                    policy.policy_version,
+                    policy.retained_reason,
+                ),
+            )
+            cur = connection.execute(
+                "DELETE FROM accounts WHERE id=? AND server_revision=?",
+                (account_id, expected_server_revision),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("account server revision changed")
+
+            for table in _DIRECT_ACCOUNT_TABLES:
+                remaining = int(
+                    connection.execute(
+                        f"SELECT count(*) FROM {table} WHERE account_id=?", (account_id,)
+                    ).fetchone()[0]
+                )
+                if remaining:
+                    raise RuntimeError(f"account deletion left rows in {table}")
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(f"account deletion left foreign-key violations: {len(violations)}")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+        return AccountDeletionResult(
+            deletion_id=deletion_id,
+            account_id=account_id,
+            deleted_at=_iso(now),
+            purge_after=_iso(purge_after),
+            policy_version=policy.policy_version,
+            retained_tombstone_fields=(
+                "account_id",
+                "deletion_id",
+                "deleted_at",
+                "purge_after",
+                "policy_version",
+                "retained_reason",
+            ),
+            deleted_rows=deleted_rows,
+            secret_revocation_status="NOT_APPLICABLE_NO_SECRET_STORE",
+        )
+
+    def purge_expired_deletion_tombstones(self, *, now: datetime | None = None) -> int:
+        when = now or self._now()
+        if when.tzinfo is None or when.utcoffset() is None:
+            raise ValidationError("tombstone purge clock must be timezone-aware")
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cur = connection.execute(
+                "DELETE FROM account_deletion_tombstones WHERE purge_after<=?", (_iso(when),)
+            )
+            connection.commit()
+            return int(cur.rowcount)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def export_account(self, account_id: str) -> AccountExport:
         if not self.database.exists():
             raise ValidationError("source database does not exist")
@@ -383,7 +561,7 @@ class SQLiteDataLifecycle:
         connection.row_factory = sqlite3.Row
         try:
             connection.execute("PRAGMA query_only = ON")
-            _assert_export_schema_known(connection)
+            _assert_lifecycle_schema_known(connection)
             account = connection.execute("SELECT id,server_revision FROM accounts WHERE id=?", (account_id,)).fetchone()
             if account is None:
                 raise EntityNotFound("account not found")

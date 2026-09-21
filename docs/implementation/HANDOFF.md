@@ -5,12 +5,12 @@
 ## Identity
 
 - Repository: `Misha1302/student-execution-os`
-- Pass 9 baseline: merged Pass 8 `f7d9f77d65e886326973eba01df1ca93e3ac734d`
-- Baseline tree: `9cea664eafcaae17a1eb7b0fee86bfc7a55b3046`
+- Pass 9 deletion baseline: merged recovery/export slice `8498d67d36bf8cbec1fc03ce84324bc66b87423c`
+- Baseline tree: `0a5b3c4e7cf9f9358cfd279c38a298fedc0b465b`
 - Normative specification: v2.1
-- Pass 9 branch: `impl/pass-9-reliability-data-lifecycle`
-- Schema: v7
-- Package candidate: `0.6.0.dev1`
+- Pass 9 branch: `impl/pass-9-account-deletion`
+- Schema: v8
+- Package candidate: `0.6.0.dev2`
 - Date: 2026-09-21
 
 ## Completed passes
@@ -25,70 +25,61 @@
 - [x] Pass 7 — travel-aware planning
 - [x] Product UI stage — PR #10 merged; post-merge CI green
 - [x] Pass 8 — recurrence / notification workflow; PR #11 merged at `f7d9f77d65e886326973eba01df1ca93e3ac734d`; post-merge run #96 green
-- [ ] Pass 9 — reliability / security / hardening; first data-lifecycle slice is the current candidate
+- [ ] Pass 9 — reliability / security / hardening; recovery/export merged, account-deletion slice is the current candidate
 - [ ] Pass 10 — conformance closure
 
 ## Current Pass 9 candidate
 
-This slice establishes an executable data-recovery/export boundary before destructive account-lifecycle work.
+This slice implements the normative AT-63 account-deletion/retention contract on top of the already merged backup/restore + export owner.
 
-### Backup / restore
+### Account deletion policy v1
 
-- `SQLiteDataLifecycle.create_backup()` uses SQLite's online backup API for a consistent committed whole-database snapshot.
-- Backup is written via a private temporary file then atomically renamed.
-- Sidecar manifest format v1 records application version, UTC creation time, database filename, schema version, SHA-256, `integrity_check`, and account count.
-- Restore fails closed on malformed/missing manifest, digest mismatch, integrity mismatch, account-count mismatch, or a schema newer than the running application.
-- Restored data is copied into a private temporary database, migrated through the ordinary canonical migration owner, then checked with `PRAGMA integrity_check` and `PRAGMA foreign_key_check` before atomic replacement.
-- Overwrite is never implicit; replacing an existing restore destination requires explicit authority.
-- On POSIX, live SQLite files, backup files, manifests and exported JSON are forced to `0600`.
-
-### Account export
-
-- User export is not a database copy. `export_account(account_id)` is an explicit one-account JSON contract with a table/query allowlist.
-- Child rows without their own `account_id` are reached only through an account-scoped parent.
-- Export covers canonical state, evidence/provenance, reconciliation workflow, connector checkpoint/state, action/idempotency workflow, plan history, places/travel, recurrence and notification workflow.
-- Exact saved private locations are intentionally included because this is the user's data-export artifact rather than the ordinary redacted Places API. UI explicitly marks the artifact as sensitive.
-- Other accounts, schema migration metadata and connector/OAuth secrets are excluded.
-- The export owner also compares the live schema to its classified-table set and fails closed when a future unclassified table appears. A future secret/data owner therefore cannot silently become exported or silently omitted without updating this contract.
+- `SQLiteDataLifecycle.delete_account()` is a destructive data-lifecycle command, not a Task/Event lifecycle mutation.
+- The command is bound to one account, requires that account's current `server_revision`, and requires the exact account id as a second typed confirmation.
+- All account-scoped SQLite operational/private state is purged immediately through the canonical FK graph. The owner verifies all directly account-scoped tables are empty and `PRAGMA foreign_key_check` is clean before commit.
+- The only retained local state is a 30-day `account_deletion_tombstones` row containing account id, deletion receipt id/timestamps, policy version and retention reason. It exists only to reject stale connector/client replay and account-id reuse while deletion propagates.
+- Audit/provenance rows are not retained by this local policy. The current release has no raw payload store and no OAuth/token secret store, so secret revocation is explicitly `NOT_APPLICABLE_NO_SECRET_STORE`.
+- Any future unclassified database table makes deletion fail closed until the data-lifecycle owner is deliberately extended.
+- `create_account()` rejects reuse while the tombstone is live; expired tombstones may be purged explicitly before reprovisioning.
 
 ### API / CLI / UI
 
-- CLI commands: `backup`, `restore`, `account-export`, `reliability-smoke`.
-- Server-bound `GET /api/v1/account/export` exports only the account already bound by the host; browser input cannot choose a different account.
-- API responses are marked `Cache-Control: no-store`.
-- Settings exposes the account-export action and warns that the downloaded artifact includes sensitive private account data, including exact saved locations.
+- CLI: `account-delete --expected-revision ... --confirm-account ...` and `deletion-tombstones-purge`.
+- `GET /api/v1/account/deletion-policy` exposes the current policy and server revision for the server-bound account.
+- `POST /api/v1/account/delete` accepts only expected revision + typed confirmation; a browser cannot select another account.
+- Settings explains immediate purge versus the minimal 30-day tombstone before exposing the destructive confirmation. Browser QA only previews/cancels the action.
+- `reliability-smoke` now also performs a separate account deletion and reports the policy/tombstone expiry.
 
-## Acceptance coverage in this slice
+### Acceptance coverage
 
-- AT-61 — existing executable v6 → v7 migration fixture remains tracked as migration evidence.
-- AT-62 — backup/restore recovers canonical state, provenance observations, connector checkpoint, notification workflow and action-idempotency replay, then successfully rebuilds planning input.
-- AT-69 — one-account export includes the documented account state while excluding a second account and database-global migration metadata.
-- Tampered backup bytes are rejected by SHA-256 before restore.
-- Export fails closed if an unclassified future schema table exists.
-- POSIX live database, backup and export artifacts are private-mode files.
-- API export is server-account-scoped and no-store; browser Settings displays the sensitive-export trust contract.
+- AT-63 — account deletion removes account-owned operational/private data, preserves another account, leaves no FK orphan, retains only the documented tombstone, blocks account-id reuse during retention and permits explicit reuse after purge.
+- Wrong typed confirmation, stale expected revision and future unclassified tables all fail closed.
+- API proof verifies that a client-supplied alternate `account_id` cannot redirect deletion away from the server-bound account.
+- Migration v7 → v8 preserves existing notification/account state while adding the tombstone table.
 
-## Verification checkpoint
+### Verification checkpoint
 
-Focused/current evidence before the final candidate-bound full run:
+Final candidate-bound verification evidence:
 
-- Pass 9 reliability acceptance tests: **5/5 PASS**;
-- web/API suite after this slice: **13/13 PASS**;
-- Chromium UI suite after this slice: **3/3 PASS** in an isolated terminal run;
-- an earlier full run reached **152/152 core PASS** and **13/13 API PASS** before an external tool timeout during Chromium; this is not treated as terminal full-suite evidence.
+- core unit/integration/acceptance discovery: **156/156 PASS**;
+- web/API suite: **14/14 PASS**;
+- Chromium desktop/mobile UI suite: **3/3 PASS**;
+- all CLI smoke surfaces PASS, including schema-v8 `reliability-smoke` with deletion policy v1;
+- web-host smoke PASS;
+- `git diff --check` PASS;
+- added-lines secret-like scan: no findings.
 
-A final `make verify` on the completed candidate, including this handoff/documentation, is still required before commit/PR. Do not promote the earlier partial run into a green-candidate claim.
+The full candidate-bound `make verify` terminated with exit code **0**. Before remote mutation, still re-read live `main`, build an exact GitHub tree from these candidate bytes, and require hosted exact-head CI before merge.
 
 ## Pass 9/10 gap ledger
 
 See `docs/implementation/PASS9_GAP_LEDGER.md` for the fresh normative gap ledger. Major remaining work after this slice:
 
-1. account deletion / retention / tombstone semantics (AT-63), reusing the data classification established by export;
-2. durable notification delivery lease/outbox + crash/restart retry hardening;
-3. cancel/reopen projection cleanup (AT-64);
-4. hybrid occurrence representation (AT-65);
-5. optional-event planning policy (AT-66);
-6. observability / correlation and final install-restart-migration-export-deletion security closure in Pass 10.
+1. durable notification delivery lease/outbox + crash/restart retry hardening;
+2. cancel/reopen projection cleanup (AT-64);
+3. hybrid occurrence representation (AT-65);
+4. optional-event planning policy (AT-66);
+5. observability / correlation and final install-restart-migration-export-deletion security closure in Pass 10.
 
 ## Production boundary / known external limits
 

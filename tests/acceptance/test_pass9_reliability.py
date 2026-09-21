@@ -19,7 +19,7 @@ from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.persistence import SQLiteCanonicalRepository
 from student_execution_os.planning import PlanningService, SQLitePlanningStateSource, build_planning_snapshot
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
-from student_execution_os.reliability import SQLiteDataLifecycle
+from student_execution_os.reliability import AccountDeletionPolicy, SQLiteDataLifecycle
 from student_execution_os.notifications import SQLiteNotificationRepository
 from tests.ui_fixture import ACCOUNT, NOW, OTHER_ACCOUNT, seed_ui_database
 
@@ -75,7 +75,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             lifecycle = SQLiteDataLifecycle(db, now=lambda: NOW)
             manifest = lifecycle.create_backup(backup)
             self.assertEqual(manifest.integrity_check, "ok")
-            self.assertEqual(manifest.schema_version, 7)
+            self.assertEqual(manifest.schema_version, 8)
             self.assertTrue(SQLiteDataLifecycle.manifest_path(backup).exists())
             if os.name == "posix":
                 self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
@@ -85,7 +85,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             self.assertTrue(restore.sha256_verified)
             self.assertEqual(restore.integrity_check, "ok")
             self.assertEqual(restore.foreign_key_violations, 0)
-            self.assertEqual(restore.restored_schema_version, 7)
+            self.assertEqual(restore.restored_schema_version, 8)
             if os.name == "posix":
                 self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
 
@@ -172,6 +172,79 @@ class Pass9ReliabilityTests(unittest.TestCase):
                 repo.connection.commit()
             with self.assertRaisesRegex(Exception, "does not classify database tables"):
                 SQLiteDataLifecycle(db, now=lambda: NOW).export_account(ACCOUNT)
+
+
+    def test_at63_account_deletion_purges_account_data_retains_only_explicit_tombstone_and_blocks_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "live.sqlite3"
+            seed_ui_database(str(db))
+            lifecycle = SQLiteDataLifecycle(db, now=lambda: NOW)
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
+                expected_revision = repo.get_server_revision(ACCOUNT)
+                other_before = repo.get_task(OTHER_ACCOUNT, "other-secret").obligation.title
+
+            result = lifecycle.delete_account(
+                ACCOUNT,
+                expected_server_revision=expected_revision,
+                confirm_account_id=ACCOUNT,
+                policy=AccountDeletionPolicy(tombstone_retention_days=30),
+            )
+            self.assertEqual(result.account_id, ACCOUNT)
+            self.assertEqual(result.policy_version, "account-deletion-v1")
+            self.assertEqual(result.secret_revocation_status, "NOT_APPLICABLE_NO_SECRET_STORE")
+            self.assertEqual(
+                set(result.retained_tombstone_fields),
+                {"account_id", "deletion_id", "deleted_at", "purge_after", "policy_version", "retained_reason"},
+            )
+
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
+                repo.initialize()
+                self.assertIsNone(repo.connection.execute("SELECT id FROM accounts WHERE id=?", (ACCOUNT,)).fetchone())
+                self.assertEqual(repo.get_task(OTHER_ACCOUNT, "other-secret").obligation.title, other_before)
+                tombstone = repo.connection.execute(
+                    "SELECT account_id,deletion_id,deleted_at,purge_after,policy_version,retained_reason "
+                    "FROM account_deletion_tombstones WHERE account_id=?",
+                    (ACCOUNT,),
+                ).fetchone()
+                self.assertIsNotNone(tombstone)
+                self.assertEqual(set(dict(tombstone)), set(result.retained_tombstone_fields))
+                self.assertEqual(repo.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+                with self.assertRaisesRegex(Exception, "tombstone retention"):
+                    repo.create_account(ACCOUNT)
+
+            purged = lifecycle.purge_expired_deletion_tombstones(now=NOW + timedelta(days=31))
+            self.assertEqual(purged, 1)
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW + timedelta(days=31))) as repo:
+                repo.initialize()
+                repo.create_account(ACCOUNT)
+                self.assertEqual(repo.get_server_revision(ACCOUNT), 0)
+
+    def test_account_deletion_rejects_stale_revision_wrong_confirmation_and_unknown_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "live.sqlite3"
+            seed_ui_database(str(db))
+            lifecycle = SQLiteDataLifecycle(db, now=lambda: NOW)
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
+                expected_revision = repo.get_server_revision(ACCOUNT)
+            with self.assertRaisesRegex(Exception, "confirm_account_id"):
+                lifecycle.delete_account(
+                    ACCOUNT, expected_server_revision=expected_revision, confirm_account_id="wrong-account"
+                )
+            with self.assertRaisesRegex(Exception, "server revision changed"):
+                lifecycle.delete_account(
+                    ACCOUNT, expected_server_revision=expected_revision + 1, confirm_account_id=ACCOUNT
+                )
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
+                repo.connection.execute(
+                    "CREATE TABLE future_unclassified_secret(id TEXT PRIMARY KEY, account_id TEXT, secret TEXT)"
+                )
+                repo.connection.commit()
+            with self.assertRaisesRegex(Exception, "does not classify database tables"):
+                lifecycle.delete_account(
+                    ACCOUNT, expected_server_revision=expected_revision, confirm_account_id=ACCOUNT
+                )
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
+                self.assertIsNotNone(repo.connection.execute("SELECT id FROM accounts WHERE id=?", (ACCOUNT,)).fetchone())
 
     def test_database_file_is_restricted_on_posix(self):
         if os.name != "posix":

@@ -518,6 +518,24 @@ class UiService:
     def account_export(self) -> dict[str, Any]:
         return SQLiteDataLifecycle(self.database, now=self._now).export_account(self.account_id).to_dict()
 
+    def account_deletion_policy(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            revision = repo.get_server_revision(self.account_id)
+        policy = SQLiteDataLifecycle(self.database, now=self._now).deletion_policy()
+        return {
+            "account_id": self.account_id,
+            "server_revision": revision,
+            **policy,
+        }
+
+    def delete_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = SQLiteDataLifecycle(self.database, now=self._now).delete_account(
+            self.account_id,
+            expected_server_revision=int(payload["expected_server_revision"]),
+            confirm_account_id=str(payload.get("confirm_account_id", "")),
+        )
+        return result.to_dict()
+
     def diagnostics(self) -> dict[str, Any]:
         with self._repo() as repo:
             store = SQLitePlanStore(repo)

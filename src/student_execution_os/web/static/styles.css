@@ -223,3 +223,5 @@ tbody tr:last-child td { border-bottom: 0; }
   .panel { background: linear-gradient(180deg,#fff,#f7f8fa); }
   .timeline-block.canonical { background:#edf1fb; }
 }
+
+.panel-rule { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }

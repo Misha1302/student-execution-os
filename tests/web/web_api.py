@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 from datetime import timedelta
 import unittest
@@ -34,7 +35,7 @@ class WebApiTest(unittest.TestCase):
     def test_health_and_security_headers(self):
         response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["schema_version"], 7)
+        self.assertEqual(response.json()["schema_version"], 8)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
         self.assertEqual(response.headers["cache-control"], "no-store")
@@ -184,6 +185,50 @@ class WebApiTest(unittest.TestCase):
         self.assertIn("Secret exact address 123", serialized)
         self.assertNotIn("Other account secret task", serialized)
         self.assertNotIn("other-account", serialized)
+
+    def test_account_deletion_is_server_bound_revision_checked_and_retains_only_tombstone(self):
+        policy_response = self.client.get("/api/v1/account/deletion-policy")
+        self.assertEqual(policy_response.status_code, 200)
+        policy = policy_response.json()
+        self.assertEqual(policy["account_id"], ACCOUNT)
+        self.assertEqual(policy["tombstone_retention_days"], 30)
+        self.assertFalse(policy["retained_audit_or_provenance"])
+        self.assertEqual(policy["secret_revocation"], "NOT_APPLICABLE_NO_SECRET_STORE")
+
+        wrong = self.client.post(
+            "/api/v1/account/delete",
+            json={
+                "expected_server_revision": policy["server_revision"],
+                "confirm_account_id": "other-account",
+                "account_id": "other-account",
+            },
+        )
+        self.assertEqual(wrong.status_code, 422)
+
+        response = self.client.post(
+            "/api/v1/account/delete",
+            json={
+                "expected_server_revision": policy["server_revision"],
+                "confirm_account_id": ACCOUNT,
+                "account_id": "other-account",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["account_id"], ACCOUNT)
+        self.assertEqual(body["secret_revocation_status"], "NOT_APPLICABLE_NO_SECRET_STORE")
+
+        connection = sqlite3.connect(self.db)
+        try:
+            self.assertIsNone(connection.execute("SELECT id FROM accounts WHERE id=?", (ACCOUNT,)).fetchone())
+            self.assertIsNotNone(connection.execute("SELECT id FROM accounts WHERE id='other-account'").fetchone())
+            tombstone = connection.execute(
+                "SELECT account_id,policy_version FROM account_deletion_tombstones WHERE account_id=?",
+                (ACCOUNT,),
+            ).fetchone()
+            self.assertEqual(tombstone, (ACCOUNT, "account-deletion-v1"))
+        finally:
+            connection.close()
 
     def test_agent_destructive_action_requires_preview_confirmation(self):
         task = next(t for t in self.client.get("/api/v1/tasks").json() if t["id"] == "discrete")

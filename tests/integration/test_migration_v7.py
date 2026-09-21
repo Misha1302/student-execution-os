@@ -51,7 +51,7 @@ class MigrationV7IntegrationTests(unittest.TestCase):
             with SQLiteCanonicalRepository(db, clock=FrozenClock(BASE)) as repo:
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 7)
+                self.assertGreaterEqual(SCHEMA_VERSION, 7)
                 self.assertIsNotNone(repo.connection.execute("SELECT id FROM plan_snapshots WHERE id='p'").fetchone())
                 self.assertIsNotNone(repo.connection.execute("SELECT id FROM places WHERE id='home'").fetchone())
                 tables = {

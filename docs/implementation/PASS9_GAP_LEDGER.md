@@ -1,12 +1,12 @@
 # Pass 9/10 conformance gap ledger
 
-Fresh baseline for this ledger: post-Pass-8 `main` tree `9cea664eafcaae17a1eb7b0fee86bfc7a55b3046` / merge commit `f7d9f77d65e886326973eba01df1ca93e3ac734d`, with exact post-merge CI green. Re-read live state before treating this checkpoint as current.
+Fresh baseline for this ledger: post-Pass-9 recovery/export `main` tree `0a5b3c4e7cf9f9358cfd279c38a298fedc0b465b` / merge commit `8498d67d36bf8cbec1fc03ce84324bc66b87423c`, with exact post-merge CI #100 green. Re-read live state before treating this checkpoint as current.
 
 | Area | Normative acceptance / owner | Baseline | Current Pass-9 slice | Next dependency |
 | --- | --- | --- | --- | --- |
 | Migration | AT-61 / §25.1 | v6→v7 executable migration exists | tracked as conformant evidence | destructive-migration rollback declaration if one is introduced |
 | Backup/restore | AT-62 / §25.2–25.3 | missing | implemented + executable restore proof | production encrypted backup store is deployment-specific |
-| Account deletion | AT-63 / §24.2 | missing | open | explicit retention/tombstone policy before destructive implementation |
+| Account deletion | AT-63 / §24.2 | missing at baseline | implemented: immediate account purge + 30-day minimal replay/account-id tombstone, revision + typed confirmation, future-table fail-closed | external secret/replica revocation remains deployment-specific |
 | Cancel/reopen projection cleanup | AT-64 | partial canonical lifecycle only | open | invalidate future derived travel/notification attributable only to obligation; preserve history |
 | Hybrid occurrence mode | AT-65 | alternative-location representation absent | open | domain + planner representation change |
 | Optional event policy | AT-66 | fail-closed UNKNOWN for OPTIONAL/PREFERRED | open | explicit omission policy + explanation; REQUIRED stays hard |
@@ -22,7 +22,6 @@ Fresh baseline for this ledger: post-Pass-8 `main` tree `9cea664eafcaae17a1eb7b0
 
 ## Pass order after this slice
 
-1. Data lifecycle deletion/retention (`AT-63`) using the export classification above.
-2. Durable notification delivery lease/outbox and restart/crash retry hardening.
-3. Remaining domain/planner conformance (`AT-64`, `AT-65`, `AT-66`).
-4. Final Pass 10 install/restart/migration/export/deletion/security/observability closure and documented production blockers.
+1. Durable notification delivery lease/outbox and restart/crash retry hardening.
+2. Remaining domain/planner conformance (`AT-64`, `AT-65`, `AT-66`).
+3. Final Pass 10 install/restart/migration/export/deletion/security/observability closure and documented production blockers.

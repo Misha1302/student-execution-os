@@ -198,6 +198,14 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="student-execution-os-export.json"'},
         )
 
+    @app.get("/api/v1/account/deletion-policy")
+    def account_deletion_policy() -> dict[str, Any]:
+        return service.account_deletion_policy()
+
+    @app.post("/api/v1/account/delete")
+    def account_delete(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        return service.delete_account(payload)
+
     @app.get("/api/v1/ask/capabilities")
     def ask_capabilities() -> dict[str, Any]:
         return {

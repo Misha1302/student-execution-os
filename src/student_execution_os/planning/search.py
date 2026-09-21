@@ -210,7 +210,16 @@ class BoundedSearch:
             return
 
         for duration in self.chunk_lengths(task, remaining):
-            for candidate in self.candidate_blocks(task, duration, earliest, deadline, boundary, occupied):
+            for candidate in self.candidate_blocks(
+                task,
+                duration,
+                earliest,
+                deadline,
+                boundary,
+                occupied,
+                deadline_clock=deadline_clock,
+                state=state,
+            ):
                 state.nodes += 1
                 if monotonic() > deadline_clock or state.nodes > self.node_limit:
                     state.timed_out = True
@@ -234,6 +243,8 @@ class BoundedSearch:
                             return
                 elif duration == remaining:
                     yield [candidate], next_occupancy
+            if state.timed_out:
+                return
 
     @staticmethod
     def chunk_lengths(task, remaining):
@@ -246,10 +257,24 @@ class BoundedSearch:
         return list(range(max_chunk, min_chunk - 1, -1))
 
     @staticmethod
-    def candidate_blocks(task, duration, earliest, deadline, boundary, occupied):
+    def candidate_blocks(
+        task,
+        duration,
+        earliest,
+        deadline,
+        boundary,
+        occupied,
+        *,
+        deadline_clock=None,
+        state=None,
+    ):
         latest_end = min(deadline, task.actual_cutoff.at or deadline)
         cursor = earliest
         while cursor + timedelta(minutes=duration) <= latest_end:
+            if deadline_clock is not None and monotonic() > deadline_clock:
+                if state is not None:
+                    state.timed_out = True
+                return
             end = cursor + timedelta(minutes=duration)
             if boundary is CutoffBoundary.EXCLUSIVE and end >= deadline:
                 cursor += _MINUTE
