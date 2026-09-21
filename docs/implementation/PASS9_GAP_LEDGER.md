@@ -1,6 +1,6 @@
 # Pass 9/10 conformance gap ledger
 
-Fresh baseline for this ledger: post-Pass-9 recovery/export `main` tree `0a5b3c4e7cf9f9358cfd279c38a298fedc0b465b` / merge commit `8498d67d36bf8cbec1fc03ce84324bc66b87423c`, with exact post-merge CI #100 green. Re-read live state before treating this checkpoint as current.
+Fresh baseline for this ledger: post-AT-63 `main` tree `4e248cd059df91c4c08b8d2aeb500df0bb07d53c` / merge commit `64ea121c98d6cc521fc581b99fb5a2fa1086456d`, with exact post-merge CI #104 green. Re-read live state before treating this checkpoint as current.
 
 | Area | Normative acceptance / owner | Baseline | Current Pass-9 slice | Next dependency |
 | --- | --- | --- | --- | --- |
@@ -11,17 +11,16 @@ Fresh baseline for this ledger: post-Pass-9 recovery/export `main` tree `0a5b3c4
 | Hybrid occurrence mode | AT-65 | alternative-location representation absent | open | domain + planner representation change |
 | Optional event policy | AT-66 | fail-closed UNKNOWN for OPTIONAL/PREFERRED | open | explicit omission policy + explanation; REQUIRED stays hard |
 | Older source revision | AT-67 | covered Pass 4 | closed | — |
-| Notification storm suppression | AT-68 | covered Pass 8 | closed | durable sender lease/outbox still needed for crash boundary |
+| Notification storm suppression | AT-68 | covered Pass 8 | closed + durable delivery outbox added in current slice | external channel must honor stable delivery key for provider-side idempotency |
 | Account export | AT-69 / §24.2 | missing | implemented explicit account allowlist | deletion/retention policy should share the same data classification |
 | Exact feasibility timeout | AT-70 | covered; total RiskEngine budget repaired Pass 8 | closed | expose deployment profile budget in final hardening |
 | Single active source binding | AT-71 | covered Pass 4 | closed | — |
-| Restart durability | AT-44 / §25.3 | action idempotency covered | strengthened indirectly by AT-62 restore proof | add notification delivery lease/outbox crash-retry semantics |
+| Restart durability | AT-44 / §25.3 | action idempotency + backup/restore covered | durable notification lease/outbox, expired-lease reclaim and retry/backoff added in current slice | external provider exactly-once is not claimed; stable delivery key supports provider idempotency |
 | Production auth/TLS | §24 | local loopback guard only | intentionally open | deployment boundary; no fake production claim |
 | OAuth secret lifecycle | §24 | no production OAuth/token store | intentionally open | provider integration / secret manager authority required |
 | Observability | §25 | audit, plans, connector sessions exist | partial | structured correlation/run telemetry without raw sensitive payloads |
 
 ## Pass order after this slice
 
-1. Durable notification delivery lease/outbox and restart/crash retry hardening.
-2. Remaining domain/planner conformance (`AT-64`, `AT-65`, `AT-66`).
-3. Final Pass 10 install/restart/migration/export/deletion/security/observability closure and documented production blockers.
+1. Remaining domain/planner conformance (`AT-64`, `AT-65`, `AT-66`).
+2. Final Pass 10 install/restart/migration/export/deletion/security/observability closure and documented production blockers.
