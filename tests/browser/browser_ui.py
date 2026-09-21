@@ -125,6 +125,8 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("Notifications", settings)
         self.assertIn("Latest Safe Start", settings)
         self.assertIn("PENDING", settings)
+        self.assertTrue(page.get_by_role("link", name="Download account export").is_visible())
+        self.assertIn("includes private account data", settings)
         page.locator('[data-action="snooze-notification"]').first.click()
         page.locator("#modal[open]").wait_for()
         self.assertIn("Snooze mutates notification workflow state only", page.locator("#modal").inner_text())

@@ -422,6 +422,7 @@ function renderSettings(data) {
     </section>
     <section class="section"><div class="section-head"><div><h2>Notifications</h2><p>Workflow state is revision-bound and separate from Task/Event truth. Snooze changes delivery time only.</p></div></div>${notifications ? `<div class="grid grid-2">${notifications}</div>` : '<div class="empty">No notification workflow state.</div>'}</section>
     <section class="section"><div class="section-head"><div><h2>Connections</h2><p>Health only; no fake OAuth setup flow is exposed.</p></div></div>${connectors ? `<div class="grid grid-2">${connectors}</div>` : '<div class="empty">No connector workflow state.</div>'}</section>
+    <section class="section"><div class="panel"><h2>Data lifecycle</h2><p class="muted">Account export is server-scoped to the authenticated account. It intentionally includes private account data, including exact saved locations, and must be handled as a sensitive artifact.</p><div class="inline-actions" style="margin-top:12px"><a class="button ghost" href="/api/v1/account/export" download="student-execution-os-export.json">Download account export</a></div></div></section>
     <section class="section"><div class="panel"><h2>Privacy boundary</h2><p class="muted">Exact private locations are not serialized by the normal Places endpoint. Imported content is untrusted evidence. Browser requests cannot self-assert account/principal identity.</p></div></section>`;
 }
 

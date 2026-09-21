@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from student_execution_os import __version__
 from student_execution_os.agent import (
@@ -29,6 +31,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
+from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.notifications import NotificationKind, SQLiteNotificationRepository
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
@@ -526,6 +529,91 @@ def run_recurrence_notification_smoke() -> dict[str, object]:
         }
 
 
+def run_reliability_smoke() -> dict[str, object]:
+    account_id = "reliability-smoke-account"
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        database = root / "live.sqlite3"
+        backup = root / "backup.sqlite3"
+        restored = root / "restored.sqlite3"
+        export_path = root / "account-export.json"
+        with SQLiteCanonicalRepository(database, clock=FrozenClock(now)) as repo:
+            repo.initialize()
+            repo.create_account(account_id)
+            repo.create_task(
+                account_id=account_id,
+                obligation_id="recovery-task",
+                title="Recovery smoke task",
+                category=ObligationCategory.GENERAL,
+                importance=Importance.NORMAL,
+                estimated_total_effort_minutes=20,
+                remaining_effort_minutes=20,
+                splittable=False,
+                actual_cutoff=HardCutoff.unknown(),
+                actor=ActorCategory.SYSTEM,
+            )
+            recon = SQLiteReconciliationRepository(repo)
+            recon.create_source_system(
+                account_id=account_id,
+                source_system_id="recovery-source",
+                kind="SMOKE",
+                policy_context={"purpose": "recovery-smoke"},
+                actor=ActorCategory.SYSTEM,
+            )
+            connectors = SQLiteConnectorRepository(repo, recon)
+            connectors.register(
+                account_id=account_id,
+                connector_id="recovery-connector",
+                source_system_id="recovery-source",
+                provider="smoke",
+                scope="smoke-scope",
+                connector_version="v1",
+            )
+            session = connectors.start_session(
+                account_id=account_id, connector_id="recovery-connector", is_full_sync=True
+            )
+            connectors.finish_complete(
+                account_id=account_id,
+                session_id=session.id,
+                checkpoint_after="checkpoint-1",
+                page_count=1,
+                record_count=0,
+                deletion_count=0,
+            )
+            SQLiteNotificationRepository(repo).schedule(
+                account_id=account_id,
+                suppression_key="recovery-smoke-notification",
+                kind=NotificationKind.DEADLINE_WARNING,
+                scheduled_for=now + timedelta(minutes=5),
+                domain_revision=repo.get_server_revision(account_id),
+                entity_ref="recovery-task",
+            )
+
+        lifecycle = SQLiteDataLifecycle(database, now=lambda: now)
+        manifest = lifecycle.create_backup(backup)
+        export = lifecycle.write_account_export(account_id, export_path)
+        restore = SQLiteDataLifecycle.restore_backup(backup, restored)
+        with SQLiteCanonicalRepository(restored, clock=FrozenClock(now)) as repo:
+            repo.initialize()
+            recon = SQLiteReconciliationRepository(repo)
+            checkpoint = SQLiteConnectorRepository(repo, recon).get_state(
+                account_id, "recovery-connector"
+            ).checkpoint
+            notifications = len(SQLiteNotificationRepository(repo).list(account_id))
+            title = repo.get_task(account_id, "recovery-task").obligation.title
+        return {
+            "status": "ok",
+            "schema_version": restore.restored_schema_version,
+            "backup_sha256": manifest.sha256,
+            "export_format_version": export.format_version,
+            "restored_task": title,
+            "restored_checkpoint": checkpoint,
+            "restored_notifications": notifications,
+        }
+
+
+
 def _cutoff(value: str) -> HardCutoff:
     if value.upper() == "ABSENT":
         return HardCutoff.absent()
@@ -552,6 +640,22 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("agent-smoke")
     subparsers.add_parser("travel-smoke")
     subparsers.add_parser("recurrence-notification-smoke")
+    subparsers.add_parser("reliability-smoke")
+
+    backup = subparsers.add_parser("backup")
+    backup.add_argument("--database", required=True)
+    backup.add_argument("--output", required=True)
+
+    restore = subparsers.add_parser("restore")
+    restore.add_argument("--backup", required=True)
+    restore.add_argument("--output", required=True)
+    restore.add_argument("--manifest")
+    restore.add_argument("--overwrite", action="store_true")
+
+    export = subparsers.add_parser("account-export")
+    export.add_argument("--database", required=True)
+    export.add_argument("--account", required=True)
+    export.add_argument("--output", required=True)
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -626,6 +730,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "recurrence-notification-smoke":
         print(json.dumps(run_recurrence_notification_smoke(), sort_keys=True))
+        return 0
+    if args.command == "reliability-smoke":
+        print(json.dumps(run_reliability_smoke(), sort_keys=True))
+        return 0
+
+    if args.command == "backup":
+        result = SQLiteDataLifecycle(args.database).create_backup(args.output)
+        print(json.dumps(result.to_dict(), sort_keys=True))
+        return 0
+    if args.command == "restore":
+        result = SQLiteDataLifecycle.restore_backup(
+            args.backup, args.output, manifest=args.manifest, overwrite=args.overwrite
+        )
+        print(json.dumps(result.to_dict(), sort_keys=True))
+        return 0
+    if args.command == "account-export":
+        result = SQLiteDataLifecycle(args.database).write_account_export(args.account, args.output)
+        print(json.dumps({
+            "account_id": result.account_id,
+            "format_version": result.format_version,
+            "schema_version": result.schema_version,
+            "output": args.output,
+        }, sort_keys=True))
         return 0
 
     if args.command == "account-init":

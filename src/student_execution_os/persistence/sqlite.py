@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import replace
@@ -75,6 +76,14 @@ class SQLiteCanonicalRepository:
         self.connection = sqlite3.connect(self.database)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self._restrict_database_file_permissions()
+
+    def _restrict_database_file_permissions(self) -> None:
+        if os.name != "posix" or self.database == ":memory:" or self.database.startswith("file:"):
+            return
+        path = Path(self.database)
+        if path.exists():
+            path.chmod(0o600)
 
     def close(self) -> None:
         self.connection.close()
