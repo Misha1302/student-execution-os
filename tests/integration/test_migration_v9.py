@@ -12,10 +12,10 @@ UTC = timezone.utc
 BASE = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
 
 
-class MigrationV8IntegrationTests(unittest.TestCase):
-    def test_v7_database_upgrades_to_v8_with_deletion_tombstones_and_preserves_state(self):
+class MigrationV9IntegrationTests(unittest.TestCase):
+    def test_v8_database_upgrades_to_v9_with_delivery_outbox_and_preserves_notifications(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = Path(tmp) / "v7.sqlite3"
+            db = Path(tmp) / "v8.sqlite3"
             conn = sqlite3.connect(db)
             conn.execute(
                 "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -29,6 +29,7 @@ class MigrationV8IntegrationTests(unittest.TestCase):
                 "005_llm_action_boundary.sql",
                 "006_travel_planning.sql",
                 "007_recurrence_notifications.sql",
+                "008_account_deletion.sql",
             )
             for version, name in enumerate(names, start=1):
                 conn.executescript((migrations / name).read_text(encoding="utf-8"))
@@ -38,7 +39,9 @@ class MigrationV8IntegrationTests(unittest.TestCase):
                 )
             conn.execute("INSERT INTO accounts(id,server_revision) VALUES ('a',0)")
             conn.execute(
-                "INSERT INTO notifications(id,account_id,suppression_key,kind,entity_ref,domain_revision,plan_id,plan_revision,scheduled_for,state,initial_notification_id,group_key,cooldown_until,snoozed_until,delivered_at,attempt_count,version,last_error,created_at,updated_at) "
+                "INSERT INTO notifications(id,account_id,suppression_key,kind,entity_ref,domain_revision,"
+                "plan_id,plan_revision,scheduled_for,state,initial_notification_id,group_key,cooldown_until,"
+                "snoozed_until,delivered_at,attempt_count,version,last_error,created_at,updated_at) "
                 "VALUES ('n','a','k','DEADLINE_WARNING',NULL,0,NULL,NULL,?,'PENDING',NULL,NULL,NULL,NULL,NULL,0,1,NULL,?,?)",
                 (BASE.isoformat(), BASE.isoformat(), BASE.isoformat()),
             )
@@ -47,11 +50,11 @@ class MigrationV8IntegrationTests(unittest.TestCase):
 
             with SQLiteCanonicalRepository(db, clock=FrozenClock(BASE)) as repo:
                 repo.initialize()
-                self.assertGreaterEqual(SCHEMA_VERSION, 8)
+                self.assertEqual(SCHEMA_VERSION, 9)
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
                 self.assertIsNotNone(repo.connection.execute("SELECT id FROM notifications WHERE id='n'").fetchone())
                 table = repo.connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='account_deletion_tombstones'"
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='notification_delivery_outbox'"
                 ).fetchone()
                 self.assertIsNotNone(table)
 

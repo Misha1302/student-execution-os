@@ -194,6 +194,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "recurring_templates",
     "occurrence_overrides",
     "notifications",
+    "notification_delivery_outbox",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
