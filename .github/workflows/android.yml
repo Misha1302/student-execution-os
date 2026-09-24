@@ -1,0 +1,61 @@
+name: android
+
+on:
+  push:
+    paths:
+      - 'mobile/**'
+      - 'src/student_execution_os/web/static/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - 'src/student_execution_os/web/static/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: 'Default API server preset in the app (e.g. https://plan.example.com); empty = ask on first launch'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Install dependencies
+        run: npm ci
+      - name: Sync web client into the Android project
+        env:
+          SEOS_SERVER_URL: ${{ github.event.inputs.server_url }}
+        run: npm run sync
+      - name: Build debug APK
+        env:
+          SEOS_VERSION_CODE: ${{ github.run_number }}
+        run: cd android && ./gradlew assembleDebug --no-daemon
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-os-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

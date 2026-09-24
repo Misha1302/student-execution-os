@@ -1,0 +1,8 @@
+[Unit]
+Description=Verified Student Execution OS SQLite backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/student-execution-os/current/deploy/backup.sh

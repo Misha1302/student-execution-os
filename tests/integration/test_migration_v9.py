@@ -50,7 +50,7 @@ class MigrationV9IntegrationTests(unittest.TestCase):
 
             with SQLiteCanonicalRepository(db, clock=FrozenClock(BASE)) as repo:
                 repo.initialize()
-                self.assertEqual(SCHEMA_VERSION, 9)
+                self.assertGreaterEqual(SCHEMA_VERSION, 9)
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
                 self.assertIsNotNone(repo.connection.execute("SELECT id FROM notifications WHERE id='n'").fetchone())
                 table = repo.connection.execute(

@@ -1,0 +1,21 @@
+{
+  "appId": "io.github.misha1302.seos",
+  "appName": "Execution OS",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "backgroundColor": "#f6f7f9",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "overlaysWebView": false
+    }
+  }
+}

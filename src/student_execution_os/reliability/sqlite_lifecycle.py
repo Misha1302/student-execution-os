@@ -225,6 +225,13 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
 }
 
 
+# Login credentials and session token hashes are account-scoped and purged with the
+# account, but they are never part of the user data export contract.
+_ACCOUNT_CREDENTIAL_TABLES = (
+    "auth_sessions",
+    "auth_users",
+)
+
 _GLOBAL_LIFECYCLE_TABLES = {
     "schema_migrations",
     "account_deletion_tombstones",
@@ -234,6 +241,7 @@ _KNOWN_DATABASE_TABLES = {
     *_GLOBAL_LIFECYCLE_TABLES,
     "accounts",
     *_DIRECT_ACCOUNT_TABLES,
+    *_ACCOUNT_CREDENTIAL_TABLES,
     *_CHILD_TABLE_QUERIES.keys(),
 }
 
@@ -433,6 +441,7 @@ class SQLiteDataLifecycle:
             "raw_source_store": "NONE_CONFIGURED",
             "secret_store": "NONE_CONFIGURED",
             "secret_revocation": "NOT_APPLICABLE_NO_SECRET_STORE",
+            "login_credentials": "PURGED_IMMEDIATELY_ALL_SESSIONS_INVALIDATED",
         }
 
     def delete_account(
@@ -480,6 +489,13 @@ class SQLiteDataLifecycle:
                 )
             for table, query in _CHILD_TABLE_QUERIES.items():
                 deleted_rows[table] = len(_rows(connection, query, (account_id,)))
+            for table in _ACCOUNT_CREDENTIAL_TABLES:
+                deleted_rows[table] = int(
+                    connection.execute(
+                        f"SELECT count(*) FROM {table} WHERE account_id=?", (account_id,)
+                    ).fetchone()[0]
+                )
+                connection.execute(f"DELETE FROM {table} WHERE account_id=?", (account_id,))
 
             connection.execute(
                 "INSERT INTO account_deletion_tombstones("
@@ -589,6 +605,7 @@ class SQLiteDataLifecycle:
                     "includes_provenance_and_workflow": True,
                     "includes_database_global_metadata": False,
                     "includes_connector_or_oauth_secrets": False,
+                    "includes_login_credentials_or_sessions": False,
                     "note": (
                         "This release has no connector/OAuth secret store. The explicit table allowlist fails closed: "
                         "future secret tables are not exported unless the contract is deliberately revised."

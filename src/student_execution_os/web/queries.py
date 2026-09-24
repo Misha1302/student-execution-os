@@ -100,7 +100,8 @@ class UiService:
     """Revision-bound UI/query/application façade.
 
     The client never supplies account or principal identity. The host binds those
-    once when constructing the service; every request opens a fresh SQLite adapter
+    when constructing the service (once for a bound server, per request from the
+    authenticated session otherwise); every request opens a fresh SQLite adapter
     and applies the bound account at the server boundary.
     """
 
@@ -112,15 +113,19 @@ class UiService:
         principal_id: str,
         client_id: str = "web-ui",
         now: Callable[[], datetime] | None = None,
+        binding: str = "server-bound",
     ) -> None:
         self.database = str(database)
         self.account_id = account_id
+        self.binding = binding
         self.principal = AuthenticatedPrincipal(
             account_id=account_id,
             principal_id=principal_id,
             client_id=client_id,
         )
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        # The planner works on whole minutes; a wall clock with seconds would make every
+        # plan UNKNOWN (UNSUPPORTED_SUB_MINUTE_TIME).
+        self._now = now or (lambda: datetime.now(timezone.utc).replace(second=0, microsecond=0))
 
     def _repo(self) -> SQLiteCanonicalRepository:
         repo = SQLiteCanonicalRepository(self.database, clock=FrozenClock(self._now()))
@@ -272,11 +277,12 @@ class UiService:
         event_names = {e["id"]: e["title"] for e in events}
         blocks = []
         for b in plan.blocks:
-            label = b.type.value
-            if b.obligation_id:
-                label = task_names.get(b.obligation_id, label)
-            elif b.source_event_id:
-                label = event_names.get(b.source_event_id, label)
+            label = (
+                task_names.get(b.obligation_id)
+                or event_names.get(b.obligation_id)
+                or event_names.get(b.source_event_id)
+                or b.type.value
+            )
             blocks.append({
                 "id": b.id,
                 "type": b.type.value,
@@ -545,8 +551,8 @@ class UiService:
                 "version": __version__,
                 "schema_version": repo.schema_version(),
                 "server_revision": repo.get_server_revision(self.account_id),
-                "account_binding": "server-bound",
-                "principal_binding": "server-bound",
+                "account_binding": self.binding,
+                "principal_binding": self.binding,
                 "latest_plan": None if latest is None else {
                     "id": latest.id,
                     "plan_revision": latest.plan_revision,

@@ -50,6 +50,8 @@ jobs:
         run: python -m student_execution_os travel-smoke
       - name: Recurrence and notification smoke
         run: python -m student_execution_os recurrence-notification-smoke
+      - name: Notification delivery smoke
+        run: python -m student_execution_os notification-delivery-smoke
       - name: Reliability and data-lifecycle smoke
         run: python -m student_execution_os reliability-smoke
       - name: Web host smoke

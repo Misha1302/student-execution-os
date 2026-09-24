@@ -64,6 +64,17 @@ A final candidate-bound CI run is still required after this documentation + dedi
 
 Hosted push run #113 on the implementation commit is fully green across core, API, Chromium and all smoke surfaces. A final hosted run after this documentation commit and normal PR/merge gates remains required.
 
+## Hosted auth + mobile client (ADR 0015)
+
+- Branch `feat/mobile-client-auth`, schema v10 (`auth_users`, `auth_sessions`).
+- Session mode is the server default; bound mode (`--account`) is unchanged for local use.
+- Credentials are purged by account deletion and excluded from account export.
+- Web client rewritten mobile-first (modules under `web/static/js`), RU/EN.
+- `mobile/` Capacitor 8 Android project; `make apk` builds `app-debug.apk`; CI workflow `android` uploads it.
+- `deploy/` Docker + Caddy; only `SEOS_DOMAIN` is missing.
+- Fixed: live wall clock with seconds made every plan UNKNOWN (`UNSUPPORTED_SUB_MINUTE_TIME`).
+- Open: password change/reset, push/local reminders from the notification outbox, multi-process rate limiting.
+
 ## Remaining local conformance
 
 1. AT-65 hybrid occurrence mode.

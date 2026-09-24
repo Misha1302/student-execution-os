@@ -1,0 +1,21 @@
+# Deployment on a host where nginx already terminates TLS.
+# Run from a release checkout with:
+#   docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml \
+#     --env-file /etc/student-execution-os/student-execution-os.env up -d --build
+services:
+  api:
+    image: student-execution-os:${SEOS_IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      SEOS_REGISTRATION: ${SEOS_REGISTRATION:-open}
+      SEOS_PROXY_HEADERS: ${SEOS_PROXY_HEADERS:-1}
+      SEOS_FORWARDED_ALLOW_IPS: ${SEOS_FORWARDED_ALLOW_IPS:-127.0.0.1}
+      SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - /var/lib/student-execution-os:/data
+      - /var/backups/student-execution-os:/backups
