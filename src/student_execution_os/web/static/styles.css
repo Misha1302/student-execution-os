@@ -209,6 +209,7 @@ body.bare .main-column { padding-bottom: 0; }
 .chip-ok { background: var(--ok-soft); color: var(--ok); }
 .chip-warn { background: var(--warn-soft); color: var(--warn); }
 .chip-danger { background: var(--danger-soft); color: var(--danger); }
+button.chip { border: 0; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
 .chip-muted { background: var(--surface-2); color: var(--text-3); }
 .chip-accent { background: var(--accent-soft); color: var(--accent); }
 .chip-canonical { background: var(--canonical-soft); color: var(--canonical); }

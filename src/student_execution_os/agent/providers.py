@@ -19,10 +19,23 @@ from student_execution_os.domain.errors import ValidationError
 SYSTEM_PROMPT = """You interpret user text for Student Execution OS. Return JSON only:
 {"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|REFINE_TASK|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
 Never claim an action was executed. CREATE_TASK and CREATE_EVENT are proposals.
-COMPLETE_OBLIGATION and CANCEL_OBLIGATION always require_confirmation=true and
-must include payload.obligation_id and expected_version from supplied context;
-otherwise list the missing field in unresolved_fields. Do not invent identifiers,
-versions, dates, or locations. Use ISO-8601 instants with offsets."""
+Payloads: CREATE_TASK {title, estimated_total_effort_minutes?, description?,
+importance?}; CREATE_EVENT {title, starts_at, ends_at}; REFINE_TASK {obligation_id,
+estimated_total_effort_minutes}; LOG_PROGRESS {obligation_id, minutes};
+COMPLETE_OBLIGATION / CANCEL_OBLIGATION {obligation_id}.
+Commands on existing items must take obligation_id and expected_version (its
+"version") from context.obligations; COMPLETE_OBLIGATION and CANCEL_OBLIGATION
+always set requires_confirmation=true. If something is missing, list the field in
+unresolved_fields. Do not invent identifiers, versions, dates, or locations. Use
+ISO-8601 instants with offsets; context.now and context.timezone give the clock."""
+
+
+class ProviderUnavailable(ValidationError):
+    """The provider could not be reached or answered with an HTTP error.
+
+    Distinct from malformed output: an outage degrades to the local parser, while a
+    malformed answer is rejected so it can never reach the preview.
+    """
 
 
 def _content_json(text: str) -> dict[str, Any]:
@@ -38,6 +51,19 @@ def _content_json(text: str) -> dict[str, Any]:
     return value
 
 
+def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: float, name: str) -> httpx.Response:
+    try:
+        response = httpx.post(url, headers=headers, json=body, timeout=timeout)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ProviderUnavailable(f"assistant provider {name} is unavailable") from exc
+    return response
+
+
+def _user_message(text: str, context: dict[str, object]) -> str:
+    return json.dumps({"text": text, "context": context}, ensure_ascii=False, default=str)
+
+
 @dataclass
 class OpenAICompatibleProvider:
     api_key: str
@@ -47,25 +73,24 @@ class OpenAICompatibleProvider:
     timeout: float = 30.0
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
-        response = httpx.post(
+        response = _post(
             f"{self.base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
+            body={
                 "model": self.model,
                 "temperature": 0,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps({"text": text, "context": context}, ensure_ascii=False)},
+                    {"role": "user", "content": _user_message(text, context)},
                 ],
             },
-            timeout=self.timeout,
+            timeout=self.timeout, name=self.name,
         )
         try:
-            response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ValidationError(f"assistant provider {self.name} is unavailable") from exc
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValidationError(f"assistant provider {self.name} returned an unexpected response") from exc
         return _content_json(str(content))
 
 
@@ -78,21 +103,20 @@ class AnthropicProvider:
     timeout: float = 30.0
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
-        response = httpx.post(
+        response = _post(
             f"{self.base_url.rstrip('/')}/v1/messages",
             headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
-            json={
+            body={
                 "model": self.model, "max_tokens": 1200, "temperature": 0,
                 "system": SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": json.dumps({"text": text, "context": context}, ensure_ascii=False)}],
+                "messages": [{"role": "user", "content": _user_message(text, context)}],
             },
-            timeout=self.timeout,
+            timeout=self.timeout, name=self.name,
         )
         try:
-            response.raise_for_status()
             content = response.json()["content"][0]["text"]
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ValidationError("assistant provider anthropic is unavailable") from exc
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ValidationError("assistant provider anthropic returned an unexpected response") from exc
         return _content_json(str(content))
 
 
@@ -120,7 +144,11 @@ def provider_from_environment():
 
 
 def capabilities() -> dict[str, Any]:
-    provider = provider_from_environment()
+    error = None
+    try:
+        provider = provider_from_environment()
+    except ValidationError as exc:  # misconfiguration must not take the API down
+        provider, error = None, str(exc)
     return {
         "live_llm_provider": provider is not None,
         "provider": None if provider is None else provider.name,
@@ -128,4 +156,5 @@ def capabilities() -> dict[str, Any]:
         "structured_actions": True,
         "confirmation_required": True,
         "degraded_mode": provider is None,
+        "configuration_error": error,
     }

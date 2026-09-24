@@ -79,6 +79,12 @@ same assistant preview/apply boundary. Denying microphone permission leaves type
 capture available. Production push additionally requires Firebase Android
 configuration and server-side FCM secrets; otherwise diagnostics say `UNCONFIGURED`.
 
+Push is compiled in only when `android/app/google-services.json` (from the Firebase
+console, not committed) exists at `npm run sync` time: the sync script then writes
+`pushEnabled: true` into `assets/config.js`. Without it the app never calls
+`PushNotifications.register()` (which would crash the native bridge without Firebase)
+and runs with in-app reminders only.
+
 Task capture, edit, start, progress, defer, complete/cancel and reopen use the v12 sync
 protocol. The WebView stores the last read models and a server/account-scoped operation
 queue locally; pending operations survive reload, replay with stable operation ids after

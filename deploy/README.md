@@ -95,6 +95,17 @@ PYTHONPATH=src python -m student_execution_os.reminders.worker \
   --database /var/lib/seos/seos.db
 ```
 
+## Post-deploy smoke
+
+```bash
+python deploy/smoke.py https://<domain> --expect-revision "$(git rev-parse HEAD)" --expect-worker
+```
+
+registers a throwaway account, drives create → start → progress → complete → open
+completed → reopen → reuse through `/api/v1/sync` (including an exactly-once replay and a
+visible lifecycle conflict), checks reminders, Assistant capabilities/preview and the
+reminder-worker heartbeat, then deletes the account.
+
 ## Not yet covered
 
 Password reset/change, email verification, per-account rate limits across several server

@@ -6,6 +6,12 @@ import { clearAll } from '../store.js';
 import { shell } from '../actions.js';
 
 let mode = 'login';
+// A server that passed the probe but has no signed-in account yet. The current
+// server, token, user, cache and offline queue stay untouched until sign-in on the
+// candidate succeeds, so a failed switch never leaves the app half-switched.
+let candidate = null;
+
+const targetServer = () => candidate?.url ?? session.server;
 
 // Server validation messages are English; map the known auth ones to the UI language.
 function authError(err) {
@@ -42,11 +48,11 @@ function authStep() {
       <div class="brand-mark big">${icon('today')}</div>
       <h1>${esc(t('app.name'))}</h1>
       <p class="muted">${esc(t('welcome.tagline'))}</p>
-      ${session.registrationOpen ? chipGroup('auth-mode', [['login', t('welcome.login')], ['register', t('welcome.register')]], mode) : ''}
+      ${(candidate ? candidate.registrationOpen : session.registrationOpen) ? chipGroup('auth-mode', [['login', t('welcome.login')], ['register', t('welcome.register')]], mode) : ''}
       <form class="form" data-form="auth">
         <label class="field"><span>${esc(t('welcome.loginLabel'))}</span>
           <input name="login" autocomplete="username" autocapitalize="off" spellcheck="false" required minlength="3" maxlength="64"
-            value="${esc(session.user?.login || '')}"></label>
+            value="${esc(candidate ? '' : (session.user?.login || ''))}"></label>
         <label class="field"><span>${esc(t('welcome.password'))}</span>
           <input name="password" type="password" autocomplete="${register ? 'new-password' : 'current-password'}" required minlength="${register ? 8 : 1}"></label>
         ${register ? `<label class="field"><span>${esc(t('welcome.passwordRepeat'))}</span>
@@ -54,7 +60,8 @@ function authStep() {
           <p class="help">${esc(t('welcome.registerHelp'))}</p>` : ''}
         <button class="button primary wide" type="submit">${esc(register ? t('welcome.createAccount') : t('welcome.signIn'))}</button>
       </form>
-      ${isNative() ? `<button class="link" data-action="welcome-server">${icon('server')} ${esc(session.server)}</button>` : ''}
+      ${isNative() ? `<button class="link" data-action="welcome-server">${icon('server')} ${esc(targetServer())}</button>` : ''}
+      ${candidate && session.token ? `<button class="link" data-action="welcome-keep-server">${esc(t('welcome.keepServer', { server: session.server }))}</button>` : ''}
       <div class="welcome-locale">${chipGroup('welcome-locale', LOCALES, getLocale())}</div>
     </div>`;
 }
@@ -85,10 +92,14 @@ export default {
           setBusy(button, false);
           return;
         }
-        await setServer(url);
-        clearAll();
-        session.authMode = health.auth_mode;
-        session.registrationOpen = Boolean(health.registration_open);
+        if (url === session.server) {
+          candidate = null;
+          session.authMode = health.auth_mode;
+          session.registrationOpen = Boolean(health.registration_open);
+          shell.go(session.token ? 'today' : 'welcome', { step: 'auth' });
+          return;
+        }
+        candidate = { url, registrationOpen: Boolean(health.registration_open) };
         shell.go('welcome', { step: 'auth' });
       } catch (err) {
         toast(err.code === 'NETWORK' ? t('welcome.unreachable') : errorMessage(err), { error: true });
@@ -105,13 +116,22 @@ export default {
       }
       setBusy(button, true);
       try {
-        await refreshHealth().catch(() => {});
+        if (!candidate) await refreshHealth().catch(() => {});
         const issued = await api(`/api/v1/auth/${mode === 'register' ? 'register' : 'login'}`, {
           method: 'POST',
+          server: targetServer(),
           body: { login: form.get('login'), password: form.get('password'), device_label: isNative() ? 'android' : 'web' },
         });
+        if (candidate) {
+          // Commit the switch: setServer drops the previous identity, the read
+          // cache is cleared; offline queues are keyed by server+account.
+          await setServer(candidate.url);
+          candidate = null;
+          session.authMode = 'session';
+        }
         await setAuth(issued.token, issued.user);
         clearAll();
+        window.dispatchEvent(new CustomEvent('seos-signed-in'));
         shell.go('today');
       } catch (err) {
         toast(authError(err), { error: true });
@@ -121,5 +141,6 @@ export default {
   },
   actions: {
     'welcome-server'() { shell.go('welcome', { step: 'server' }); },
+    'welcome-keep-server'() { candidate = null; shell.go('today'); },
   },
 };

@@ -77,7 +77,9 @@ export default {
   detail: true,
   title: () => t('task.title'),
   async load({ fresh, params }) {
-    const result = await load('/api/v1/tasks', { fresh });
+    let result = await load('/api/v1/tasks', { fresh });
+    // A deep link (push tap, another device) may name a task newer than the cached list.
+    if (!fresh && !result.data.some((x) => x.id === params[0])) result = await load('/api/v1/tasks', { fresh: true }).catch(() => result);
     const task = result.data.find((x) => x.id === params[0]) || null;
     if (!task) return { ...result, data: null };
     const attachments = await load(`/api/v1/attachments?owner_kind=OBLIGATION&owner_id=${encodeURIComponent(task.id)}`, { fresh });

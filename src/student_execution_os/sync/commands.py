@@ -490,4 +490,14 @@ class SyncService:
             raise ValidationError("ops must be a list")
         if len(ops) > MAX_BATCH:
             raise ValidationError(f"at most {MAX_BATCH} operations per request")
-        return [self.apply(op) for op in ops]
+        results = []
+        for op in ops:
+            try:
+                results.append(self.apply(op))
+            except ValidationError as exc:
+                # A malformed envelope is rejected on its own (not recorded, since it
+                # has no usable op_id) so it can never block the rest of the queue.
+                op_id = str(op.get("op_id") or "") if isinstance(op, dict) else ""
+                results.append({"op_id": op_id, "status": REJECTED, "code": "MALFORMED_OPERATION",
+                                "message": str(exc), "entity": None, "replayed": False})
+        return results

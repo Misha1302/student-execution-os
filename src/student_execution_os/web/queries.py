@@ -21,7 +21,7 @@ from student_execution_os.agent import (
 )
 from student_execution_os.connectors.model import ConnectorHealth
 from student_execution_os.domain.clock import FrozenClock
-from student_execution_os.domain.errors import EntityNotFound
+from student_execution_os.domain.errors import EntityNotFound, ValidationError
 from student_execution_os.domain.model import (
     ActorCategory,
     AttendancePolicy,
@@ -548,6 +548,13 @@ class UiService:
                 for task in source.list_tasks(self.account_id)
             ]
 
+    def task(self, task_id: str) -> dict[str, Any]:
+        """One task in any lifecycle state (completed/cancelled tasks stay openable)."""
+        for item in self.tasks():
+            if item["id"] == task_id:
+                return item
+        raise EntityNotFound("task not found")
+
     def events(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
             return [self._event(e) for e in SQLitePlanningStateSource(repo).list_events(self.account_id)]
@@ -781,6 +788,11 @@ class UiService:
         with self._repo() as repo:
             store = SQLitePlanStore(repo)
             latest = store.get_latest(self.account_id)
+            worker = self._worker_status(repo)
+            if worker["state"] == "RUNNING":
+                fcm = "CONFIGURED" if worker["push_configured"] else "UNCONFIGURED"
+            else:
+                fcm = "CONFIGURED" if provider_from_environment().configured else "UNCONFIGURED"
             return {
                 "service": "student-execution-os",
                 "version": __version__,
@@ -806,13 +818,29 @@ class UiService:
                         (self.account_id,),
                     ).fetchall()
                 ],
+                "reminder_worker": worker,
                 "external_capabilities": {
-                    "fcm": "CONFIGURED" if provider_from_environment().configured else "UNCONFIGURED",
+                    # Push credentials live with the worker process, so its heartbeat
+                    # is the source of truth; the API's own env is only a fallback.
+                    "fcm": fcm,
                     "llm": "CONFIGURED" if assistant_capabilities()["live_llm_provider"] else "UNCONFIGURED",
                     "routing": "UNCONFIGURED",
                     "oauth": "UNCONFIGURED",
                 },
             }
+
+    def _worker_status(self, repo: SQLiteCanonicalRepository) -> dict[str, Any]:
+        row = repo.connection.execute(
+            "SELECT beat_at,detail_json FROM worker_heartbeats WHERE name='reminder-worker'"
+        ).fetchone()
+        if row is None:
+            return {"state": "NEVER_SEEN", "last_beat_at": None, "push_configured": False}
+        import json
+        beat = datetime.fromisoformat(row["beat_at"])
+        detail = json.loads(row["detail_json"] or "{}")
+        state = "RUNNING" if datetime.now(timezone.utc) - beat < timedelta(minutes=3) else "STALE"
+        return {"state": state, "last_beat_at": row["beat_at"], "push_configured": bool(detail.get("push_configured")),
+                "push_provider": detail.get("push_provider")}
 
     def create_recurring_template(self, payload: dict[str, Any]) -> dict[str, Any]:
         start = _local_dt(payload.get("dtstart_local"))
@@ -1143,10 +1171,12 @@ class UiService:
             }
 
     def assistant_interpret(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            provider = assistant_provider_from_environment()
+        except ValidationError:
+            provider = None  # misconfigured provider: degraded local mode (capabilities reports why)
         with self._repo() as repo:
-            return SQLiteAssistantService(
-                repo, self.principal, provider=assistant_provider_from_environment()
-            ).interpret(
+            return SQLiteAssistantService(repo, self.principal, provider=provider).interpret(
                 str(payload.get("text", "")), payload.get("context")
             )
 

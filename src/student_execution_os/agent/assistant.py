@@ -22,6 +22,7 @@ from student_execution_os.domain.model import (
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 
 from .model import AgentCommand, AuthenticatedPrincipal
+from .providers import ProviderUnavailable
 
 
 COMMANDS = {command.value for command in AgentCommand}
@@ -76,11 +77,128 @@ class DeterministicAssistantParser:
         ):
             if lowered.startswith(prefix):
                 target = clean[len(prefix):].strip()
-                expected = context.get("expected_version")
-                return [{"command": command.value, "payload": {"obligation_id": target}, "confidence": 0.75,
-                         "unresolved_fields": ["expected_version"] if expected is None else [],
-                         "expected_version": expected, "requires_confirmation": True}]
+                match = _resolve_target(target, context.get("obligations"))
+                if match is None:
+                    return [{"command": command.value, "payload": {"obligation_id": target}, "confidence": 0.5,
+                             "unresolved_fields": ["obligation_id", "expected_version"],
+                             "expected_version": None, "requires_confirmation": True}]
+                return [{"command": command.value, "payload": {"obligation_id": match["id"]}, "confidence": 0.85,
+                         "unresolved_fields": [], "expected_version": match["version"], "requires_confirmation": True}]
         raise ValidationError("input is not supported by the deterministic RU/EN parser")
+
+
+def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
+    """Exact id, or a unique case-insensitive title match among open obligations."""
+    if not isinstance(obligations, list):
+        return None
+    wanted = target.casefold()
+    by_id = [item for item in obligations if item.get("id") == target]
+    if by_id:
+        return by_id[0]
+    by_title = [item for item in obligations if str(item.get("title", "")).casefold() == wanted]
+    return by_title[0] if len(by_title) == 1 else None
+
+
+_ACTION_KEYS = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
+_PAYLOAD_KEYS = {
+    AgentCommand.CREATE_TASK.value: {"title", "description", "category", "importance", "estimated_total_effort_minutes",
+                                     "remaining_effort_minutes", "actual_cutoff", "splittable"},
+    AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "category", "importance",
+                                      "attendance_policy", "location_effect", "arrival_requirement_minutes"},
+    AgentCommand.REFINE_TASK.value: {"obligation_id", "estimated_total_effort_minutes", "activate"},
+    AgentCommand.LOG_PROGRESS.value: {"obligation_id", "minutes"},
+    AgentCommand.COMPLETE_OBLIGATION.value: {"obligation_id"},
+    AgentCommand.CANCEL_OBLIGATION.value: {"obligation_id"},
+}
+_REQUIRED = {
+    AgentCommand.CREATE_TASK.value: ("title",),
+    AgentCommand.CREATE_EVENT.value: ("title", "starts_at", "ends_at"),
+    AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
+    AgentCommand.LOG_PROGRESS.value: ("obligation_id", "minutes"),
+    AgentCommand.COMPLETE_OBLIGATION.value: ("obligation_id",),
+    AgentCommand.CANCEL_OBLIGATION.value: ("obligation_id",),
+}
+
+
+def _positive_minutes(value: object, field: str, *, allow_none: bool = False) -> None:
+    if value is None and allow_none:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 100_000:
+        raise ValidationError(f"assistant proposal {field} must be a positive whole number of minutes")
+
+
+def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account_id: str) -> dict[str, Any]:
+    """Validate one provider action against the command schema and canonical state.
+
+    Anything a model could get wrong — unknown commands or fields, wrong types,
+    invented identifiers, bad dates — is rejected here, before the batch is stored,
+    so it can neither be previewed nor applied. Fields the model honestly marks as
+    unresolved are allowed to be missing; apply refuses them until refined.
+    """
+    if not isinstance(raw, dict) or set(raw) != _ACTION_KEYS:
+        raise ValidationError("assistant provider returned an invalid typed action")
+    command = raw["command"]
+    payload = raw["payload"]
+    if command not in COMMANDS or not isinstance(payload, dict):
+        raise ValidationError("assistant provider returned an unknown action")
+    unresolved = raw["unresolved_fields"]
+    if not isinstance(unresolved, list) or not all(isinstance(item, str) for item in unresolved):
+        raise ValidationError("assistant unresolved_fields must be a list of field names")
+    if not isinstance(raw["requires_confirmation"], bool):
+        raise ValidationError("assistant requires_confirmation must be a boolean")
+    try:
+        confidence = float(raw["confidence"])
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("assistant confidence must be a number") from exc
+    if not 0 <= confidence <= 1:
+        raise ValidationError("assistant confidence must be in [0,1]")
+    unknown = set(payload) - _PAYLOAD_KEYS[command]
+    if unknown:
+        raise ValidationError(f"assistant {command} payload has unsupported fields: {', '.join(sorted(unknown))}")
+    for field in _REQUIRED[command]:
+        if payload.get(field) in (None, "") and field not in unresolved:
+            raise ValidationError(f"assistant {command} payload lacks {field}")
+    if "title" in payload:
+        title = payload["title"]
+        if not isinstance(title, str) or not title.strip() or len(title) > 300:
+            raise ValidationError("assistant proposal title must be 1-300 characters")
+    for field in ("estimated_total_effort_minutes", "remaining_effort_minutes"):
+        if field in payload:
+            _positive_minutes(payload[field], field, allow_none=command == AgentCommand.CREATE_TASK.value)
+    if payload.get("minutes") is not None:
+        _positive_minutes(payload["minutes"], "minutes")
+    try:
+        if "importance" in payload:
+            Importance(payload["importance"])
+        if "category" in payload:
+            ObligationCategory(payload["category"])
+        if "attendance_policy" in payload:
+            AttendancePolicy(payload["attendance_policy"])
+    except ValueError as exc:
+        raise ValidationError(f"assistant proposal has an invalid enum value: {exc}") from exc
+    if command == AgentCommand.CREATE_EVENT.value and payload.get("starts_at") and payload.get("ends_at"):
+        try:
+            starts, ends = _dt(str(payload["starts_at"])), _dt(str(payload["ends_at"]))
+        except ValueError as exc:
+            raise ValidationError("assistant event times must be ISO-8601 instants") from exc
+        if starts is None or ends is None or starts.utcoffset() is None or ends.utcoffset() is None or ends <= starts:
+            raise ValidationError("assistant event needs offset-aware starts_at < ends_at")
+    expected = raw["expected_version"]
+    if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
+        raise ValidationError("assistant expected_version must be an integer")
+    target = payload.get("obligation_id")
+    if target not in (None, "") and "obligation_id" not in unresolved:
+        # Never let a model address something that does not exist in this account.
+        row = canonical.connection.execute(
+            "SELECT version FROM obligations WHERE account_id=? AND id=?", (account_id, str(target))
+        ).fetchone()
+        if row is None:
+            raise ValidationError("assistant proposal references an unknown obligation")
+        if expected is None and "expected_version" not in unresolved:
+            raise ValidationError("assistant proposal on an existing obligation needs expected_version")
+    return {"command": command, "payload": payload, "confidence": confidence,
+            "unresolved_fields": list(unresolved), "expected_version": expected,
+            "requires_confirmation": raw["requires_confirmation"]}
 
 
 class SQLiteAssistantService:
@@ -90,10 +208,42 @@ class SQLiteAssistantService:
         self.principal = principal
         self.provider = provider or DeterministicAssistantParser()
 
+    def _context(self, client: dict[str, object]) -> dict[str, object]:
+        """Server-owned context: the model only sees what the account already owns."""
+        rows = self.canonical.connection.execute(
+            "SELECT id,kind,title,version,lifecycle_status FROM obligations WHERE account_id=? "
+            "AND lifecycle_status IN ('ACTIVE','DRAFT') ORDER BY updated_at DESC LIMIT 60",
+            (self.principal.account_id,),
+        ).fetchall()
+        from student_execution_os.reminders import ReminderStore
+        prefs = ReminderStore(self.canonical).prefs(self.principal.account_id)
+        context: dict[str, object] = {
+            "now": _iso(self.canonical.clock.now()), "timezone": prefs.timezone_name,
+            "obligations": [{"id": row["id"], "kind": row["kind"], "title": row["title"], "version": int(row["version"]),
+                             "status": row["lifecycle_status"]} for row in rows],
+        }
+        if isinstance(client.get("locale"), str):
+            context["locale"] = client["locale"][:16]
+        return context
+
     def interpret(self, text: str, context: dict[str, object] | None = None) -> dict[str, object]:
-        context = context or {}
-        allowed_context = {key: context[key] for key in ("expected_version", "locale") if key in context}
-        interpretation = self.provider.interpret(text, allowed_context)
+        if not str(text or "").strip():
+            raise ValidationError("assistant input text is required")
+        if len(str(text)) > 4000:
+            raise ValidationError("assistant input is longer than 4000 characters")
+        server_context = self._context(context if isinstance(context, dict) else {})
+        provider_name = self.provider.name
+        fallback = False
+        try:
+            interpretation = self.provider.interpret(text, server_context)
+        except ProviderUnavailable:
+            # Provider outage degrades to the local parser instead of failing the user.
+            local = DeterministicAssistantParser()
+            try:
+                interpretation = local.interpret(text, server_context)
+            except ValidationError:
+                raise ValidationError("the language model is unavailable and the local parser did not understand the input") from None
+            provider_name, fallback = local.name, True
         if isinstance(interpretation, dict):
             raw_actions = interpretation.get("actions")
             assistant_message = str(interpretation.get("message") or "")[:2000]
@@ -102,28 +252,22 @@ class SQLiteAssistantService:
             assistant_message = "I prepared a structured preview. Review it before applying."
         if not isinstance(raw_actions, list):
             raise ValidationError("assistant provider returned an invalid actions list")
+        if len(raw_actions) > 10:
+            raise ValidationError("assistant proposed too many actions")
         actions = []
         for raw in raw_actions:
-            if set(raw) != {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}:
-                raise ValidationError("assistant provider returned an invalid typed action")
-            command = str(raw["command"])
-            if command not in COMMANDS or not isinstance(raw["payload"], dict):
-                raise ValidationError("assistant provider returned an unknown action")
-            confidence = float(raw["confidence"])
-            if not 0 <= confidence <= 1:
-                raise ValidationError("assistant confidence must be in [0,1]")
+            clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+            command = clean["command"]
             destructive = command in {
                 AgentCommand.COMPLETE_OBLIGATION.value,
                 AgentCommand.CANCEL_OBLIGATION.value,
             }
             actions.append({
-                "id": str(uuid4()), "command": command, "payload": raw["payload"],
-                "confidence": confidence, "unresolved_fields": list(raw["unresolved_fields"]),
-                "expected_version": raw["expected_version"],
-                "provenance": {"provider": self.provider.name, "input": "user-authored-text"},
+                "id": str(uuid4()), **clean,
+                "provenance": {"provider": provider_name, "input": "user-authored-text"},
                 # Trust boundaries are server-owned. A provider cannot downgrade a
                 # destructive command merely by emitting a false flag.
-                "requires_confirmation": destructive or bool(raw["requires_confirmation"]),
+                "requires_confirmation": destructive or clean["requires_confirmation"],
             })
         now = self.canonical.clock.now()
         batch_id = str(uuid4())
@@ -133,10 +277,10 @@ class SQLiteAssistantService:
             conn.execute(
                 "INSERT INTO assistant_batches(id,account_id,principal_id,input_hash,provider,redacted_input,actions_json,created_at,expires_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
-                (batch_id, self.principal.account_id, self.principal.principal_id, digest, self.provider.name,
+                (batch_id, self.principal.account_id, self.principal.principal_id, digest, provider_name,
                  redacted, json.dumps(actions, sort_keys=True), _iso(now), _iso(now + timedelta(minutes=30))),
             )
-        return {"batch_id": batch_id, "provider": self.provider.name, "message": assistant_message, "actions": actions,
+        return {"batch_id": batch_id, "provider": provider_name, "fallback": fallback, "message": assistant_message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 
     def apply(self, payload: dict[str, object]) -> dict[str, object]:

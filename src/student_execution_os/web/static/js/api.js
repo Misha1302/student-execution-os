@@ -68,7 +68,10 @@ export async function api(path, { method = 'GET', body, server, timeoutMs = 2000
   if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  if (session.token) headers.Authorization = `Bearer ${session.token}`;
+  // A credential belongs to exactly one server: never present it to another host
+  // (for example while probing or signing in to a candidate server).
+  const ownServer = base === session.server;
+  if (session.token && ownServer) headers.Authorization = `Bearer ${session.token}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response;
@@ -93,7 +96,7 @@ export async function api(path, { method = 'GET', body, server, timeoutMs = 2000
       status: response.status,
       retryable: Boolean(error.retryable),
     });
-    if (response.status === 401 && err.code === 'UNAUTHENTICATED' && session.token && !path.startsWith('/api/v1/auth/')) {
+    if (response.status === 401 && err.code === 'UNAUTHENTICATED' && session.token && ownServer && !path.startsWith('/api/v1/auth/')) {
       await clearAuth();
       listeners.forEach((fn) => fn());
     }

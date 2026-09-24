@@ -96,9 +96,35 @@ console.log('{{"ok":true}}');
         self.assertIn("pushNotificationReceived", native)
         self.assertIn("pushNotificationActionPerformed", native)
         assistant = (ROOT / "src/student_execution_os/web/static/js/views/assistant.js").read_text()
-        voice_block = assistant.split("async 'assistant-voice'()", 1)[1].split("'agent-preview'", 1)[0]
+        voice_block = assistant.split("async 'assistant-voice'(", 1)[1].split("'agent-preview'", 1)[0]
         self.assertIn("speechToText", voice_block)
         self.assertNotIn("interpretText(text)", voice_block)
+        # Push registration is gated on a Firebase-enabled build: register() without
+        # google-services.json crashes the native bridge.
+        self.assertIn("pushEnabled()", native.split("export async function setupPush", 1)[1])
+        sync_web = (ROOT / "mobile/scripts/sync-web.mjs").read_text()
+        self.assertIn("google-services.json", sync_web)
+
+    def test_token_is_never_sent_to_a_candidate_server_and_failed_login_keeps_old_identity(self):
+        script = f"""
+globalThis.window = {{ Capacitor: null }};
+const values = new Map();
+globalThis.localStorage = {{ getItem:k=>values.get(k)??null, setItem:(k,v)=>values.set(k,String(v)), removeItem:k=>values.delete(k) }};
+const seen = [];
+globalThis.fetch = async (url, opts) => {{
+  seen.push({{ url, auth: opts.headers.Authorization || null }});
+  return {{ ok:false, status:401, headers:{{get:()=> 'application/json'}}, json:async()=>({{error:{{code:'UNAUTHENTICATED',message:'bad'}}}}) }};
+}};
+const api = await import('file://{ROOT}/src/student_execution_os/web/static/js/api.js');
+api.session.server='https://old.example'; api.session.token='old-secret'; api.session.user={{account_id:'old'}};
+try {{ await api.api('/api/v1/auth/login', {{ method:'POST', server:'https://new.example', body:{{}} }}); }} catch {{}}
+try {{ await api.api('/api/v1/tasks', {{ server:'https://new.example' }}); }} catch {{}}
+if (seen.some((x) => x.auth)) throw new Error('old token leaked to candidate server');
+if (api.session.token !== 'old-secret' || api.session.server !== 'https://old.example') throw new Error('failed candidate request dropped the current identity');
+console.log('{{"ok":true}}');
+"""
+        result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__": unittest.main()

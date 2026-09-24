@@ -1,12 +1,12 @@
 import { api, session, restoreSession, refreshHealth, onUnauthenticated } from './js/api.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
-import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets } from './js/ui.js';
+import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
 import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet } from './js/native.js';
 import { applyTheme } from './js/theme.js';
 import { peek, load, invalidate } from './js/store.js';
 import { shell } from './js/actions.js';
 import { compose, composers } from './js/compose.js';
-import { flushSync, syncState } from './js/sync.js';
+import { flushSync, syncState, discardSyncProblem } from './js/sync.js';
 
 import today from './js/views/today.js';
 import plan from './js/views/plan.js';
@@ -94,8 +94,9 @@ function setOffline(stale, fetchedAt) {
   const chip = $('#offline-chip');
   const syncing = syncState();
   chip.hidden = !stale && !syncing.pending && !syncing.conflicts;
-  chip.textContent = syncing.conflicts ? `Sync conflict · ${syncing.conflicts}`
-    : syncing.pending ? `Syncing · ${syncing.pending}`
+  chip.classList.toggle('chip-danger', Boolean(syncing.conflicts));
+  chip.textContent = syncing.conflicts ? t('sync.conflictChip', { n: syncing.conflicts })
+    : syncing.pending ? t('sync.pendingChip', { n: syncing.pending })
       : stale ? t('offline.chip', { time: fetchedAt ? fmtTime(fetchedAt) : '—' }) : '';
 }
 
@@ -172,7 +173,48 @@ async function openEvent(id) {
   if (event) eventSheet(event);
 }
 
+// Pending and rejected offline operations stay visible until they are sent or the
+// user dismisses them; nothing is dropped silently.
+function syncSheet() {
+  const { items } = syncState();
+  const pending = items.filter((x) => x.state === 'PENDING');
+  const problems = items.filter((x) => x.state !== 'PENDING');
+  const row = (item, problem) => {
+    const op = item.operation || {};
+    const detail = problem ? (item.result?.message || item.result?.code || item.state) : new Date(item.queued_at).toLocaleString();
+    return `<article class="row"><span class="row-main"><strong>${esc(op.type)} · ${esc(item.result?.entity?.title || op.payload?.title || op.entity_id)}</strong>
+      <small>${esc(detail)}</small></span>
+      ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(t('sync.dismiss'))}</button>` : ''}</article>`;
+  };
+  const dialog = openSheet({
+    title: t('sync.title'),
+    body: `${!items.length ? `<p class="muted">${esc(t('sync.empty'))}</p>` : ''}
+      ${pending.length ? `<h3>${esc(t('sync.pending'))}</h3><div class="list">${pending.map((x) => row(x, false)).join('')}</div>` : ''}
+      ${problems.length ? `<h3>${esc(t('sync.problems'))}</h3><p class="help">${esc(t('sync.problemHelp'))}</p>
+        <div class="list">${problems.map((x) => row(x, true)).join('')}</div>` : ''}`,
+    actions: `<button value="cancel" class="button ghost">${esc(t('common.close'))}</button>
+      ${pending.length ? `<button type="button" class="button primary" data-retry>${esc(t('sync.retry'))}</button>` : ''}`,
+  });
+  dialog.querySelectorAll('[data-dismiss]').forEach((button) => button.addEventListener('click', () => {
+    discardSyncProblem(button.dataset.dismiss);
+    button.closest('.row')?.remove();
+  }));
+  dialog.querySelector('[data-retry]')?.addEventListener('click', async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      await flushSync();
+      if (syncState().pending) toast(t('sync.stillOffline'), { error: true });
+    } catch (err) {
+      toast(errorMessage(err), { error: true });
+    }
+    dialog.close('done');
+    invalidate();
+    render({ fresh: true });
+  });
+}
+
 const GLOBAL_ACTIONS = {
+  'sync-status': () => syncSheet(),
   compose: () => compose(),
   'compose-task': () => composers.task(),
   'open-task': (el) => go('task', { params: [el.dataset.id] }),
@@ -239,6 +281,20 @@ function handleBack() {
   exitApp();
 }
 
+// Registers this device's FCM token with the signed-in account (no-op in browsers
+// and in builds without Firebase configuration).
+function registerPush() {
+  if (!isNative() || !session.token) return;
+  setupPush(async (token) => {
+    if (!session.token) return;
+    const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Capacitor Android' } });
+    await prefSet('seos.pushDevice', JSON.stringify({ id: device.id, version: device.version }));
+  }, (deepLink) => {
+    const path = String(deepLink || '/today').replace(/^#?\/?/, '');
+    location.hash = `#/${path || 'today'}`;
+  }).catch((err) => console.warn('push setup failed', err));
+}
+
 async function boot() {
   applyTheme();
   relabel();
@@ -279,15 +335,8 @@ async function boot() {
   }
   await render();
   await flushSync().catch(() => {});
-  if (isNative() && session.token) {
-    setupPush(async (token) => {
-      const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Capacitor Android' } });
-      await prefSet('seos.pushDevice', JSON.stringify({ id: device.id, version: device.version }));
-    }, (deepLink) => {
-      const path = String(deepLink || '/today').replace(/^#?\/?/, '');
-      location.hash = `#/${path || 'today'}`;
-    }).catch(() => {});
-  }
+  registerPush();
+  window.addEventListener('seos-signed-in', () => { registerPush(); flushSync().catch(() => {}); });
   hideSplash();
 }
 

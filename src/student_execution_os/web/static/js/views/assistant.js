@@ -11,7 +11,8 @@ async function interpretText(text) {
   const dialog = openSheet({
     eyebrow: preview.provider,
     title: t('ask.previewActions'),
-    body: `${preview.message ? `<p>${esc(preview.message)}</p>` : ''}<div class="list">${actions.map((action) => `<article class="row"><span class="row-main"><strong>${esc(code('command', action.command))}</strong><small>${esc(JSON.stringify(action.payload))}</small>
+    body: `${preview.fallback ? `<div class="banner warn">${icon('alert')}<div><p>${esc(t('ask.fallback'))}</p></div></div>` : ''}
+      ${preview.message ? `<p>${esc(preview.message)}</p>` : ''}<div class="list">${actions.map((action) => `<article class="row"><span class="row-main"><strong>${esc(code('command', action.command))}</strong><small>${esc(JSON.stringify(action.payload))}</small>
       ${action.unresolved_fields.length ? `<small>${esc(t('ask.unresolved', { fields: action.unresolved_fields.join(', ') }))}</small>` : ''}</span></article>`).join('')}</div>
       <p class="help">${esc(t('ask.previewNoMutation'))}</p>`,
     actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
@@ -19,12 +20,21 @@ async function interpretText(text) {
   });
   dialog.querySelector('[data-apply]')?.addEventListener('click', async (event) => {
     setBusy(event.currentTarget, true);
-    await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body: {
+    // Pressing Apply is the explicit confirmation for every listed action. The
+    // idempotency key is bound to the preview batch, so a double tap or a retry
+    // after a lost response cannot apply the batch twice.
+    const applied = await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body: {
       batch_id: preview.batch_id, action_ids: actions.map((action) => action.id),
       confirmed_action_ids: actions.filter((action) => action.requires_confirmation).map((action) => action.id),
       idempotency_key: `assistant-${preview.batch_id}`,
-    } }), { success: t('ask.executed') });
-    dialog.close('applied');
+    } }), { success: t('ask.applied') });
+    if (applied) {
+      dialog.close('applied');
+      const input = document.getElementById('assistant-input');
+      if (input) input.value = '';
+    } else {
+      setBusy(event.currentTarget, false);
+    }
   });
 }
 
@@ -112,17 +122,40 @@ export default {
       </section>`;
   },
   actions: {
-    async 'assistant-interpret'() {
+    async 'assistant-interpret'(el) {
       const text = document.getElementById('assistant-input')?.value.trim();
-      if (text) await interpretText(text);
+      if (!text) return;
+      setBusy(el, true);
+      try {
+        await interpretText(text);
+      } catch (err) {
+        toast(errorMessage(err), { error: true });
+      } finally {
+        setBusy(el, false);
+      }
     },
-    async 'assistant-voice'() {
+    async 'assistant-voice'(el) {
+      const input = document.getElementById('assistant-input');
+      setBusy(el, true);
+      const label = el.textContent;
+      el.textContent = t('ask.voiceListening');
       try {
         const text = await speechToText();
-        const input = document.getElementById('assistant-input');
-        if (input) input.value = text;
-        if (!text) toast(t('ask.voiceEmpty'), { error: true });
-      } catch (error) { toast(error.message, { error: true }); }
+        if (!text) { toast(t('ask.voiceEmpty'), { error: true }); return; }
+        // Recognised speech only fills the field; the user reviews it and presses
+        // "Preview actions" themselves. Nothing is interpreted automatically.
+        if (input) {
+          input.value = input.value.trim() ? `${input.value.trim()} ${text}` : text;
+          input.focus();
+        }
+        toast(t('ask.voiceReview'));
+      } catch (error) {
+        const key = { VOICE_UNAVAILABLE: 'ask.voiceUnavailable', VOICE_DENIED: 'ask.voiceDenied' }[error.code] || 'ask.voiceFailed';
+        toast(t(key), { error: true });
+      } finally {
+        el.textContent = label;
+        setBusy(el, false);
+      }
     },
     'agent-preview'(_el, ctx) {
       const index = Number(document.getElementById('agent-target')?.value);

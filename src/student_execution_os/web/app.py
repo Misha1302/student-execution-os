@@ -323,6 +323,11 @@ def create_app(
     async def list_saved_views(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.saved_views()
 
+    # Declared after /tasks/saved-views so that literal path keeps precedence.
+    @app.get("/api/v1/tasks/{task_id}")
+    async def get_task(task_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.task(task_id)
+
     @app.post("/api/v1/tasks/saved-views", status_code=201)
     async def create_saved_view(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.create_saved_view(payload)

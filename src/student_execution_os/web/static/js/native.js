@@ -61,22 +61,56 @@ export function hideSplash() {
   plugin('SplashScreen')?.hide?.().catch?.(() => {});
 }
 
-export async function speechToText() {
-  const speech = plugin('SpeechRecognition');
-  if (!speech) throw new Error('Speech recognition is unavailable');
-  const permission = await speech.requestPermissions();
-  if (!['granted', 'GRANTED'].includes(permission?.speechRecognition)) throw new Error('Microphone permission denied');
-  const result = await speech.start({ language: document.documentElement.lang || 'ru-RU', maxResults: 1, partialResults: false });
-  return result?.matches?.[0] || '';
+const SPEECH_LOCALES = { ru: 'ru-RU', en: 'en-US' };
+
+export class NativeError extends Error {
+  constructor(code, message) { super(message || code); this.code = code; }
 }
 
+// Speech is text input only: the caller puts the transcript into an editable field
+// and nothing is interpreted or applied until the user submits it.
+export async function speechToText() {
+  const speech = plugin('SpeechRecognition');
+  if (!speech) throw new NativeError('VOICE_UNAVAILABLE');
+  const available = await speech.available().catch(() => ({ available: false }));
+  if (!available?.available) throw new NativeError('VOICE_UNAVAILABLE');
+  let permission = await speech.checkPermissions().catch(() => null);
+  if (permission?.speechRecognition !== 'granted') permission = await speech.requestPermissions().catch(() => null);
+  if (permission?.speechRecognition !== 'granted') throw new NativeError('VOICE_DENIED');
+  const lang = String(document.documentElement.lang || 'ru').slice(0, 2);
+  let result;
+  try {
+    result = await speech.start({ language: SPEECH_LOCALES[lang] || 'ru-RU', maxResults: 1, partialResults: false, popup: false });
+  } catch (err) {
+    // The recognizer reports "no match"/cancel as errors; both mean "no text".
+    if (/no match|cancel|didn.t understand/i.test(String(err?.message || ''))) return '';
+    throw new NativeError('VOICE_FAILED', String(err?.message || ''));
+  }
+  return String(result?.matches?.[0] || '').trim();
+}
+
+export function pushEnabled() {
+  return isNative() && Boolean(window.SEOS_CONFIG?.pushEnabled) && Boolean(plugin('PushNotifications'));
+}
+
+let pushListeners = null;
+
+// Safe to call repeatedly (boot, after sign-in, after resume): listeners are
+// installed once and register() re-emits the current token for the signed-in account.
 export async function setupPush(onToken, onDeepLink) {
   const push = plugin('PushNotifications');
-  if (!push) return { configured: false };
+  if (!push || !pushEnabled()) return { configured: false };
   const permission = await push.requestPermissions();
   if (permission.receive !== 'granted') return { configured: false, denied: true };
+  if (!pushListeners) pushListeners = installPushListeners(push, onToken, onDeepLink);
+  await pushListeners;
+  await push.register();
+  return { configured: true };
+}
+
+async function installPushListeners(push, onToken, onDeepLink) {
   await push.addListener('registration', ({ value }) => onToken(value));
-  await push.addListener('registrationError', () => {});
+  await push.addListener('registrationError', (error) => console.warn('push registration failed', error));
   await push.addListener('pushNotificationReceived', (notification) => {
     // Android does not display a system notification while the app is in the
     // foreground. Surface it through the running UI and refresh the inbox.
@@ -86,8 +120,6 @@ export async function setupPush(onToken, onDeepLink) {
     const data = notification?.data || {};
     onDeepLink?.(data.deep_link || (data.task_id ? `#/task/${encodeURIComponent(data.task_id)}` : '#/today'));
   });
-  await push.register();
-  return { configured: true };
 }
 
 // Saves a JSON document: share sheet on Android, a regular download in browsers.

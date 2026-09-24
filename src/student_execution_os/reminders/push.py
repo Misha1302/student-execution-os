@@ -140,14 +140,20 @@ class FcmV1Provider:
             bearer = self.access_token()
         except (httpx.HTTPError, KeyError, ValueError) as exc:
             return SendResult(False, error=f"FCM_AUTH:{type(exc).__name__}", retryable=True)
+        collapse = str(message.get("collapse_key", "seos"))[:64]
         body = {"message": {
             "token": token,
-            # Android renders the notification while the app is backgrounded or
-            # stopped; data carries the stable context used after a tap.
+            # A notification block is required: the Capacitor push plugin does not
+            # render data-only messages, so without it nothing would be shown while the
+            # app is backgrounded or killed. Tapping it opens the app and hands `data`
+            # (deep_link, task_id, message_id) to pushNotificationActionPerformed.
             "notification": {"title": str(message.get("title", "")), "body": str(message.get("body", ""))},
-            "data": {key: value if isinstance(value, str) else json.dumps(value) for key, value in message.items()},
+            "data": {key: value if isinstance(value, str) else json.dumps(value)
+                     for key, value in message.items() if key != "collapse_key"},
             "android": {"priority": "HIGH", "ttl": f"{int(STALE_AFTER.total_seconds())}s",
-                        "collapse_key": str(message.get("collapse_key", "seos"))[:64]},
+                        "collapse_key": collapse,
+                        # Same tag => an at-least-once duplicate replaces the shown notification.
+                        "notification": {"tag": collapse}},
         }}
         try:
             response = self.http.post(
