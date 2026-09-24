@@ -147,6 +147,10 @@ class SQLitePlanningStateSource:
     def list_time_constraints(self, account_id: str) -> list[UserTimeConstraint]:
         self.repository._require_account(account_id)
         rows = self.repository.connection.execute(
-            "SELECT id FROM user_time_constraints WHERE account_id=? ORDER BY id", (account_id,)
+            "SELECT c.id FROM user_time_constraints c "
+            "LEFT JOIN obligations o ON o.account_id=c.account_id AND o.id=c.obligation_id "
+            "WHERE c.account_id=? AND (c.type!='PINNED_WORK' OR o.lifecycle_status='ACTIVE') "
+            "ORDER BY c.id",
+            (account_id,),
         ).fetchall()
         return [self.repository.get_time_constraint(account_id, row["id"]) for row in rows]

@@ -21,7 +21,8 @@
 - [x] Pass 9 recovery/export — PR #12 merged; post-merge CI green
 - [x] Pass 9 account deletion/retention — PR #13 merged; post-merge CI #104 green
 - [ ] Pass 9 durable notification delivery — current candidate
-- [ ] Pass 9 remaining domain/planner conformance — AT-64 / AT-65 / AT-66
+- [x] Pass 9 AT-64 cancellation/reopen projection cleanup — current candidate
+- [ ] Pass 9 remaining domain/planner conformance — AT-65 / AT-66
 - [ ] Pass 10 — final closure and production-boundary documentation
 
 ## Current candidate — durable notification delivery
@@ -51,12 +52,23 @@ Hosted push run #108 on intermediate exact head `ac390830b50dde2b593310903759d37
 
 A final candidate-bound CI run is still required after this documentation + dedicated smoke commit, followed by PR exact-head CI, fresh mergeability/base check, guarded merge and post-merge CI.
 
+## AT-64 cancellation/reopen projection cleanup
+
+- PlanningSnapshot already admits only ACTIVE Task/Event obligations; this slice extends that invariant to obligation-bound PINNED_WORK constraints.
+- Cancellation does not delete canonical pinned-work rows. They are hidden from planning while the obligation is inactive and become effective again on reopen.
+- Required Event travel/buffer projections disappear automatically because inactive Events are removed before travel projection.
+- Cancellation suppresses undelivered notifications whose `entity_ref` is the obligation and terminalizes their non-SENT delivery outbox rows with `OBLIGATION_CANCELLED`.
+- Delivered notifications and immutable historical PlanSnapshots/PlanBlocks are never deleted or rewritten.
+- Reopening returns the obligation and its preserved pin to planning. Recomputed logical notifications may rebind the same stable suppression identity; SENT delivery remains terminal.
+- An already in-flight external channel call cannot be retroactively unsent; that race remains explicitly governed by ADR 0013's at-least-once boundary.
+
+Hosted push run #113 on the implementation commit is fully green across core, API, Chromium and all smoke surfaces. A final hosted run after this documentation commit and normal PR/merge gates remains required.
+
 ## Remaining local conformance
 
-1. AT-64 cancellation/reopen projection cleanup.
-2. AT-65 hybrid occurrence mode.
-3. AT-66 optional-event omission policy.
-4. Pass 10 observability/configuration/install-restart-security closure.
+1. AT-65 hybrid occurrence mode.
+2. AT-66 optional-event omission policy.
+3. Pass 10 observability/configuration/install-restart-security closure.
 
 ## External production blockers
 
