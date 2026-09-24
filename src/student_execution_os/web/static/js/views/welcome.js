@@ -80,15 +80,15 @@ export default {
       setBusy(button, true);
       try {
         const health = await probeServer(url);
-        await setServer(url);
-        clearAll();
-        session.authMode = health.auth_mode;
-        session.registrationOpen = Boolean(health.registration_open);
         if (health.auth_mode !== 'session') {
           toast(t('welcome.boundServer'), { error: true });
           setBusy(button, false);
           return;
         }
+        await setServer(url);
+        clearAll();
+        session.authMode = health.auth_mode;
+        session.registrationOpen = Boolean(health.registration_open);
         shell.go('welcome', { step: 'auth' });
       } catch (err) {
         toast(err.code === 'NETWORK' ? t('welcome.unreachable') : errorMessage(err), { error: true });

@@ -16,6 +16,8 @@ from student_execution_os.agent import (
     IntentStrength,
     SQLiteActionGateway,
     SQLiteAssistantService,
+    assistant_capabilities,
+    assistant_provider_from_environment,
 )
 from student_execution_os.connectors.model import ConnectorHealth
 from student_execution_os.domain.clock import FrozenClock
@@ -38,13 +40,7 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 from student_execution_os.persistence.product import SQLiteAttachmentRepository, SQLiteSavedViewRepository
 from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 from student_execution_os.reliability import SQLiteDataLifecycle
-from student_execution_os.notifications import (
-    FCMConfig,
-    NotificationPolicyEngine,
-    SQLiteNotificationPreferencesRepository,
-    SQLiteNotificationRepository,
-    register_device,
-)
+from student_execution_os.reminders import ReminderStore, provider_from_environment
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     PlanningService,
@@ -60,6 +56,7 @@ from student_execution_os.planning.outlook import (
 )
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
+from student_execution_os.sync.commands import SyncService
 
 
 def _jsonify(value: Any) -> Any:
@@ -306,6 +303,9 @@ class UiService:
             "max_chunk_minutes": task.max_chunk_minutes,
             "actionable_from": _jsonify(task.actionable_from),
             "target_at": _jsonify(task.target_at),
+            "started_at": _jsonify(task.started_at),
+            "last_progress_at": _jsonify(task.last_progress_at),
+            "completed_at": _jsonify(task.obligation.completed_at),
             "actual_cutoff": {
                 "state": cutoff.state.value,
                 "at": _jsonify(cutoff.at),
@@ -369,7 +369,6 @@ class UiService:
             previous = store.get_latest(self.account_id)
             outcome = PlanningService().build(snapshot, now=self._now(), previous_plan=previous)
             store.save(outcome.plan)
-            notifications = NotificationPolicyEngine(repo).reconcile(self.account_id, snapshot, outcome)
             metrics = SQLiteOperationalMetrics(repo)
             metrics.record(
                 "plan_run_latency_ms",
@@ -377,12 +376,6 @@ class UiService:
                 account_id=self.account_id,
                 correlation_id=outcome.plan.id,
                 dimensions={"status": outcome.plan.feasibility_status.value, "surface": "today"},
-            )
-            metrics.record(
-                "notification_reconcile_count",
-                len(notifications),
-                account_id=self.account_id,
-                correlation_id=outcome.plan.id,
             )
             budget_exhausted = sum(
                 1 for risk in outcome.risks if "RISK_EVALUATION_BUDGET_EXHAUSTED" in risk.reasons
@@ -618,55 +611,36 @@ class UiService:
 
     def notifications(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
-            result = []
-            for item in SQLiteNotificationRepository(repo).list(self.account_id):
-                payload = _jsonify(item)
-                delivery = repo.connection.execute(
-                    "SELECT state,delivery_key,next_attempt_at,attempt_count,last_error FROM notification_delivery_outbox "
-                    "WHERE account_id=? AND notification_id=?", (self.account_id, item.id)
-                ).fetchone()
-                payload["delivery"] = None if delivery is None else dict(delivery)
-                payload["suppression_or_failure_reason"] = item.last_error
-                result.append(payload)
-            return result
+            return ReminderStore(repo).messages(self.account_id, since=self._now() - timedelta(days=30))
 
     def notification_preferences(self) -> dict[str, Any]:
         with self._repo() as repo:
-            return SQLiteNotificationPreferencesRepository(repo).get(self.account_id).payload()
+            store = ReminderStore(repo)
+            return store.prefs_payload(store.prefs(self.account_id))
 
     def update_notification_preferences(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
-            return SQLiteNotificationPreferencesRepository(repo).update(self.account_id, payload).payload()
+            store = ReminderStore(repo)
+            return store.prefs_payload(store.update_prefs(self.account_id, payload))
 
     def devices(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
-            rows = repo.connection.execute(
-                "SELECT id,platform,label,active,version,created_at,updated_at FROM mobile_devices "
-                "WHERE account_id=? ORDER BY created_at,id", (self.account_id,)
-            ).fetchall()
-            return [dict(row) for row in rows]
+            return ReminderStore(repo).devices(self.account_id)
 
     def register_device(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
-            return register_device(repo, self.account_id, payload)
+            return ReminderStore(repo).register_device(
+                self.account_id, str(payload.get("token", "")), payload.get("label")
+            )
 
     def revoke_device(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
             expected = int(payload["expected_version"])
-            with repo._tx() as conn:
-                cur = conn.execute(
-                    "UPDATE mobile_devices SET active=0,token='',version=version+1,updated_at=? "
-                    "WHERE account_id=? AND id=? AND version=?",
-                    (_jsonify(self._now()), self.account_id, device_id, expected),
-                )
-                if cur.rowcount != 1:
-                    from student_execution_os.domain.errors import VersionConflict
-                    raise VersionConflict("device registration version changed")
-            row = repo.connection.execute(
-                "SELECT id,platform,label,active,version,created_at,updated_at FROM mobile_devices WHERE account_id=? AND id=?",
-                (self.account_id, device_id),
-            ).fetchone()
-            return dict(row)
+            store = ReminderStore(repo)
+            if int(store.device(self.account_id, device_id)["version"]) != expected:
+                from student_execution_os.domain.errors import VersionConflict
+                raise VersionConflict("device registration version changed")
+            return store.revoke_device(self.account_id, device_id)
 
     def evidence(self) -> dict[str, Any]:
         with self._repo() as repo:
@@ -825,15 +799,16 @@ class UiService:
                 "recurring_template_count": repo.connection.execute(
                     "SELECT count(*) FROM recurring_templates WHERE account_id=?", (self.account_id,)
                 ).fetchone()[0],
-                "notification_state": [
+                "reminder_delivery_state": [
                     dict(row) for row in repo.connection.execute(
-                        "SELECT state,count(*) AS count FROM notifications WHERE account_id=? GROUP BY state ORDER BY state",
+                        "SELECT delivery_state AS state,count(*) AS count FROM reminder_messages "
+                        "WHERE account_id=? GROUP BY delivery_state ORDER BY delivery_state",
                         (self.account_id,),
                     ).fetchall()
                 ],
                 "external_capabilities": {
-                    "fcm": "CONFIGURED" if FCMConfig.from_environment().configured else "UNCONFIGURED",
-                    "llm": "UNCONFIGURED",
+                    "fcm": "CONFIGURED" if provider_from_environment().configured else "UNCONFIGURED",
+                    "llm": "CONFIGURED" if assistant_capabilities()["live_llm_provider"] else "UNCONFIGURED",
                     "routing": "UNCONFIGURED",
                     "oauth": "UNCONFIGURED",
                 },
@@ -903,11 +878,12 @@ class UiService:
         if until is None:
             raise ValueError("snooze until is required")
         with self._repo() as repo:
-            item = SQLiteNotificationRepository(repo).snooze(
-                account_id=self.account_id, notification_id=notification_id, until=until,
-                expected_version=int(payload["expected_version"]),
-            )
-            return _jsonify(item)
+            store = ReminderStore(repo)
+            item = store.message(self.account_id, notification_id)
+            for task_id in item["task_ids"]:
+                store.touch(self.account_id, task_id, self._now(), snooze_until=until)
+            store.mark_acted(self.account_id, notification_id, "SNOOZE", self._now())
+            return store.message(self.account_id, notification_id)
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_effort = payload.get("estimated_total_effort_minutes")
@@ -935,6 +911,7 @@ class UiService:
                 actual_cutoff=_cutoff(payload.get("actual_cutoff")),
                 actor=ActorCategory.USER_UI,
             )
+            ReminderStore(repo).touch(self.account_id, task.obligation.id, self._now())
             return self._task(task)
 
     def update_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -966,6 +943,7 @@ class UiService:
                 actor=ActorCategory.USER_UI,
                 **kwargs,
             )
+            ReminderStore(repo).touch(self.account_id, task_id, self._now())
             return self._task(task)
 
     def activate_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -976,6 +954,7 @@ class UiService:
                 expected_version=int(payload["expected_version"]),
                 actor=ActorCategory.USER_UI,
             )
+            ReminderStore(repo).touch(self.account_id, task_id, self._now())
             return self._task(task)
 
     def defer_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -990,18 +969,38 @@ class UiService:
                 actionable_from=until,
                 actor=ActorCategory.USER_UI,
             )
+            ReminderStore(repo).touch(self.account_id, task_id, self._now(), snooze_until=until)
             return self._task(task)
 
     def start_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
-            task = repo.update_task(
-                account_id=self.account_id,
-                obligation_id=task_id,
-                expected_version=int(payload["expected_version"]),
-                actionable_from=self._now(),
-                actor=ActorCategory.USER_UI,
+            current = repo.get_task(self.account_id, task_id)
+            if current.obligation.version != int(payload["expected_version"]):
+                from student_execution_os.domain.errors import VersionConflict
+                raise VersionConflict("task version changed")
+            result = SyncService(
+                repo, account_id=self.account_id, principal_id=self.principal.principal_id, now=self._now()
+            ).apply({
+                "op_id": str(payload.get("op_id") or f"api-start-{uuid4()}"),
+                "type": "task.start", "entity_id": task_id, "payload": {},
+            })
+            if result["status"] == "CONFLICT":
+                raise ValueError(result.get("message") or result.get("code") or "task cannot be started")
+            return result["entity"]
+
+    def sync(self, payload: dict[str, Any]) -> dict[str, Any]:
+        operations = payload.get("operations")
+        if not isinstance(operations, list):
+            raise ValueError("operations must be a list")
+        with self._repo() as repo:
+            service = SyncService(
+                repo, account_id=self.account_id, principal_id=self.principal.principal_id, now=self._now()
             )
-            return self._task(task)
+            return {
+                "results": service.apply_batch(operations),
+                "server_revision": repo.get_server_revision(self.account_id),
+                "synced_at": _jsonify(self._now()),
+            }
 
     def upload_attachment(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
@@ -1052,6 +1051,8 @@ class UiService:
                 expected_version=expected_version,
                 actor=ActorCategory.USER_UI,
             )
+            if repo.connection.execute("SELECT 1 FROM tasks WHERE obligation_id=?", (obligation_id,)).fetchone():
+                ReminderStore(repo).touch(self.account_id, obligation_id, self._now())
             return {
                 "id": ob.id,
                 "status": ob.lifecycle_status.value,
@@ -1143,7 +1144,9 @@ class UiService:
 
     def assistant_interpret(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
-            return SQLiteAssistantService(repo, self.principal).interpret(
+            return SQLiteAssistantService(
+                repo, self.principal, provider=assistant_provider_from_environment()
+            ).interpret(
                 str(payload.get("text", "")), payload.get("context")
             )
 

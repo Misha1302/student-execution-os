@@ -3,9 +3,10 @@ import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets } from './js/ui.js';
 import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet } from './js/native.js';
 import { applyTheme } from './js/theme.js';
-import { peek, load } from './js/store.js';
+import { peek, load, invalidate } from './js/store.js';
 import { shell } from './js/actions.js';
 import { compose, composers } from './js/compose.js';
+import { flushSync, syncState } from './js/sync.js';
 
 import today from './js/views/today.js';
 import plan from './js/views/plan.js';
@@ -91,8 +92,11 @@ const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function setOffline(stale, fetchedAt) {
   const chip = $('#offline-chip');
-  chip.hidden = !stale;
-  chip.textContent = stale ? t('offline.chip', { time: fetchedAt ? fmtTime(fetchedAt) : '—' }) : '';
+  const syncing = syncState();
+  chip.hidden = !stale && !syncing.pending && !syncing.conflicts;
+  chip.textContent = syncing.conflicts ? `Sync conflict · ${syncing.conflicts}`
+    : syncing.pending ? `Syncing · ${syncing.pending}`
+      : stale ? t('offline.chip', { time: fetchedAt ? fmtTime(fetchedAt) : '—' }) : '';
 }
 
 function skeleton() {
@@ -245,10 +249,17 @@ async function boot() {
   onBackButton(handleBack);
   onUnauthenticated(() => { toast(t('err.unauth'), { error: true }); go('welcome'); });
   onResume(() => {
+    flushSync().catch(() => {});
     if (!current || current.view.bare || document.querySelector('dialog[open]')) return;
     if (Date.now() - (current.fetchedAt || 0) > 60000) render({ fresh: true });
   });
   installPullToRefresh();
+  window.addEventListener('seos-sync-state', () => setOffline(Boolean(current?.stale), current?.fetchedAt));
+  window.addEventListener('seos-push-received', (event) => {
+    invalidate();
+    toast(event.detail?.title || t('nav.notifications'));
+    if (current && !current.view.bare) render({ fresh: true });
+  });
 
   route = parseHash();
   if (!(isNative() && !session.server)) {
@@ -267,11 +278,15 @@ async function boot() {
     route = parseHash();
   }
   await render();
+  await flushSync().catch(() => {});
   if (isNative() && session.token) {
     setupPush(async (token) => {
       const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Capacitor Android' } });
       await prefSet('seos.pushDevice', JSON.stringify({ id: device.id, version: device.version }));
-    }, (deepLink) => { location.hash = deepLink.startsWith('#') ? deepLink : '#/today'; }).catch(() => {});
+    }, (deepLink) => {
+      const path = String(deepLink || '/today').replace(/^#?\/?/, '');
+      location.hash = `#/${path || 'today'}`;
+    }).catch(() => {});
   }
   hideSplash();
 }

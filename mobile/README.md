@@ -78,3 +78,10 @@ opens Task/Today deep links; SpeechRecognition supplies text only and then uses 
 same assistant preview/apply boundary. Denying microphone permission leaves typed
 capture available. Production push additionally requires Firebase Android
 configuration and server-side FCM secrets; otherwise diagnostics say `UNCONFIGURED`.
+
+Task capture, edit, start, progress, defer, complete/cancel and reopen use the v12 sync
+protocol. The WebView stores the last read models and a server/account-scoped operation
+queue locally; pending operations survive reload, replay with stable operation ids after
+reconnect, and remain visible when the server reports a conflict. Changing servers is
+probe-first and clears the previous server's auth identity before the new login, so caches,
+tokens and pending operations are never reused across server scopes.

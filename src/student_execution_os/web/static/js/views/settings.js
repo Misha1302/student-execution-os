@@ -134,7 +134,7 @@ export default {
             ${kv(t('settings.binding'), diag.account_binding)}
             ${diag.latest_plan ? kv(t('settings.latestPlan'), `${diag.latest_plan.feasibility_status} · ${fmtDateTime(diag.latest_plan.generated_at)}`) : ''}
             ${kv(t('settings.series'), diag.recurring_template_count)}
-            ${(diag.notification_state || []).map((n) => kv(code('notifState', n.state), n.count)).join('')}
+            ${(diag.reminder_delivery_state || []).map((n) => kv(n.state, n.count)).join('')}
           </dl>
         </details>
       </section>`;
@@ -152,7 +152,10 @@ export default {
     },
     'settings-server': async () => {
       const ok = await confirmSheet({ title: t('settings.changeServer'), body: `<p>${esc(t('settings.changeServerBody'))}</p>`, confirmLabel: t('common.continue') });
-      if (ok) { await logout(); shell.go('welcome', { step: 'server' }); }
+      // Keep the current server/session usable until the replacement passes its
+      // health and protocol compatibility probe. setServer clears the old identity
+      // atomically after a successful probe.
+      if (ok) shell.go('welcome', { step: 'server' });
     },
     'account-export': (el) => exportAccount(el),
     'account-delete-preview': (_el, ctx) => deleteSheet(ctx.view._deletion),

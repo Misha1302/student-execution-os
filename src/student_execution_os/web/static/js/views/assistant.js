@@ -11,11 +11,11 @@ async function interpretText(text) {
   const dialog = openSheet({
     eyebrow: preview.provider,
     title: t('ask.previewActions'),
-    body: `<div class="list">${actions.map((action) => `<article class="row"><span class="row-main"><strong>${esc(code('command', action.command))}</strong><small>${esc(JSON.stringify(action.payload))}</small>
+    body: `${preview.message ? `<p>${esc(preview.message)}</p>` : ''}<div class="list">${actions.map((action) => `<article class="row"><span class="row-main"><strong>${esc(code('command', action.command))}</strong><small>${esc(JSON.stringify(action.payload))}</small>
       ${action.unresolved_fields.length ? `<small>${esc(t('ask.unresolved', { fields: action.unresolved_fields.join(', ') }))}</small>` : ''}</span></article>`).join('')}</div>
       <p class="help">${esc(t('ask.previewNoMutation'))}</p>`,
     actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
-      <button type="button" class="button primary" data-apply ${actions.some((action) => action.unresolved_fields.length) ? 'disabled' : ''}>${esc(t('ask.applyActions'))}</button>`,
+      <button type="button" class="button primary" data-apply ${!actions.length || actions.some((action) => action.unresolved_fields.length) ? 'disabled' : ''}>${esc(t('ask.applyActions'))}</button>`,
   });
   dialog.querySelector('[data-apply]')?.addEventListener('click', async (event) => {
     setBusy(event.currentTarget, true);
@@ -121,7 +121,7 @@ export default {
         const text = await speechToText();
         const input = document.getElementById('assistant-input');
         if (input) input.value = text;
-        if (text) await interpretText(text);
+        if (!text) toast(t('ask.voiceEmpty'), { error: true });
       } catch (error) { toast(error.message, { error: true }); }
     },
     'agent-preview'(_el, ctx) {

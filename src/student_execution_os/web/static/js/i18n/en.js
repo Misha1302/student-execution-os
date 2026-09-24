@@ -28,6 +28,7 @@ export default {
   'ask.naturalPlaceholder': 'task: Read chapter 30 minutes',
   'ask.interpret': 'Preview actions',
   'ask.voice': 'Voice',
+  'ask.voiceEmpty': 'No speech was recognized. Try again or type your request.',
   'ask.previewActions': 'Review proposed actions',
   'ask.unresolved': 'Needs clarification: {fields}',
   'ask.previewNoMutation': 'Nothing changes until you explicitly apply these typed actions.',

@@ -32,13 +32,7 @@ from student_execution_os.domain.model import (
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
 from student_execution_os.reliability import AccountDeletionPolicy, SQLiteDataLifecycle
-from student_execution_os.notifications import (
-    DeliveryReceipt,
-    NotificationDeliveryPolicy,
-    NotificationKind,
-    SQLiteNotificationDeliveryOutbox,
-    SQLiteNotificationRepository,
-)
+from student_execution_os.reminders import ReminderStore, PushDispatcher, SendResult
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     FeasibilityEngine,
@@ -510,27 +504,15 @@ def run_recurrence_notification_smoke() -> dict[str, object]:
             account_id=account_id, template_id=template.id,
             horizon_start=now, horizon_end=now + timedelta(days=9),
         )
-        notifications = SQLiteNotificationRepository(repo)
-        key = notifications.transition_suppression_key(
-            kind=NotificationKind.SOURCE_CHANGE, entity_ref=template.id, transition_token="created",
-        )
-        item = notifications.schedule(
-            account_id=account_id, suppression_key=key, kind=NotificationKind.SOURCE_CHANGE,
-            scheduled_for=now + timedelta(minutes=10),
-            domain_revision=repo.get_server_revision(account_id), entity_ref=template.id,
-        )
-        item = notifications.snooze(
-            account_id=account_id, notification_id=item.id,
-            until=now + timedelta(minutes=30), expected_version=item.version,
-        )
+        reminders = ReminderStore(repo)
+        reminders.touch(account_id, template.id, now, snooze_until=now + timedelta(minutes=30))
         moved = next(o for o in occurrences if o.original_recurrence_id == original)
         return {
             "status": "ok",
             "schema_version": repo.schema_version(),
             "occurrence_identity": list(moved.identity),
             "moved_start": moved.starts_at.isoformat(),
-            "notification_state": item.state.value,
-            "notification_version": item.version,
+            "reminder_snoozed_until": reminders.states(account_id)[template.id].snoozed_until.isoformat(),
             "server_revision": repo.get_server_revision(account_id),
         }
 
@@ -545,64 +527,43 @@ def run_notification_delivery_smoke() -> dict[str, object]:
         with SQLiteCanonicalRepository(database, clock=clock) as repo:
             repo.initialize()
             repo.create_account(account_id)
-            notifications = SQLiteNotificationRepository(repo)
-            item = notifications.schedule(
-                account_id=account_id,
-                suppression_key="smoke:deadline",
-                kind=NotificationKind.DEADLINE_WARNING,
-                scheduled_for=now,
-                domain_revision=repo.get_server_revision(account_id),
-                entity_ref="smoke-task",
+            repo.create_task(
+                account_id=account_id, obligation_id="smoke-task", title="Smoke task",
+                estimated_total_effort_minutes=30, remaining_effort_minutes=30,
+                category=ObligationCategory.GENERAL, importance=Importance.NORMAL, splittable=False,
+                actual_cutoff=HardCutoff.known(now + timedelta(hours=1)), actor=ActorCategory.SYSTEM,
             )
-            outbox = SQLiteNotificationDeliveryOutbox(
-                notifications,
-                policy=NotificationDeliveryPolicy(
-                    lease_seconds=30,
-                    base_retry_seconds=10,
-                    max_retry_seconds=60,
-                    max_attempts=3,
-                ),
+            reminder_store = ReminderStore(repo)
+            reminder_store.register_device(account_id, "smoke-device-token", "smoke")
+            item_id = reminder_store.add_message(
+                account_id, stage="DEADLINE_2H", task_ids=["smoke-task"],
+                content={"title": "Due soon", "body": "Start", "deep_link": "/task/smoke-task", "actions": []},
+                dedupe_key="smoke:deadline", now=now,
             )
-            first = outbox.claim(
-                account_id=account_id,
-                notification_id=item.id,
-                worker_id="smoke-worker-1",
-            )
-            if first is None:
+            claimed = PushDispatcher(str(database), _SmokePush())._claim(repo, now, "smoke-worker-1")
+            if claimed != [item_id]:
                 raise RuntimeError("notification delivery smoke did not acquire initial lease")
-            delivery_key = first.delivery.delivery_key
 
-        clock.set(now + timedelta(seconds=31))
+        clock.set(now + timedelta(seconds=91))
         with SQLiteCanonicalRepository(database, clock=clock) as repo:
-            notifications = SQLiteNotificationRepository(repo)
-            outbox = SQLiteNotificationDeliveryOutbox(
-                notifications,
-                policy=NotificationDeliveryPolicy(
-                    lease_seconds=30,
-                    base_retry_seconds=10,
-                    max_retry_seconds=60,
-                    max_attempts=3,
-                ),
-            )
-            delivered = outbox.dispatch(
-                account_id=account_id,
-                notification_id=item.id,
-                worker_id="smoke-worker-2",
-                sender=lambda _item, key: DeliveryReceipt(
-                    delivered=key == delivery_key,
-                    provider_message_id="smoke-provider-message",
-                ),
-            )
-            persisted = outbox.get(account_id, item.id)
+            stats = PushDispatcher(str(database), _SmokePush()).run_once(clock.now(), "smoke-worker-2")
+            persisted = repo.connection.execute("SELECT * FROM reminder_messages WHERE id=?", (item_id,)).fetchone()
             return {
                 "status": "ok",
                 "schema_version": repo.schema_version(),
-                "notification_state": delivered.state.value,
-                "delivery_state": persisted.state.value,
-                "attempt_count": persisted.attempt_count,
-                "delivery_key_stable": persisted.delivery_key == delivery_key,
-                "provider_message_id": persisted.provider_message_id,
+                "delivery_state": persisted["delivery_state"],
+                "attempt_count": persisted["attempts"],
+                "reclaimed_after_restart": stats["sent"] == 1,
+                "provider_message_id": persisted["provider_ids"],
             }
+
+
+class _SmokePush:
+    name = "smoke"
+    configured = True
+
+    def send(self, token: str, message: dict[str, object]) -> SendResult:
+        return SendResult(True, provider_id="smoke-provider-message")
 
 def run_reliability_smoke() -> dict[str, object]:
     account_id = "reliability-smoke-account"
@@ -656,13 +617,10 @@ def run_reliability_smoke() -> dict[str, object]:
                 record_count=0,
                 deletion_count=0,
             )
-            SQLiteNotificationRepository(repo).schedule(
-                account_id=account_id,
-                suppression_key="recovery-smoke-notification",
-                kind=NotificationKind.DEADLINE_WARNING,
-                scheduled_for=now + timedelta(minutes=5),
-                domain_revision=repo.get_server_revision(account_id),
-                entity_ref="recovery-task",
+            ReminderStore(repo).add_message(
+                account_id, stage="START_SOON", task_ids=["recovery-task"],
+                content={"title": "Start soon", "body": "Recovery", "deep_link": "/task/recovery-task", "actions": []},
+                dedupe_key="recovery-smoke-reminder", now=now,
             )
 
         lifecycle = SQLiteDataLifecycle(database, now=lambda: now)
@@ -684,7 +642,7 @@ def run_reliability_smoke() -> dict[str, object]:
             checkpoint = SQLiteConnectorRepository(repo, recon).get_state(
                 account_id, "recovery-connector"
             ).checkpoint
-            notifications = len(SQLiteNotificationRepository(repo).list(account_id))
+            notifications = len(ReminderStore(repo).messages(account_id, since=now - timedelta(days=1)))
             title = repo.get_task(account_id, "recovery-task").obligation.title
         return {
             "status": "ok",

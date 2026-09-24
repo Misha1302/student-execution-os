@@ -35,7 +35,7 @@ class WebApiTest(unittest.TestCase):
     def test_health_and_security_headers(self):
         response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["schema_version"], 11)
+        self.assertEqual(response.json()["schema_version"], 12)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
         self.assertEqual(response.headers["cache-control"], "no-store")
@@ -103,27 +103,25 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(occurrence["identity"], ["ui-series", original_id])
         self.assertEqual(occurrence["starts_at"], "2026-09-21T21:00:00+00:00")
 
-    def test_notification_snooze_is_version_checked_and_does_not_advance_domain_revision(self):
+    def test_reminder_snooze_updates_execution_state_without_advancing_domain_revision(self):
         before_revision = self.client.get("/api/v1/settings/diagnostics").json()["server_revision"]
         item = self.client.get("/api/v1/notifications").json()[0]
         snooze_until = (NOW + timedelta(hours=1)).isoformat()
         response = self.client.post(
             f"/api/v1/notifications/{item['id']}/snooze",
-            json={"until": snooze_until, "expected_version": item["version"]},
+            json={"until": snooze_until},
         )
         self.assertEqual(response.status_code, 200)
         snoozed = response.json()
-        self.assertEqual(snoozed["state"], "SNOOZED")
-        self.assertEqual(snoozed["snoozed_until"], snooze_until)
-        self.assertEqual(snoozed["version"], item["version"] + 1)
+        self.assertEqual(snoozed["acted_action"], "SNOOZE")
         after_revision = self.client.get("/api/v1/settings/diagnostics").json()["server_revision"]
         self.assertEqual(after_revision, before_revision)
-        stale = self.client.post(
-            f"/api/v1/notifications/{item['id']}/snooze",
-            json={"until": (NOW + timedelta(hours=2)).isoformat(), "expected_version": item["version"]},
-        )
-        self.assertEqual(stale.status_code, 409)
-        self.assertEqual(stale.json()["error"]["code"], "VERSION_CONFLICT")
+        with sqlite3.connect(self.db) as connection:
+            connection.row_factory = sqlite3.Row
+            state = connection.execute(
+                "SELECT snoozed_until FROM reminder_states WHERE account_id=? AND task_id=?", (ACCOUNT, "discrete")
+            ).fetchone()
+        self.assertEqual(state["snoozed_until"], snooze_until)
 
     def test_evidence_surfaces_stale_connector_conflict_and_override(self):
         body = self.client.get("/api/v1/evidence").json()

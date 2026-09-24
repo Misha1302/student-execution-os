@@ -77,6 +77,11 @@ export async function setupPush(onToken, onDeepLink) {
   if (permission.receive !== 'granted') return { configured: false, denied: true };
   await push.addListener('registration', ({ value }) => onToken(value));
   await push.addListener('registrationError', () => {});
+  await push.addListener('pushNotificationReceived', (notification) => {
+    // Android does not display a system notification while the app is in the
+    // foreground. Surface it through the running UI and refresh the inbox.
+    window.dispatchEvent(new CustomEvent('seos-push-received', { detail: notification }));
+  });
   await push.addListener('pushNotificationActionPerformed', ({ notification }) => {
     const data = notification?.data || {};
     onDeepLink?.(data.deep_link || (data.task_id ? `#/task/${encodeURIComponent(data.task_id)}` : '#/today'));

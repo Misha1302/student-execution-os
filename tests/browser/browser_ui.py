@@ -107,6 +107,15 @@ class BrowserUiTest(unittest.TestCase):
             })
         elif path.startswith("/api/v1/attachments?") and request.method == "GET":
             reply(200, [])
+        elif path == "/api/v1/sync" and request.method == "POST":
+            results = []
+            for operation in payload.get("operations", []):
+                entity = None
+                if operation["type"] == "task.create":
+                    entity = {"kind": "TASK", "id": operation["entity_id"], **operation["payload"],
+                              "status": "DRAFT" if operation["payload"].get("estimated_total_effort_minutes") is None else "ACTIVE", "version": 1}
+                results.append({**operation, "status": "APPLIED", "entity": entity, "replayed": False})
+            reply(200, {"results": results, "server_revision": 1})
         elif path in self.responses and request.method == "GET":
             reply(200, self.responses[path])
         else:
@@ -236,7 +245,7 @@ class BrowserUiTest(unittest.TestCase):
         self._ready(page, "task")
         self.assertIn("Conflict", self._text(page))
         task = next(t for t in self.responses["/api/v1/tasks"] if t["id"] == "conflict-task")
-        self.overrides[("PATCH", "/api/v1/tasks/conflict-task")] = (
+        self.overrides[("POST", "/api/v1/sync")] = (
             409, {"error": {"code": "VERSION_CONFLICT", "message": "stale", "retryable": False}},
         )
         page.locator('[data-action="detail-progress"]').click()
@@ -245,8 +254,8 @@ class BrowserUiTest(unittest.TestCase):
         toast.wait_for()
         self.assertIn("another device", toast.inner_text())
         path, payload = self.posts[-1]
-        self.assertEqual(path, "/api/v1/tasks/conflict-task")
-        self.assertEqual(payload["expected_version"], task["version"])
+        self.assertEqual(path, "/api/v1/sync")
+        self.assertEqual(payload["operations"][0]["entity_id"], task["id"])
         self._ready(page, "task")
         page.close()
 
@@ -274,7 +283,7 @@ class BrowserUiTest(unittest.TestCase):
 
         page.locator('.tabbar [data-nav="notifications"]').click()
         self._ready(page, "notifications")
-        self.assertIn("Pending", self._text(page))
+        self.assertIn("PENDING", self._text(page))
         page.locator('[data-action="snooze-notification"]').first.click()
         self.assertIn("Only the reminder time changes", page.locator("dialog.sheet[open]").inner_text())
         page.keyboard.press("Escape")
@@ -339,9 +348,6 @@ class BrowserUiTest(unittest.TestCase):
     def test_title_only_quick_capture_keeps_effort_unknown_and_non_splittable(self):
         page = self._open(width=360, height=800, locale="ru")
         self._ready(page, "today")
-        self.overrides[("POST", "/api/v1/tasks")] = (
-            201, {"id": "draft", "title": "Уточнить тему", "status": "DRAFT", "version": 1},
-        )
         page.locator(".fab").click()
         page.locator('[data-choice="task"]').click()
         title = page.locator('[data-f="title"]')
@@ -350,11 +356,13 @@ class BrowserUiTest(unittest.TestCase):
         page.locator("dialog.sheet[open] [data-save]").click()
         page.locator(".toast").first.wait_for()
         path, payload = self.posts[-1]
-        self.assertEqual(path, "/api/v1/tasks")
-        self.assertIsNone(payload["estimated_total_effort_minutes"])
-        self.assertIsNone(payload["remaining_effort_minutes"])
-        self.assertFalse(payload["splittable"])
-        self.assertEqual(payload["actual_cutoff"], {"state": "UNKNOWN"})
+        self.assertEqual(path, "/api/v1/sync")
+        operation = payload["operations"][0]
+        self.assertEqual(operation["type"], "task.create")
+        self.assertIsNone(operation["payload"]["estimated_total_effort_minutes"])
+        self.assertIsNone(operation["payload"]["remaining_effort_minutes"])
+        self.assertFalse(operation["payload"]["splittable"])
+        self.assertEqual(operation["payload"]["actual_cutoff"], {"state": "UNKNOWN"})
         self._assert_no_horizontal_scroll(page, 360)
         page.close()
 
@@ -367,7 +375,7 @@ class BrowserUiTest(unittest.TestCase):
     def test_compose_task_sheet_posts_canonical_payload(self):
         page = self._open()
         self._ready(page, "today")
-        self.overrides[("POST", "/api/v1/tasks")] = (201, {"id": "new", "title": "Essay", "version": 1})
+        self.overrides.pop(("POST", "/api/v1/sync"), None)
         page.locator(".fab").click()
         page.locator('[data-choice="task"]').click()
         page.fill('[data-f="title"]', "Essay")
@@ -376,11 +384,12 @@ class BrowserUiTest(unittest.TestCase):
         page.locator("dialog.sheet[open] [data-save]").click()
         page.locator(".toast").first.wait_for()
         path, payload = self.posts[-1]
-        self.assertEqual(path, "/api/v1/tasks")
-        self.assertEqual(payload["title"], "Essay")
-        self.assertEqual(payload["estimated_total_effort_minutes"], 90)
-        self.assertEqual(payload["actual_cutoff"], {"state": "ABSENT"})
-        self.assertNotIn("account_id", payload)
+        self.assertEqual(path, "/api/v1/sync")
+        operation = payload["operations"][0]
+        self.assertEqual(operation["payload"]["title"], "Essay")
+        self.assertEqual(operation["payload"]["estimated_total_effort_minutes"], 90)
+        self.assertEqual(operation["payload"]["actual_cutoff"], {"state": "ABSENT"})
+        self.assertNotIn("account_id", operation)
         page.close()
 
     def test_session_mode_login_flow_and_russian_locale(self):

@@ -10,24 +10,30 @@ services:
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
     environment:
+      SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_REGISTRATION: ${SEOS_REGISTRATION:-open}
       SEOS_PROXY_HEADERS: ${SEOS_PROXY_HEADERS:-1}
       SEOS_FORWARDED_ALLOW_IPS: ${SEOS_FORWARDED_ALLOW_IPS:-127.0.0.1}
       SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
+      SEOS_LLM_PROVIDER: ${SEOS_LLM_PROVIDER:-}
+      SEOS_LLM_MODEL: ${SEOS_LLM_MODEL:-}
+      SEOS_LLM_BASE_URL: ${SEOS_LLM_BASE_URL:-}
+      SEOS_LLM_API_KEY: ${SEOS_LLM_API_KEY:-}
     ports:
       - "127.0.0.1:8765:8765"
     volumes:
       - /var/lib/student-execution-os:/data
       - /var/backups/student-execution-os:/backups
 
-  notification-worker:
+  reminder-worker:
     image: student-execution-os:${SEOS_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       - api
-    command: ["python", "-m", "student_execution_os.notifications.worker", "--database", "/data/student-execution-os.db"]
+    command: ["python", "-m", "student_execution_os.reminders.worker", "--database", "/data/student-execution-os.db"]
     environment:
-      SEOS_FCM_ENDPOINT: ${SEOS_FCM_ENDPOINT:-}
-      SEOS_FCM_BEARER_TOKEN: ${SEOS_FCM_BEARER_TOKEN:-}
+      SEOS_REVISION: ${SEOS_REVISION:-unknown}
+      SEOS_FCM_SERVICE_ACCOUNT_JSON: ${SEOS_FCM_SERVICE_ACCOUNT_JSON:-}
+      SEOS_FCM_SERVICE_ACCOUNT_FILE: ${SEOS_FCM_SERVICE_ACCOUNT_FILE:-}
     volumes:
       - /var/lib/student-execution-os:/data

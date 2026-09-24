@@ -133,6 +133,7 @@ class Commands:
         self.handlers: dict[str, Callable[[str, dict[str, Any]], Outcome]] = {
             "task.create": self.task_create,
             "task.update": self.task_update,
+            "task.activate": self.task_activate,
             "task.progress": self.task_progress,
             "task.start": self.task_start,
             "task.complete": self.task_complete,
@@ -272,6 +273,19 @@ class Commands:
             if current.remaining_effort_low_minutes is not None:
                 fields["remaining_effort_low_minutes"] = min(fields["remaining_effort_minutes"], max(0, current.remaining_effort_low_minutes - minutes))
         self._update(task_id, **fields)
+        self._touch(task_id)
+        return self._task_out(task_id)
+
+    def task_activate(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        current = self._task(task_id)
+        if current.obligation.lifecycle_status is LifecycleStatus.ACTIVE:
+            return self._task_out(task_id, NOOP, "ALREADY_ACTIVE")
+        if current.obligation.lifecycle_status is not LifecycleStatus.DRAFT:
+            return self._task_out(task_id, CONFLICT, "TASK_CLOSED")
+        if current.estimated_total_effort_minutes is None:
+            return self._task_out(task_id, REJECTED, "EFFORT_REQUIRED", "refine effort before activation")
+        self.repo.activate_task(account_id=self.account_id, obligation_id=task_id,
+                                expected_version=current.obligation.version, actor=self.actor)
         self._touch(task_id)
         return self._task_out(task_id)
 

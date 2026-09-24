@@ -3,6 +3,9 @@ import { api } from '../api.js';
 import { t, code, fmtDuration, fmtDateTime, fmtRelative } from '../i18n.js';
 import { esc, icon, chip, riskChip, kv, empty, openSheet, localInputValue, isoFromLocalInput, setBusy } from '../ui.js';
 import { lifecycle, logProgress, mutate } from '../actions.js';
+import { queueOperation } from '../sync.js';
+
+const sameInstant = (a, b) => (!a && !b) || (a && b && new Date(a).getTime() === new Date(b).getTime());
 
 function editSheet(task) {
   const dialog = openSheet({
@@ -22,11 +25,18 @@ function editSheet(task) {
   });
   dialog.querySelector('[data-save]').addEventListener('click', async (e) => {
     const f = (name) => dialog.querySelector(`[data-f="${name}"]`).value;
-    const payload = { expected_version: task.version, remaining_effort_minutes: Number(f('remaining') || 0) };
-    payload.target_at = isoFromLocalInput(f('target'));
-    payload.actionable_from = isoFromLocalInput(f('actionable'));
+    const candidate = { remaining_effort_minutes: Number(f('remaining') || 0),
+      target_at: isoFromLocalInput(f('target')), actionable_from: isoFromLocalInput(f('actionable')) };
+    const changes = {};
+    if (candidate.remaining_effort_minutes !== Number(task.remaining_effort_minutes || 0)) changes.remaining_effort_minutes = candidate.remaining_effort_minutes;
+    if (!sameInstant(candidate.target_at, task.target_at)) changes.target_at = candidate.target_at;
+    if (!sameInstant(candidate.actionable_from, task.actionable_from)) changes.actionable_from = candidate.actionable_from;
+    if (!Object.keys(changes).length) { dialog.close('unchanged'); return; }
     setBusy(e.currentTarget, true);
-    await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', body: payload }), { success: t('task.saved') });
+    await mutate(async () => {
+      const result = await queueOperation('task.update', task.id, changes, { optimisticTask: { ...task, ...changes } });
+      return result.entity || result;
+    }, { success: t('task.saved') });
     dialog.close('saved');
   });
 }
@@ -43,9 +53,11 @@ function refineSheet(task) {
     const effort = Number(dialog.querySelector('[data-effort]').value);
     if (!effort) return;
     setBusy(event.currentTarget, true);
-    await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', body: {
-      expected_version: task.version, estimated_total_effort_minutes: effort, remaining_effort_minutes: effort,
-    } }), { success: t('task.saved') });
+    await mutate(async () => {
+      const changes = { estimated_total_effort_minutes: effort, remaining_effort_minutes: effort };
+      const result = await queueOperation('task.update', task.id, changes, { optimisticTask: { ...task, ...changes, status: 'ACTIVE' } });
+      return result.entity || result;
+    }, { success: t('task.saved') });
     dialog.close('saved');
   });
 }
@@ -145,7 +157,10 @@ export default {
     'detail-edit'(_el, ctx) { editSheet(ctx.data); },
     'detail-refine'(_el, ctx) { refineSheet(ctx.data); },
     async 'detail-activate'(_el, ctx) {
-      await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(ctx.data.id)}/activate`, { method: 'POST', body: { expected_version: ctx.data.version } }), { success: t('task.activated') });
+      await mutate(async () => {
+        const result = await queueOperation('task.activate', ctx.data.id, {}, { optimisticTask: { ...ctx.data, status: 'ACTIVE' } });
+        return result.entity || result;
+      }, { success: t('task.activated') });
     },
     'attachment-pick'(el) { el.closest('.card').querySelector('[data-attachment-input]').click(); },
     'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title }); },

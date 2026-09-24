@@ -2,6 +2,7 @@
 
 from .action import SQLiteActionGateway
 from .assistant import DeterministicAssistantParser, SQLiteAssistantService
+from .providers import capabilities as assistant_capabilities, provider_from_environment as assistant_provider_from_environment
 from .extraction import ExtractionIngestor, ToollessExtractionContext
 from .model import (
     ActionIntent,
@@ -36,4 +37,6 @@ __all__ = [
     "DeterministicAssistantParser",
     "ToollessExtractionContext",
     "ToollessExtractionModel",
+    "assistant_capabilities",
+    "assistant_provider_from_environment",
 ]

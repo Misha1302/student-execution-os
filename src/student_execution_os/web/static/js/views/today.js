@@ -1,8 +1,8 @@
 import { load } from '../store.js';
-import { api } from '../api.js';
 import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, now, sameDay } from '../i18n.js';
 import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead } from '../ui.js';
 import { logProgress, lifecycle, mutate } from '../actions.js';
+import { queueOperation } from '../sync.js';
 
 export function parseWhyNow(value) {
   const out = {};
@@ -181,7 +181,11 @@ export default {
     },
     async 'start-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
-      if (task) await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}/start`, { method: 'POST', body: { expected_version: task.version } }), { success: t('today.started') });
+      if (task) await mutate(async () => {
+        const at = new Date().toISOString();
+        const result = await queueOperation('task.start', task.id, {}, { optimisticTask: { ...task, started_at: task.started_at || at, last_progress_at: at } });
+        return result.entity || result;
+      }, { success: t('today.started') });
     },
     async 'complete-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
@@ -191,7 +195,10 @@ export default {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
       if (!task) return;
       const until = new Date(now().getTime() + 60 * 60000).toISOString();
-      await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}/defer`, { method: 'POST', body: { expected_version: task.version, until } }), { success: t('today.deferred') });
+      await mutate(async () => {
+        const result = await queueOperation('task.defer', task.id, { until }, { optimisticTask: { ...task, actionable_from: until } });
+        return result.entity || result;
+      }, { success: t('today.deferred') });
     },
   },
 };

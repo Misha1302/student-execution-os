@@ -33,8 +33,16 @@ export async function restoreSession() {
 }
 
 export async function setServer(url) {
-  session.server = normalizeServer(url);
+  const next = normalizeServer(url);
+  const changed = Boolean(session.server && session.server !== next);
+  session.server = next;
   await prefSet(KEYS.server, session.server || null);
+  if (changed) {
+    session.token = null;
+    session.user = null;
+    await prefSet(KEYS.token, null);
+    await prefSet(KEYS.user, null);
+  }
 }
 
 export async function setAuth(token, user) {
@@ -97,6 +105,9 @@ export async function api(path, { method = 'GET', body, server, timeoutMs = 2000
 export async function probeServer(url) {
   const health = await api('/api/v1/health', { server: normalizeServer(url), timeoutMs: 8000 });
   if (health?.service !== 'student-execution-os') throw new ApiError('Not a Student Execution OS server', { code: 'NOT_SEOS' });
+  if (Number(health.api_version) !== 1 || Number(health.sync_protocol) < 1) {
+    throw new ApiError('Server version is not compatible with this app', { code: 'INCOMPATIBLE_SERVER' });
+  }
   return health;
 }
 

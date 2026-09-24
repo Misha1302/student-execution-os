@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from datetime import timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from student_execution_os.domain.errors import AuthorizationDenied, IdempotencyConflict, ValidationError, VersionConflict
@@ -33,7 +33,7 @@ _DURATION = re.compile(r"(?:\b|\s)(\d{1,4})\s*(?:m|min|mins|minutes|мин|ми�
 class AssistantProvider(Protocol):
     name: str
 
-    def interpret(self, text: str, context: dict[str, object]) -> list[dict[str, object]]: ...
+    def interpret(self, text: str, context: dict[str, object]) -> list[dict[str, object]] | dict[str, Any]: ...
 
 
 class DeterministicAssistantParser:
@@ -93,7 +93,15 @@ class SQLiteAssistantService:
     def interpret(self, text: str, context: dict[str, object] | None = None) -> dict[str, object]:
         context = context or {}
         allowed_context = {key: context[key] for key in ("expected_version", "locale") if key in context}
-        raw_actions = self.provider.interpret(text, allowed_context)
+        interpretation = self.provider.interpret(text, allowed_context)
+        if isinstance(interpretation, dict):
+            raw_actions = interpretation.get("actions")
+            assistant_message = str(interpretation.get("message") or "")[:2000]
+        else:
+            raw_actions = interpretation
+            assistant_message = "I prepared a structured preview. Review it before applying."
+        if not isinstance(raw_actions, list):
+            raise ValidationError("assistant provider returned an invalid actions list")
         actions = []
         for raw in raw_actions:
             if set(raw) != {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}:
@@ -104,12 +112,18 @@ class SQLiteAssistantService:
             confidence = float(raw["confidence"])
             if not 0 <= confidence <= 1:
                 raise ValidationError("assistant confidence must be in [0,1]")
+            destructive = command in {
+                AgentCommand.COMPLETE_OBLIGATION.value,
+                AgentCommand.CANCEL_OBLIGATION.value,
+            }
             actions.append({
                 "id": str(uuid4()), "command": command, "payload": raw["payload"],
                 "confidence": confidence, "unresolved_fields": list(raw["unresolved_fields"]),
                 "expected_version": raw["expected_version"],
                 "provenance": {"provider": self.provider.name, "input": "user-authored-text"},
-                "requires_confirmation": bool(raw["requires_confirmation"]),
+                # Trust boundaries are server-owned. A provider cannot downgrade a
+                # destructive command merely by emitting a false flag.
+                "requires_confirmation": destructive or bool(raw["requires_confirmation"]),
             })
         now = self.canonical.clock.now()
         batch_id = str(uuid4())
@@ -122,7 +136,7 @@ class SQLiteAssistantService:
                 (batch_id, self.principal.account_id, self.principal.principal_id, digest, self.provider.name,
                  redacted, json.dumps(actions, sort_keys=True), _iso(now), _iso(now + timedelta(minutes=30))),
             )
-        return {"batch_id": batch_id, "provider": self.provider.name, "actions": actions,
+        return {"batch_id": batch_id, "provider": self.provider.name, "message": assistant_message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 
     def apply(self, payload: dict[str, object]) -> dict[str, object]:
@@ -165,9 +179,9 @@ class SQLiteAssistantService:
                 current = self.canonical.get_obligation(self.principal.account_id, entity)
                 if action["expected_version"] is None or current.version != int(action["expected_version"]):
                     raise VersionConflict("assistant proposal expected version is stale or missing")
-        results = [self._execute(action) for action in actions]
-        result = {"batch_id": batch_id, "results": results, "replayed": False}
         with self.canonical._tx() as conn:
+            results = [self._execute(action) for action in actions]
+            result = {"batch_id": batch_id, "results": results, "replayed": False}
             conn.execute(
                 "INSERT INTO assistant_apply_records(account_id,principal_id,idempotency_key,request_hash,result_json,created_at) VALUES (?,?,?,?,?,?)",
                 (self.principal.account_id, self.principal.principal_id, key, request_hash,
@@ -187,6 +201,8 @@ class SQLiteAssistantService:
                 estimated_total_effort_minutes=effort, remaining_effort_minutes=data.get("remaining_effort_minutes", effort),
                 splittable=bool(data.get("splittable", False)), actual_cutoff=HardCutoff.unknown(),
             )
+            from student_execution_os.reminders import ReminderStore
+            ReminderStore(self.canonical).touch(self.principal.account_id, task.obligation.id, self.canonical.clock.now())
             return {"action_id": action["id"], "entity_id": task.obligation.id, "version": 1, "status": task.obligation.lifecycle_status.value}
         if command is AgentCommand.CREATE_EVENT:
             effect_data = data.get("location_effect") or {"kind": "NONE"}
@@ -225,7 +241,10 @@ class SQLiteAssistantService:
             if task.remaining_effort_minutes is None:
                 raise ValidationError("cannot log progress for unknown effort")
             updated = self.canonical.update_task(**common, obligation_id=entity, expected_version=expected,
-                remaining_effort_minutes=max(0, task.remaining_effort_minutes - minutes))
+                remaining_effort_minutes=max(0, task.remaining_effort_minutes - minutes),
+                started_at=task.started_at or self.canonical.clock.now(), last_progress_at=self.canonical.clock.now())
+            from student_execution_os.reminders import ReminderStore
+            ReminderStore(self.canonical).touch(self.principal.account_id, entity, self.canonical.clock.now())
             return {"action_id": action["id"], "entity_id": entity, "version": updated.obligation.version, "status": updated.obligation.lifecycle_status.value}
         method = self.canonical.complete_obligation if command is AgentCommand.COMPLETE_OBLIGATION else self.canonical.cancel_obligation
         obligation = method(**common, obligation_id=entity, expected_version=expected)

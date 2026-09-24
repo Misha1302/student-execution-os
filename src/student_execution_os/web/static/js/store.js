@@ -2,7 +2,7 @@ import { api, session } from './api.js';
 
 // Read-model cache. Server responses are kept in memory for fast tab switches and
 // mirrored to localStorage so a cold start without network can still show the last
-// known state, clearly labelled as stale. Mutations always require the network.
+// known state, clearly labelled as stale. Offline-capable mutations use sync.js.
 
 const memory = new Map();
 const PREFIX = 'seos.cache.';
@@ -12,7 +12,7 @@ function scope() {
 }
 
 function persist(path, entry) {
-  try { localStorage.setItem(PREFIX + path, JSON.stringify({ scope: scope(), ...entry })); } catch { /* quota/private mode */ }
+  try { localStorage.setItem(PREFIX + path, JSON.stringify(entry)); } catch { /* quota/private mode */ }
 }
 
 function restore(path) {
@@ -24,11 +24,14 @@ function restore(path) {
 
 // Returns { data, stale, fetchedAt }.
 export async function load(path, { fresh = false } = {}) {
-  const hit = memory.get(path);
+  const currentScope = scope();
+  const candidate = memory.get(path);
+  const hit = candidate?.scope === currentScope ? candidate : null;
+  if (candidate && !hit) memory.delete(path);
   if (hit && !fresh) return { ...hit, stale: false };
   try {
     const data = await api(path);
-    const entry = { data, fetchedAt: Date.now() };
+    const entry = { scope: currentScope, data, fetchedAt: Date.now() };
     memory.set(path, entry);
     persist(path, entry);
     return { ...entry, stale: false };
@@ -49,4 +52,22 @@ export function clearAll() {
   } catch { /* ignore */ }
 }
 
-export function peek(path) { return memory.get(path)?.data; }
+export function peek(path) {
+  const hit = memory.get(path);
+  return hit?.scope === scope() ? hit.data : undefined;
+}
+
+export function upsertCachedTask(task) {
+  if (!task?.id) return;
+  const path = '/api/v1/tasks';
+  const inMemory = memory.get(path);
+  const current = (inMemory?.scope === scope() ? inMemory : null) || restore(path);
+  if (!current || !Array.isArray(current.data)) return;
+  const data = [...current.data];
+  const index = data.findIndex((item) => item.id === task.id);
+  if (index >= 0) data[index] = { ...data[index], ...task };
+  else data.unshift(task);
+  const entry = { scope: scope(), data, fetchedAt: current.fetchedAt || Date.now() };
+  memory.set(path, entry);
+  persist(path, entry);
+}

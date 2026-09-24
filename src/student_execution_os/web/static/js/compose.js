@@ -2,6 +2,7 @@ import { api } from './api.js';
 import { t, code, fmtDuration, now } from './i18n.js';
 import { esc, openSheet, actionSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy } from './ui.js';
 import { mutate } from './actions.js';
+import { newEntityId, queueOperation } from './sync.js';
 
 const EFFORTS = [15, 30, 60, 90, 120, 180];
 
@@ -105,7 +106,13 @@ function taskSheet() {
       actual_cutoff: cutoff,
     };
     setBusy(e.currentTarget, true);
-    const created = await mutate(() => api('/api/v1/tasks', { method: 'POST', body: payload }), { success: t('compose.taskCreated') });
+    const taskId = newEntityId('task');
+    const optimistic = { id: taskId, kind: 'TASK', ...payload, status: effort == null ? 'DRAFT' : 'ACTIVE', version: 1,
+      started_at: null, last_progress_at: null, completed_at: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    const created = await mutate(async () => {
+      const result = await queueOperation('task.create', taskId, payload, { optimisticTask: optimistic });
+      return result.entity || result;
+    }, { success: t('compose.taskCreated') });
     setBusy(e.currentTarget, false);
     if (created) dialog.close('saved');
   });

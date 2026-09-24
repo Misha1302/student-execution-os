@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 import json
 import logging
+import os
 import time
 import mimetypes
 from uuid import uuid4
@@ -25,6 +26,7 @@ from student_execution_os.domain.errors import (
 )
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.agent import assistant_capabilities
 
 from .auth import AuthConfig, RateLimited, Session, SQLiteAuthStore, Unauthenticated
 from .queries import UiService
@@ -190,6 +192,9 @@ def create_app(
             "schema_version": schema_version,
             "auth_mode": "session" if auth is not None else "bound",
             "registration_open": bool(auth and auth.registration_open),
+            "api_version": 1,
+            "sync_protocol": 1,
+            "revision": os.getenv("SEOS_REVISION", "unknown"),
         }
 
     def _client_ip(request: Request) -> str:
@@ -281,6 +286,10 @@ def create_app(
     @app.post("/api/v1/tasks/{task_id}/start")
     async def start_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.start_task(task_id, payload)
+
+    @app.post("/api/v1/sync")
+    async def sync(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.sync(payload)
 
     @app.post("/api/v1/attachments", status_code=201)
     async def upload_attachment(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
@@ -428,13 +437,13 @@ def create_app(
 
     @app.get("/api/v1/ask/capabilities")
     async def ask_capabilities() -> dict[str, Any]:
+        result = assistant_capabilities()
         return {
-            "live_llm_provider": False,
+            **result,
             "explanations": True,
             "destructive_action_preview": True,
-            "message": (
-                "No live LLM provider is configured in this release. The UI exposes server-owned "
-                "explanations and the authenticated action-intent boundary without fabricating a chat provider."
+            "message": "Live structured Assistant is available." if result["live_llm_provider"] else (
+                "No LLM credential is configured. Deterministic task/event capture remains available."
             ),
         }
 

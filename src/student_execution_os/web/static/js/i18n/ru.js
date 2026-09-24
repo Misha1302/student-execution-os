@@ -28,6 +28,7 @@ export default {
   'ask.naturalPlaceholder': 'задача: Прочитать главу 30 минут',
   'ask.interpret': 'Показать действия',
   'ask.voice': 'Голос',
+  'ask.voiceEmpty': 'Речь не распознана. Попробуйте ещё раз или введите текст.',
   'ask.previewActions': 'Проверьте предложенные действия',
   'ask.unresolved': 'Нужно уточнить: {fields}',
   'ask.previewNoMutation': 'Ничего не изменится, пока вы явно не примените типизированные действия.',

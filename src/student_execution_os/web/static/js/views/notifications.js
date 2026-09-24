@@ -3,12 +3,14 @@ import { api } from '../api.js';
 import { t, code, fmtDateTime, fmtRelative, now } from '../i18n.js';
 import { esc, icon, chip, empty, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, setBusy, toast } from '../ui.js';
 import { mutate } from '../actions.js';
+import { shell } from '../actions.js';
+import { queueOperation } from '../sync.js';
 
-const TONE = { PENDING: 'accent', SNOOZED: 'warn', DELIVERED: 'ok', SUPPRESSED: 'muted', FAILED: 'danger' };
+const TONE = { PENDING: 'accent', LEASED: 'warn', SENT: 'ok', NO_DEVICE: 'muted', CANCELLED: 'muted', DEAD: 'danger' };
 
 function snoozeSheet(n) {
   const dialog = openSheet({
-    eyebrow: code('notif', n.kind),
+    eyebrow: n.stage,
     title: t('notif.snooze'),
     body: `${chipGroup('snooze', [['15', t('notif.in15')], ['60', t('notif.in60')], ['tomorrow', t('notif.tomorrow')], ['custom', t('form.custom')]], '60')}
       <input type="datetime-local" data-f="until" class="hidden" value="${esc(localInputValue(new Date(now().getTime() + 3600000)))}">
@@ -28,7 +30,7 @@ function snoozeSheet(n) {
     if (!until) { toast(t('form.deadlineRequired'), { error: true }); return; }
     setBusy(e.currentTarget, true);
     await mutate(() => api(`/api/v1/notifications/${encodeURIComponent(n.id)}/snooze`, {
-      method: 'POST', body: { until, expected_version: n.version },
+      method: 'POST', body: { until },
     }), { success: t('notif.snoozed') });
     dialog.close('saved');
   });
@@ -43,16 +45,17 @@ export default {
   render(list) {
     this._list = list;
     if (!list.length) return empty(t('notif.empty'), t('notif.emptyHint'), 'bell');
-    const sorted = [...list].sort((a, b) => new Date(b.snoozed_until || b.scheduled_for) - new Date(a.snoozed_until || a.scheduled_for));
+    const sorted = [...list].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     return `<p class="help pad">${esc(t('notif.intro'))}</p>
       <div class="list">${sorted.map((n) => {
-        const at = n.snoozed_until || n.scheduled_for;
-        const canSnooze = !['DELIVERED', 'SUPPRESSED'].includes(n.state);
+        const at = n.created_at;
+        const canSnooze = !n.acted_at && !['CANCELLED', 'DEAD'].includes(n.delivery_state);
         return `<div class="row static">
-          <span class="row-icon tone-${TONE[n.state] || 'muted'}">${icon('bell')}</span>
-          <span class="row-main"><strong>${esc(code('notif', n.kind))}</strong><small>${esc(fmtDateTime(at))} · ${esc(fmtRelative(at))}</small>
+          <span class="row-icon tone-${TONE[n.delivery_state] || 'muted'}">${icon('bell')}</span>
+          <span class="row-main"><strong>${esc(n.title)}</strong><small>${esc(n.body)}</small><small>${esc(fmtDateTime(at))} · ${esc(fmtRelative(at))}</small>
             ${n.last_error ? `<small class="text-danger">${esc(n.last_error)}</small>` : ''}</span>
-          <span class="row-side">${chip(code('notifState', n.state), TONE[n.state] || 'muted')}
+          <span class="row-side">${chip(n.delivery_state, TONE[n.delivery_state] || 'muted')}
+            ${(n.actions || []).filter((a) => !a.id.startsWith('SNOOZE')).slice(0, 2).map((a) => `<button class="button small ghost" data-action="reminder-action" data-id="${esc(n.id)}" data-op="${esc(a.id)}">${esc(a.label)}</button>`).join('')}
             ${canSnooze ? `<button class="button small ghost" data-action="snooze-notification" data-id="${esc(n.id)}">${esc(t('notif.snooze'))}</button>` : ''}</span>
         </div>`;
       }).join('')}</div>`;
@@ -61,6 +64,18 @@ export default {
     'snooze-notification'(el, ctx) {
       const n = (ctx.view._list || []).find((x) => x.id === el.dataset.id);
       if (n) snoozeSheet(n);
+    },
+    async 'reminder-action'(el, ctx) {
+      const n = (ctx.view._list || []).find((x) => x.id === el.dataset.id);
+      const taskId = n?.task_ids?.[0];
+      if (!n) return;
+      if (el.dataset.op === 'REPLAN') { shell.go('plan'); return; }
+      if (!taskId || ['OPEN', 'RESCHEDULE'].includes(el.dataset.op)) { if (taskId) shell.go('task', { params: [taskId] }); return; }
+      const type = el.dataset.op === 'START' ? 'task.start' : el.dataset.op === 'DONE' ? 'task.complete' : null;
+      if (type) await mutate(async () => {
+        const result = await queueOperation(type, taskId, {});
+        return result.entity || result;
+      });
     },
   },
 };

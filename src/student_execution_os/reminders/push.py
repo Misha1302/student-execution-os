@@ -142,8 +142,9 @@ class FcmV1Provider:
             return SendResult(False, error=f"FCM_AUTH:{type(exc).__name__}", retryable=True)
         body = {"message": {
             "token": token,
-            # Data-only: the app's messaging service renders the notification with
-            # action buttons, also when the app is in the background or killed.
+            # Android renders the notification while the app is backgrounded or
+            # stopped; data carries the stable context used after a tap.
+            "notification": {"title": str(message.get("title", "")), "body": str(message.get("body", ""))},
             "data": {key: value if isinstance(value, str) else json.dumps(value) for key, value in message.items()},
             "android": {"priority": "HIGH", "ttl": f"{int(STALE_AFTER.total_seconds())}s",
                         "collapse_key": str(message.get("collapse_key", "seos"))[:64]},

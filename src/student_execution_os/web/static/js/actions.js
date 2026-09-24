@@ -1,8 +1,8 @@
-import { api } from './api.js';
 import { t, fmtDuration } from './i18n.js';
 import { invalidate } from './store.js';
 import { toast, errorMessage, confirmSheet, openSheet, chipGroup, chipValue, esc, setBusy } from './ui.js';
 import { haptic } from './native.js';
+import { queueOperation } from './sync.js';
 
 // Hooks the shell installs so mutations can re-render without importing the router.
 export const shell = { rerender: async () => {}, go: () => {} };
@@ -27,7 +27,12 @@ export async function mutate(run, { success, after } = {}) {
 
 export function lifecycle(id, version, action, { title } = {}) {
   const run = () => mutate(
-    () => api(`/api/v1/obligations/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: { expected_version: Number(version) } }),
+    async () => {
+      const result = await queueOperation(`task.${action}`, id, {}, {
+        optimisticTask: { id, version: Number(version) + 1, status: action === 'complete' ? 'COMPLETED' : action === 'cancel' ? 'CANCELLED' : 'ACTIVE' },
+      });
+      return result.entity || result;
+    },
     { success: t(`lifecycle.done.${action}`) },
   );
   if (action !== 'cancel') return run();
@@ -62,10 +67,12 @@ export function logProgress(task, suggested) {
     const left = Math.max(0, remaining - spent);
     setBusy(e.currentTarget, true);
     const updated = await mutate(
-      () => api(`/api/v1/tasks/${encodeURIComponent(task.id)}`, {
-        method: 'PATCH',
-        body: { expected_version: task.version, remaining_effort_minutes: left },
-      }),
+      async () => {
+        const result = await queueOperation('task.progress', task.id, { minutes: spent }, {
+          optimisticTask: { ...task, remaining_effort_minutes: left, started_at: task.started_at || new Date().toISOString(), last_progress_at: new Date().toISOString() },
+        });
+        return result.entity || result;
+      },
       { success: left ? t('progress.saved', { d: fmtDuration(left) }) : null },
     );
     dialog.close('saved');

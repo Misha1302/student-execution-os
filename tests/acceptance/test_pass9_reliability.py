@@ -20,7 +20,7 @@ from student_execution_os.persistence import SCHEMA_VERSION, SQLiteCanonicalRepo
 from student_execution_os.planning import PlanningService, SQLitePlanningStateSource, build_planning_snapshot
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.reliability import AccountDeletionPolicy, SQLiteDataLifecycle
-from student_execution_os.notifications import SQLiteNotificationRepository
+from student_execution_os.reminders import ReminderStore
 from tests.ui_fixture import ACCOUNT, NOW, OTHER_ACCOUNT, seed_ui_database
 
 
@@ -101,7 +101,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
                 recon = SQLiteReconciliationRepository(repo)
                 connector = SQLiteConnectorRepository(repo, recon).get_state(ACCOUNT, "google-calendar-primary")
                 self.assertEqual(connector.checkpoint, "checkpoint-recovery-1")
-                self.assertGreaterEqual(len(SQLiteNotificationRepository(repo).list(ACCOUNT)), 1)
+                self.assertGreaterEqual(len(ReminderStore(repo).messages(ACCOUNT, since=NOW - timedelta(days=1))), 1)
 
                 gateway = SQLiteActionGateway(repo)
                 replay = gateway.execute_cancel(
@@ -147,7 +147,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             self.assertFalse(export.contract["includes_connector_or_oauth_secrets"])
             self.assertIn("source_records", export.tables)
             self.assertIn("connector_states", export.tables)
-            self.assertIn("notifications", export.tables)
+            self.assertIn("reminder_messages", export.tables)
             self.assertIn("recurring_templates", export.tables)
             self.assertNotIn("schema_migrations", export.tables)
 

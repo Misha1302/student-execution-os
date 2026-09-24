@@ -14,7 +14,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
-from student_execution_os.notifications import NotificationKind, SQLiteNotificationRepository
+from student_execution_os.reminders import ReminderStore
 from student_execution_os.recurrence import SQLiteRecurrenceRepository
 from student_execution_os.reconciliation import (
     ConflictProjection,
@@ -276,13 +276,9 @@ def seed_ui_database(path: str) -> None:
             attendance_policy=AttendancePolicy.REQUIRED,
             actor=ActorCategory.USER_UI,
         )
-        notifications = SQLiteNotificationRepository(repo)
-        notifications.schedule(
-            account_id=ACCOUNT,
-            suppression_key="fixture:discrete:start-soon",
-            kind=NotificationKind.LATEST_SAFE_START,
-            scheduled_for=NOW + timedelta(minutes=20),
-            domain_revision=repo.get_server_revision(ACCOUNT),
-            entity_ref="discrete",
-            group_key="task:discrete",
+        ReminderStore(repo).add_message(
+            ACCOUNT, stage="START_SOON", task_ids=["discrete"],
+            content={"title": "Soon", "body": "Start discrete", "deep_link": "/task/discrete",
+                     "actions": [{"id": "START", "label": "Start", "background": False}]},
+            dedupe_key="fixture:discrete:start-soon", now=NOW,
         )
