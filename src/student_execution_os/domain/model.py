@@ -198,6 +198,10 @@ class Task:
     estimated_total_effort_high_minutes: int | None = None
     remaining_effort_low_minutes: int | None = None
     remaining_effort_high_minutes: int | None = None
+    # Execution facts recorded by the user ("I started", "I worked on it"); they
+    # drive reminder follow-ups, never feasibility.
+    started_at: datetime | None = None
+    last_progress_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.obligation.kind is not ObligationKind.TASK:
@@ -249,6 +253,8 @@ class Task:
                 raise ValidationError("remaining effort high must be >= expected")
         require_aware(self.actionable_from, "actionable_from")
         require_aware(self.target_at, "target_at")
+        require_aware(self.started_at, "started_at")
+        require_aware(self.last_progress_at, "last_progress_at")
 
 
 class EventTimeSemantics(StrEnum):

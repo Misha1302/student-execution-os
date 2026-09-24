@@ -194,11 +194,12 @@ _DIRECT_ACCOUNT_TABLES = (
     "current_plans",
     "recurring_templates",
     "occurrence_overrides",
-    "notifications",
-    "notification_delivery_outbox",
+    "reminder_states",
+    "reminder_messages",
     "event_location_options",
     "planning_profiles",
-    "notification_preferences",
+    "reminder_preferences",
+    "client_operations",
     "assistant_batches",
     "assistant_apply_records",
     "attachment_blobs",
@@ -245,6 +246,7 @@ _ACCOUNT_CREDENTIAL_TABLES = (
 
 _GLOBAL_LIFECYCLE_TABLES = {
     "schema_migrations",
+    "worker_heartbeats",
     "account_deletion_tombstones",
 }
 
@@ -287,7 +289,7 @@ class SQLiteDataLifecycle:
     """Consistent SQLite backup/restore and explicit account export.
 
     Backups are full-database operator artifacts because cross-table provenance,
-    connector checkpoints, idempotency state and notification workflow must recover
+    connector checkpoints, idempotency state and reminder workflow must recover
     atomically. Account export is a separate user-data contract and is explicitly
     account-filtered rather than a database copy.
     """

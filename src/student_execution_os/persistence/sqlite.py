@@ -51,7 +51,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _UNSET = object()
 
 
@@ -77,6 +77,8 @@ class SQLiteCanonicalRepository:
         self.connection = sqlite3.connect(self.database)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA busy_timeout = 10000")
+        self._tx_depth = 0
         self._restrict_database_file_permissions()
 
     def _restrict_database_file_permissions(self) -> None:
@@ -96,6 +98,10 @@ class SQLiteCanonicalRepository:
         self.close()
 
     def initialize(self) -> None:
+        if self.database != ":memory:" and not self.database.startswith("file:"):
+            # API and notification worker share the file; WAL lets readers proceed
+            # while the other process writes.
+            self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
@@ -115,6 +121,7 @@ class SQLiteCanonicalRepository:
             (9, Path(__file__).with_name("migrations") / "009_notification_delivery_outbox.sql"),
             (10, Path(__file__).with_name("migrations") / "010_auth.sql"),
             (11, Path(__file__).with_name("migrations") / "011_daily_product.sql"),
+            (12, Path(__file__).with_name("migrations") / "012_execution_loop.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -136,14 +143,38 @@ class SQLiteCanonicalRepository:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction; nested use becomes a savepoint of the outer one.
+
+        Nesting lets a caller (the sync command log) make a repository mutation and
+        its own bookkeeping row commit together, while a failed inner mutation rolls
+        back only its own writes.
+        """
+        if self._tx_depth:
+            self._tx_depth += 1
+            savepoint = f"sp_{self._tx_depth}"
+            self.connection.execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield self.connection
+            except BaseException:
+                self.connection.execute(f"ROLLBACK TO {savepoint}")
+                self.connection.execute(f"RELEASE {savepoint}")
+                raise
+            else:
+                self.connection.execute(f"RELEASE {savepoint}")
+            finally:
+                self._tx_depth -= 1
+            return
+        self._tx_depth = 1
         try:
             self.connection.execute("BEGIN IMMEDIATE")
             yield self.connection
-        except Exception:
+        except BaseException:
             self.connection.rollback()
             raise
         else:
             self.connection.commit()
+        finally:
+            self._tx_depth = 0
 
     def create_account(self, account_id: str) -> None:
         if not account_id:
@@ -364,7 +395,7 @@ class SQLiteCanonicalRepository:
 
     def get_task(self, account_id: str, obligation_id: str) -> Task:
         row = self.connection.execute(
-            "SELECT o.*, t.estimated_total_effort_minutes,t.remaining_effort_minutes,t.splittable,t.min_chunk_minutes,t.max_chunk_minutes,t.actionable_from,t.cutoff_state,t.actual_cutoff_at,t.cutoff_boundary,t.cutoff_precision,t.target_at,t.estimated_total_effort_low_minutes,t.estimated_total_effort_high_minutes,t.remaining_effort_low_minutes,t.remaining_effort_high_minutes "
+            "SELECT o.*, t.estimated_total_effort_minutes,t.remaining_effort_minutes,t.splittable,t.min_chunk_minutes,t.max_chunk_minutes,t.actionable_from,t.cutoff_state,t.actual_cutoff_at,t.cutoff_boundary,t.cutoff_precision,t.target_at,t.estimated_total_effort_low_minutes,t.estimated_total_effort_high_minutes,t.remaining_effort_low_minutes,t.remaining_effort_high_minutes,t.started_at,t.last_progress_at "
             "FROM obligations o JOIN tasks t ON t.obligation_id=o.id WHERE o.account_id=? AND o.id=? AND o.kind='TASK'",
             (account_id, obligation_id),
         ).fetchone()
@@ -395,6 +426,8 @@ class SQLiteCanonicalRepository:
             estimated_total_effort_high_minutes=row["estimated_total_effort_high_minutes"],
             remaining_effort_low_minutes=row["remaining_effort_low_minutes"],
             remaining_effort_high_minutes=row["remaining_effort_high_minutes"],
+            started_at=_dt(row["started_at"]),
+            last_progress_at=_dt(row["last_progress_at"]),
         )
 
     def _obligation_from_row(self, row: sqlite3.Row) -> Obligation:
@@ -420,6 +453,10 @@ class SQLiteCanonicalRepository:
         obligation_id: str,
         expected_version: int,
         actor: ActorCategory,
+        title: str | object = _UNSET,
+        description: str | None | object = _UNSET,
+        importance: Importance | object = _UNSET,
+        category: ObligationCategory | object = _UNSET,
         target_at: datetime | None | object = _UNSET,
         actionable_from: datetime | None | object = _UNSET,
         actual_cutoff: HardCutoff | object = _UNSET,
@@ -430,10 +467,12 @@ class SQLiteCanonicalRepository:
         splittable: bool | object = _UNSET,
         min_chunk_minutes: int | None | object = _UNSET,
         max_chunk_minutes: int | None | object = _UNSET,
+        started_at: datetime | None | object = _UNSET,
+        last_progress_at: datetime | None | object = _UNSET,
         activate: bool = False,
     ) -> Task:
         current = self.get_task(account_id, obligation_id)
-        if actual_cutoff is not _UNSET:
+        if actual_cutoff is not _UNSET and actual_cutoff != current.actual_cutoff:
             reconciled = self.connection.execute(
                 "SELECT 1 FROM effective_fields WHERE account_id=? AND entity_ref=? AND field_path='actual_cutoff'",
                 (account_id, obligation_id),
@@ -446,10 +485,21 @@ class SQLiteCanonicalRepository:
             raise VersionConflict(
                 f"expected obligation version {expected_version}, current {current.obligation.version}"
             )
+        if title is not _UNSET:
+            title = str(title).strip()
+            if not title:
+                raise ValidationError("title is required")
         now = self.clock.now()
         next_status = LifecycleStatus.ACTIVE if activate else current.obligation.lifecycle_status
         new_obligation = replace(
-            current.obligation, lifecycle_status=next_status, updated_at=now, version=expected_version + 1
+            current.obligation,
+            lifecycle_status=next_status,
+            updated_at=now,
+            version=expected_version + 1,
+            title=current.obligation.title if title is _UNSET else title,
+            description=current.obligation.description if description is _UNSET else (description or None),
+            importance=current.obligation.importance if importance is _UNSET else Importance(importance),
+            category=current.obligation.category if category is _UNSET else ObligationCategory(category),
         )
         next_estimate = (
             current.estimated_total_effort_minutes
@@ -475,16 +525,23 @@ class SQLiteCanonicalRepository:
             estimated_total_effort_high_minutes=current.estimated_total_effort_high_minutes,
             remaining_effort_low_minutes=(current.remaining_effort_low_minutes if remaining_effort_low_minutes is _UNSET else remaining_effort_low_minutes),
             remaining_effort_high_minutes=(current.remaining_effort_high_minutes if remaining_effort_high_minutes is _UNSET else remaining_effort_high_minutes),
+            started_at=current.started_at if started_at is _UNSET else started_at,
+            last_progress_at=current.last_progress_at if last_progress_at is _UNSET else last_progress_at,
         )
         with self._tx() as conn:
             cur = conn.execute(
-                "UPDATE obligations SET lifecycle_status=?,updated_at=?, version=? WHERE account_id=? AND id=? AND version=?",
-                (next_status.value, _iso(now), expected_version + 1, account_id, obligation_id, expected_version),
+                "UPDATE obligations SET lifecycle_status=?,title=?,description=?,importance=?,category=?,updated_at=?, version=? "
+                "WHERE account_id=? AND id=? AND version=?",
+                (
+                    next_status.value, new_obligation.title, new_obligation.description,
+                    new_obligation.importance.value, new_obligation.category.value,
+                    _iso(now), expected_version + 1, account_id, obligation_id, expected_version,
+                ),
             )
             if cur.rowcount != 1:
                 raise VersionConflict("obligation version changed before commit")
             conn.execute(
-                "UPDATE tasks SET estimated_total_effort_minutes=?,remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,splittable=?,min_chunk_minutes=?,max_chunk_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=? WHERE obligation_id=?",
+                "UPDATE tasks SET estimated_total_effort_minutes=?,remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,splittable=?,min_chunk_minutes=?,max_chunk_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=?,started_at=?,last_progress_at=? WHERE obligation_id=?",
                 (
                     candidate.estimated_total_effort_minutes,
                     candidate.remaining_effort_minutes,
@@ -499,6 +556,8 @@ class SQLiteCanonicalRepository:
                     candidate.actual_cutoff.boundary.value if candidate.actual_cutoff.boundary else None,
                     candidate.actual_cutoff.precision.value if candidate.actual_cutoff.precision else None,
                     _iso(candidate.target_at),
+                    _iso(candidate.started_at),
+                    _iso(candidate.last_progress_at),
                     obligation_id,
                 ),
             )
@@ -600,22 +659,18 @@ class SQLiteCanonicalRepository:
             actor=actor,
             payload=audit_payload,
         )
-        if action == "CANCEL":
-            # Cancellation invalidates future notification workflow attributable
-            # only to this obligation without deleting delivered/history rows.
+        if action in ("COMPLETE", "CANCEL"):
+            # A finished or cancelled obligation has nothing left to remind about:
+            # undelivered reminders stop immediately and the reminder episode closes.
             conn.execute(
-                "UPDATE notifications SET state='SUPPRESSED',last_error='OBLIGATION_CANCELLED',"
-                "version=version+1,updated_at=? WHERE account_id=? AND entity_ref=? "
-                "AND state IN ('PENDING','SNOOZED','FAILED')",
-                (_iso(now), account_id, obligation_id),
+                "UPDATE reminder_messages SET delivery_state='CANCELLED',lease_owner=NULL,lease_expires_at=NULL,"
+                "last_error=? WHERE account_id=? AND delivery_state IN ('PENDING','LEASED') AND EXISTS ("
+                "SELECT 1 FROM json_each(reminder_messages.task_ids_json) WHERE value=?)",
+                ("TASK_COMPLETED" if action == "COMPLETE" else "TASK_CANCELLED", account_id, obligation_id),
             )
             conn.execute(
-                "UPDATE notification_delivery_outbox SET state='SUPPRESSED',lease_owner=NULL,"
-                "lease_expires_at=NULL,last_error='OBLIGATION_CANCELLED',version=version+1,updated_at=? "
-                "WHERE account_id=? AND notification_id IN ("
-                "SELECT id FROM notifications WHERE account_id=? AND entity_ref=?"
-                ") AND state NOT IN ('SENT','SUPPRESSED')",
-                (_iso(now), account_id, account_id, obligation_id),
+                "UPDATE reminder_states SET closed_reason=?,next_check_at=NULL,updated_at=? WHERE account_id=? AND task_id=?",
+                ("COMPLETED" if action == "COMPLETE" else "CANCELLED", _iso(now), account_id, obligation_id),
             )
         return candidate
 
