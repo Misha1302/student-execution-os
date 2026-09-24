@@ -7,7 +7,7 @@ from datetime import timedelta
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from tests.asgi_client import TestClient
 
 from student_execution_os.web.app import create_app
 from tests.ui_fixture import ACCOUNT, NOW, seed_ui_database
@@ -35,7 +35,7 @@ class WebApiTest(unittest.TestCase):
     def test_health_and_security_headers(self):
         response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["schema_version"], 10)
+        self.assertEqual(response.json()["schema_version"], 11)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
         self.assertEqual(response.headers["cache-control"], "no-store")

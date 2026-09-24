@@ -3,6 +3,30 @@ import { api } from '../api.js';
 import { t, code } from '../i18n.js';
 import { esc, icon, kv, empty, openSheet, toast, errorMessage, setBusy } from '../ui.js';
 import { mutate } from '../actions.js';
+import { speechToText } from '../native.js';
+
+async function interpretText(text) {
+  const preview = await api('/api/v1/assistant/interpret', { method: 'POST', body: { text } });
+  const actions = preview.actions || [];
+  const dialog = openSheet({
+    eyebrow: preview.provider,
+    title: t('ask.previewActions'),
+    body: `<div class="list">${actions.map((action) => `<article class="row"><span class="row-main"><strong>${esc(code('command', action.command))}</strong><small>${esc(JSON.stringify(action.payload))}</small>
+      ${action.unresolved_fields.length ? `<small>${esc(t('ask.unresolved', { fields: action.unresolved_fields.join(', ') }))}</small>` : ''}</span></article>`).join('')}</div>
+      <p class="help">${esc(t('ask.previewNoMutation'))}</p>`,
+    actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
+      <button type="button" class="button primary" data-apply ${actions.some((action) => action.unresolved_fields.length) ? 'disabled' : ''}>${esc(t('ask.applyActions'))}</button>`,
+  });
+  dialog.querySelector('[data-apply]')?.addEventListener('click', async (event) => {
+    setBusy(event.currentTarget, true);
+    await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body: {
+      batch_id: preview.batch_id, action_ids: actions.map((action) => action.id),
+      confirmed_action_ids: actions.filter((action) => action.requires_confirmation).map((action) => action.id),
+      idempotency_key: `assistant-${preview.batch_id}`,
+    } }), { success: t('ask.executed') });
+    dialog.close('applied');
+  });
+}
 
 async function previewCancel(target) {
   let preview;
@@ -63,6 +87,13 @@ export default {
           <p>${esc(caps.live_llm_provider ? t('ask.live') : t('ask.noProvider'))}</p></div>
       </section>
       <section class="section">
+        <div class="card form">
+          <label class="field"><span>${esc(t('ask.naturalInput'))}</span><textarea id="assistant-input" rows="3" placeholder="${esc(t('ask.naturalPlaceholder'))}"></textarea></label>
+          <div class="button-row"><button class="button primary" data-action="assistant-interpret">${esc(t('ask.interpret'))}</button>
+          <button class="button ghost" data-action="assistant-voice">${esc(t('ask.voice'))}</button></div>
+        </div>
+      </section>
+      <section class="section">
         <div class="section-head"><h2>${esc(t('ask.explainTitle'))}</h2></div>
         <div class="list">
           <button class="row" data-nav="plan"><span class="row-icon tone-accent">${icon('question')}</span><span class="row-main"><strong>${esc(t('ask.q1'))}</strong><small>${esc(t('ask.a1'))}</small></span>${icon('chevron')}</button>
@@ -81,6 +112,18 @@ export default {
       </section>`;
   },
   actions: {
+    async 'assistant-interpret'() {
+      const text = document.getElementById('assistant-input')?.value.trim();
+      if (text) await interpretText(text);
+    },
+    async 'assistant-voice'() {
+      try {
+        const text = await speechToText();
+        const input = document.getElementById('assistant-input');
+        if (input) input.value = text;
+        if (text) await interpretText(text);
+      } catch (error) { toast(error.message, { error: true }); }
+    },
     'agent-preview'(_el, ctx) {
       const index = Number(document.getElementById('agent-target')?.value);
       const target = ctx.view._active?.[index];

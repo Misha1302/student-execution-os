@@ -51,6 +51,8 @@ class BrowserUiTest(unittest.TestCase):
             "/api/v1/notifications": service.notifications(),
             "/api/v1/evidence": service.evidence(),
             "/api/v1/places": service.places(),
+            "/api/v1/outlook?range=week": service.outlook("week", None),
+            "/api/v1/outlook?range=month": service.outlook("month", None),
             "/api/v1/settings/diagnostics": service.diagnostics(),
             "/api/v1/account/deletion-policy": service.account_deletion_policy(),
             "/api/v1/ask/capabilities": {
@@ -103,16 +105,21 @@ class BrowserUiTest(unittest.TestCase):
                 "expected_version": payload["expected_version"], "requires_confirmation": True,
                 "scope": "one obligation", "effect": "Lifecycle becomes CANCELLED.",
             })
+        elif path.startswith("/api/v1/attachments?") and request.method == "GET":
+            reply(200, [])
         elif path in self.responses and request.method == "GET":
             reply(200, self.responses[path])
         else:
             reply(404, {"error": {"code": "NOT_FOUND", "message": "not mocked"}})
 
-    def _open(self, *, width=390, height=844, locale="en", hash_="") -> object:
+    def _open(self, *, width=390, height=844, locale="en", theme="system", hash_="") -> object:
         page = self.browser.new_page(viewport={"width": width, "height": height}, reduced_motion="reduce")
         self.page_errors: list[str] = []
         page.on("pageerror", lambda e: self.page_errors.append(str(e)))
-        page.add_init_script(f"try {{ localStorage.setItem('seos.locale', '{locale}') }} catch (e) {{}}")
+        page.add_init_script(
+            f"try {{ localStorage.setItem('seos.locale', '{locale}'); "
+            f"localStorage.setItem('seos.theme', '{theme}') }} catch (e) {{}}"
+        )
         page.route(ORIGIN + "/**", self._handler)
         page.goto(f"{ORIGIN}/{hash_}")
         return page
@@ -127,7 +134,7 @@ class BrowserUiTest(unittest.TestCase):
 
     def _go(self, page, view: str) -> None:
         page.evaluate(f"location.hash = '#/{view}'")
-        self._ready(page, view)
+        self._ready(page, view.split("?", 1)[0])
 
     def _screenshot(self, page, name: str) -> None:
         root = os.environ.get("UI_QA_SCREENSHOT_DIR")
@@ -307,6 +314,48 @@ class BrowserUiTest(unittest.TestCase):
         page = self._open(width=390, height=844, hash_="#/tasks")
         self._ready(page, "tasks")
         self._assert_no_horizontal_scroll(page, 390)
+        page.close()
+
+    def test_responsive_matrix_week_month_and_dark_theme(self):
+        for width, height, locale, theme in (
+            (360, 800, "ru", "dark"),
+            (768, 1024, "en", "light"),
+        ):
+            page = self._open(width=width, height=height, locale=locale, theme=theme)
+            self._ready(page, "today")
+            self._assert_no_horizontal_scroll(page, width)
+            self.assertEqual(page.locator("html").get_attribute("data-theme"), theme)
+            self._go(page, "plan?step=week")
+            self._ready(page, "plan")
+            self.assertGreaterEqual(page.locator(".row").count(), 7)
+            self._assert_no_horizontal_scroll(page, width)
+            self._go(page, "plan?step=month")
+            self._ready(page, "plan")
+            self.assertGreaterEqual(page.locator(".row").count(), 42)
+            self._assert_no_horizontal_scroll(page, width)
+            self.assertEqual(self.page_errors, [])
+            page.close()
+
+    def test_title_only_quick_capture_keeps_effort_unknown_and_non_splittable(self):
+        page = self._open(width=360, height=800, locale="ru")
+        self._ready(page, "today")
+        self.overrides[("POST", "/api/v1/tasks")] = (
+            201, {"id": "draft", "title": "Уточнить тему", "status": "DRAFT", "version": 1},
+        )
+        page.locator(".fab").click()
+        page.locator('[data-choice="task"]').click()
+        title = page.locator('[data-f="title"]')
+        title.fill("Уточнить тему")
+        self.assertTrue(title.evaluate("el => el === document.activeElement"))
+        page.locator("dialog.sheet[open] [data-save]").click()
+        page.locator(".toast").first.wait_for()
+        path, payload = self.posts[-1]
+        self.assertEqual(path, "/api/v1/tasks")
+        self.assertIsNone(payload["estimated_total_effort_minutes"])
+        self.assertIsNone(payload["remaining_effort_minutes"])
+        self.assertFalse(payload["splittable"])
+        self.assertEqual(payload["actual_cutoff"], {"state": "UNKNOWN"})
+        self._assert_no_horizontal_scroll(page, 360)
         page.close()
 
         self.responses["/api/v1/tasks"] = []

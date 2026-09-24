@@ -46,6 +46,11 @@ class AuthConfig:
     registration_open: bool = True
     session_ttl: timedelta = timedelta(days=30)
     cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
+    password_scrypt_n: int = _SCRYPT_N
+
+    def __post_init__(self) -> None:
+        if self.password_scrypt_n < 2**10 or self.password_scrypt_n & (self.password_scrypt_n - 1):
+            raise ValueError("password_scrypt_n must be a power of two >= 1024")
 
 
 @dataclass(frozen=True)
@@ -77,13 +82,13 @@ def normalize_login(login: str) -> str:
     return value
 
 
-def hash_password(password: str) -> str:
+def hash_password(password: str, *, n: int = _SCRYPT_N) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.scrypt(
-        password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_LEN
+        password.encode("utf-8"), salt=salt, n=n, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_LEN
     )
     b64 = lambda raw: base64.b64encode(raw).decode("ascii")
-    return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(digest)}"
+    return f"scrypt${n}${_SCRYPT_R}${_SCRYPT_P}${b64(salt)}${b64(digest)}"
 
 
 def verify_password(password: str, encoded: str) -> bool:
@@ -183,7 +188,7 @@ class SQLiteAuthStore:
         self.ip_limiter.check(client_ip)
         self.ip_limiter.hit(client_ip)
         login = normalize_login(login)
-        password_hash = hash_password(_check_password(password))
+        password_hash = hash_password(_check_password(password), n=self.config.password_scrypt_n)
         account_id = str(uuid4())
         user_id = str(uuid4())
         with self._repo() as repo:

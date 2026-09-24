@@ -26,6 +26,7 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
             "minute_grid": policy.minute_grid,
             "start_soon_lead_minutes": policy.start_soon_lead_minutes,
             "max_next_actions": policy.max_next_actions,
+            "optional_event_policy": policy.optional_event_policy,
         },
         "tasks": [
             {
@@ -62,6 +63,16 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
                 "origin_place_id": e.location_effect.origin_place_id,
                 "destination_place_id": e.location_effect.destination_place_id,
                 "arrival_requirement_minutes": e.arrival_requirement_minutes,
+                "selected_location_option_id": e.selected_location_option_id,
+                "location_options": [
+                    {
+                        "id": option.id,
+                        "kind": option.effect.kind.value,
+                        "origin_place_id": option.effect.origin_place_id,
+                        "destination_place_id": option.effect.destination_place_id,
+                    }
+                    for option in e.location_options
+                ],
             }
             for e in events
         ],

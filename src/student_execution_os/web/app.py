@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
+import logging
+import time
+import mimetypes
+from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from student_execution_os import __version__
@@ -98,15 +103,15 @@ def create_app(
             now=now,
         )
 
-    def current_session(request: Request) -> Session:
+    async def current_session(request: Request) -> Session:
         if auth_store is None:
             raise Unauthenticated("this server is bound to one account and has no sessions")
         return auth_store.authenticate(_bearer(request))
 
-    def current_service(request: Request) -> UiService:
+    async def current_service(request: Request) -> UiService:
         if bound_service is not None:
             return bound_service
-        session = current_session(request)
+        session = await current_session(request)
         return UiService(
             database,
             account_id=session.account_id,
@@ -136,7 +141,20 @@ def create_app(
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        supplied = request.headers.get("x-correlation-id", "")
+        correlation_id = supplied if 0 < len(supplied) <= 128 and supplied.isascii() else str(uuid4())
+        started = time.perf_counter()
         response = await call_next(request)
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        logging.getLogger("student_execution_os.requests").info(json.dumps({
+            "correlation_id": correlation_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "latency_ms": elapsed_ms,
+            "metric": "auth_latency" if request.url.path.startswith("/api/v1/auth/") else "http_latency",
+        }, sort_keys=True))
+        response.headers["X-Correlation-ID"] = correlation_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
@@ -161,7 +179,7 @@ def create_app(
         return _error(exc)
 
     @app.get("/api/v1/health")
-    def health() -> dict[str, Any]:
+    async def health() -> dict[str, Any]:
         with SQLiteCanonicalRepository(database) as repo:
             repo.initialize()
             schema_version = repo.schema_version()
@@ -190,7 +208,7 @@ def create_app(
         return auth_store
 
     @app.post("/api/v1/auth/register", status_code=201)
-    def register(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    async def register(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         store = _require_auth_store()
         return _issued(store.register(
             str(payload.get("login", "")), str(payload.get("password", "")),
@@ -198,7 +216,7 @@ def create_app(
         ))
 
     @app.post("/api/v1/auth/login")
-    def login(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    async def login(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         store = _require_auth_store()
         return _issued(store.login(
             str(payload.get("login", "")), str(payload.get("password", "")),
@@ -206,7 +224,7 @@ def create_app(
         ))
 
     @app.post("/api/v1/auth/logout")
-    def logout(request: Request) -> dict[str, Any]:
+    async def logout(request: Request) -> dict[str, Any]:
         store = _require_auth_store()
         token = _bearer(request)
         if token:
@@ -214,110 +232,202 @@ def create_app(
         return {"status": "logged_out"}
 
     @app.get("/api/v1/auth/me")
-    def me(request: Request) -> dict[str, Any]:
+    async def me(request: Request) -> dict[str, Any]:
         if bound_service is not None:
             return {"login": bound_service.principal.principal_id, "account_id": bound_service.account_id, "auth_mode": "bound"}
-        session = current_session(request)
+        session = await current_session(request)
         return {"login": session.login, "account_id": session.account_id, "auth_mode": "session"}
 
     @app.get("/api/v1/today")
-    def today(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def today(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.today()
 
     @app.get("/api/v1/plan/current")
-    def current_plan(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def current_plan(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.plan()
 
+    @app.get("/api/v1/outlook")
+    async def outlook(range: str = "week", anchor: str | None = None, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.outlook(range, anchor)
+
+    @app.get("/api/v1/settings/planning-profile")
+    async def planning_profile(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.planning_profile()
+
+    @app.patch("/api/v1/settings/planning-profile")
+    async def update_planning_profile(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.update_planning_profile(payload)
+
     @app.get("/api/v1/tasks")
-    def list_tasks(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+    async def list_tasks(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.tasks()
 
     @app.post("/api/v1/tasks", status_code=201)
-    def create_task(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def create_task(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.create_task(payload)
 
     @app.patch("/api/v1/tasks/{task_id}")
-    def update_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def update_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.update_task(task_id, payload)
 
+    @app.post("/api/v1/tasks/{task_id}/activate")
+    async def activate_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.activate_task(task_id, payload)
+
+    @app.post("/api/v1/tasks/{task_id}/defer")
+    async def defer_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.defer_task(task_id, payload)
+
+    @app.post("/api/v1/tasks/{task_id}/start")
+    async def start_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.start_task(task_id, payload)
+
+    @app.post("/api/v1/attachments", status_code=201)
+    async def upload_attachment(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.upload_attachment(payload)
+
+    @app.get("/api/v1/attachments")
+    async def list_attachments(owner_kind: str, owner_id: str, service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.attachments(owner_kind, owner_id)
+
+    @app.get("/api/v1/attachments/{attachment_id}/download")
+    async def download_attachment(attachment_id: str, service: UiService = Depends(current_service)) -> Response:
+        from urllib.parse import quote
+        metadata, content = service.download_attachment(attachment_id)
+        mime = metadata["mime_type"]
+        if mime in {"text/html", "application/xhtml+xml", "image/svg+xml"}:
+            mime = "application/octet-stream"
+        return Response(
+            content=content, media_type=mime,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(metadata['original_name'])}",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+            },
+        )
+
+    @app.post("/api/v1/attachment-links/{link_id}/unlink")
+    async def unlink_attachment(link_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.unlink_attachment(link_id, payload)
+
+    @app.get("/api/v1/tasks/saved-views")
+    async def list_saved_views(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.saved_views()
+
+    @app.post("/api/v1/tasks/saved-views", status_code=201)
+    async def create_saved_view(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.create_saved_view(payload)
+
+    @app.patch("/api/v1/tasks/saved-views/{view_id}")
+    async def update_saved_view(view_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.update_saved_view(view_id, payload)
+
+    @app.delete("/api/v1/tasks/saved-views/{view_id}")
+    async def delete_saved_view(view_id: str, expected_version: int, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.delete_saved_view(view_id, expected_version)
+
     @app.post("/api/v1/obligations/{obligation_id}/{action}")
-    def lifecycle(obligation_id: str, action: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def lifecycle(obligation_id: str, action: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.lifecycle(obligation_id, action, int(payload["expected_version"]))
 
     @app.get("/api/v1/events")
-    def list_events(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+    async def list_events(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.events()
 
     @app.get("/api/v1/calendar")
-    def calendar(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def calendar(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.calendar()
 
     @app.post("/api/v1/recurrence/templates", status_code=201)
-    def create_recurring_template(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def create_recurring_template(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.create_recurring_template(payload)
 
     @app.post("/api/v1/recurrence/templates/{template_id}/occurrences/{original_recurrence_id}/override")
-    def override_recurring_occurrence(
+    async def override_recurring_occurrence(
         template_id: str, original_recurrence_id: str, payload: dict[str, Any] = Body(...),
         service: UiService = Depends(current_service),
     ) -> dict[str, Any]:
         return service.override_recurring_occurrence(template_id, original_recurrence_id, payload)
 
     @app.post("/api/v1/recurrence/templates/{template_id}/split")
-    def split_recurring_series(template_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def split_recurring_series(template_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.split_recurring_series(template_id, payload)
 
     @app.get("/api/v1/notifications")
-    def notifications(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+    async def notifications(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.notifications()
 
+    @app.get("/api/v1/notification-preferences")
+    async def notification_preferences(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.notification_preferences()
+
+    @app.patch("/api/v1/notification-preferences")
+    async def update_notification_preferences(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.update_notification_preferences(payload)
+
+    @app.get("/api/v1/mobile/devices")
+    async def list_mobile_devices(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.devices()
+
+    @app.post("/api/v1/mobile/devices", status_code=201)
+    async def register_mobile_device(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.register_device(payload)
+
+    @app.post("/api/v1/mobile/devices/{device_id}/revoke")
+    async def revoke_mobile_device(device_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.revoke_device(device_id, payload)
+
     @app.post("/api/v1/notifications/{notification_id}/snooze")
-    def snooze_notification(notification_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def snooze_notification(notification_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.snooze_notification(notification_id, payload)
 
     @app.post("/api/v1/events", status_code=201)
-    def create_event(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def create_event(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.create_event(payload)
 
     @app.patch("/api/v1/events/{event_id}")
-    def update_event(event_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def update_event(event_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.update_event(event_id, payload)
 
+    @app.post("/api/v1/events/{event_id}/location-selection")
+    async def select_event_location(event_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.select_event_location(event_id, payload)
+
     @app.get("/api/v1/evidence")
-    def evidence(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def evidence(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.evidence()
 
     @app.get("/api/v1/places")
-    def places(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def places(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.places()
 
     @app.get("/api/v1/settings/diagnostics")
-    def diagnostics(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def diagnostics(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.diagnostics()
 
     @app.get("/api/v1/account/export")
-    def account_export(service: UiService = Depends(current_service)) -> JSONResponse:
+    async def account_export(service: UiService = Depends(current_service)) -> JSONResponse:
         return JSONResponse(
             content=service.account_export(),
             headers={"Content-Disposition": 'attachment; filename="student-execution-os-export.json"'},
         )
 
     @app.get("/api/v1/account/deletion-policy")
-    def account_deletion_policy(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def account_deletion_policy(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.account_deletion_policy()
 
     @app.post("/api/v1/account/delete")
-    def account_delete(
+    async def account_delete(
         request: Request, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)
     ) -> dict[str, Any]:
         if auth_store is not None and "confirm_login" in payload:
-            session = current_session(request)
+            session = await current_session(request)
             if str(payload["confirm_login"]).strip().lower() == session.login:
                 payload = {**payload, "confirm_account_id": session.account_id}
         return service.delete_account(payload)
 
     @app.get("/api/v1/ask/capabilities")
-    def ask_capabilities() -> dict[str, Any]:
+    async def ask_capabilities() -> dict[str, Any]:
         return {
             "live_llm_provider": False,
             "explanations": True,
@@ -328,31 +438,47 @@ def create_app(
             ),
         }
 
+    @app.post("/api/v1/assistant/interpret")
+    async def assistant_interpret(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.assistant_interpret(payload)
+
+    @app.post("/api/v1/assistant/apply")
+    async def assistant_apply(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.assistant_apply(payload)
+
     @app.post("/api/v1/agent/cancel/preview")
-    def agent_cancel_preview(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def agent_cancel_preview(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.agent_cancel_preview(
             str(payload["obligation_id"]),
             int(payload["expected_version"]),
         )
 
     @app.post("/api/v1/agent/cancel/confirm-execute")
-    def agent_cancel_confirm_execute(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+    async def agent_cancel_confirm_execute(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.agent_cancel_confirm_execute(
             str(payload["intent_id"]),
             payload.get("idempotency_key"),
         )
 
     static_root = Path(__file__).with_name("static")
-    app.mount("/assets", StaticFiles(directory=static_root), name="assets")
+    @app.get("/assets/{asset_path:path}")
+    async def asset(asset_path: str):
+        target = (static_root / asset_path).resolve()
+        if static_root.resolve() not in target.parents or not target.is_file():
+            return Response(status_code=404)
+        return Response(
+            target.read_bytes(),
+            media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+        )
 
     @app.get("/")
-    def index():
-        return FileResponse(static_root / "index.html")
+    async def index():
+        return Response((static_root / "index.html").read_bytes(), media_type="text/html")
 
     @app.get("/{path:path}")
-    def spa_fallback(path: str):
+    async def spa_fallback(path: str):
         if path.startswith("api/"):
             return JSONResponse(status_code=404, content={"error": {"code": "NOT_FOUND", "message": "API route not found", "retryable": False}})
-        return FileResponse(static_root / "index.html")
+        return Response((static_root / "index.html").read_bytes(), media_type="text/html")
 
     return app

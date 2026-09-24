@@ -19,3 +19,15 @@ services:
     volumes:
       - /var/lib/student-execution-os:/data
       - /var/backups/student-execution-os:/backups
+
+  notification-worker:
+    image: student-execution-os:${SEOS_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - api
+    command: ["python", "-m", "student_execution_os.notifications.worker", "--database", "/data/student-execution-os.db"]
+    environment:
+      SEOS_FCM_ENDPOINT: ${SEOS_FCM_ENDPOINT:-}
+      SEOS_FCM_BEARER_TOKEN: ${SEOS_FCM_BEARER_TOKEN:-}
+    volumes:
+      - /var/lib/student-execution-os:/data

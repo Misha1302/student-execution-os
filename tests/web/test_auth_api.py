@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from tests.asgi_client import TestClient
 
 from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.web.app import create_app
@@ -29,9 +29,11 @@ class AuthApiTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = str(Path(self.tmp.name) / "auth.sqlite")
         self.clock = Clock()
-        self.client = self._client(AuthConfig())
+        self.client = self._client(AuthConfig(password_scrypt_n=2**10))
+        self.client.__enter__()
 
     def tearDown(self) -> None:
+        self.client.__exit__(None, None, None)
         self.tmp.cleanup()
 
     def _client(self, config: AuthConfig) -> TestClient:
@@ -167,7 +169,9 @@ class AuthApiTest(unittest.TestCase):
         self.assertNotIn(issued["token"], str(raw))
 
     def test_closed_registration(self):
-        self.client = self._client(AuthConfig(registration_open=False))
+        self.client.__exit__(None, None, None)
+        self.client = self._client(AuthConfig(registration_open=False, password_scrypt_n=2**10))
+        self.client.__enter__()
         self.assertFalse(self.client.get("/api/v1/health").json()["registration_open"])
         response = self.client.post("/api/v1/auth/register", json={"login": "alice", "password": "long enough"})
         self.assertEqual(response.status_code, 401)

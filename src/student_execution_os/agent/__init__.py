@@ -1,6 +1,7 @@
 """LLM extraction and authenticated action boundary for Pass 6."""
 
 from .action import SQLiteActionGateway
+from .assistant import DeterministicAssistantParser, SQLiteAssistantService
 from .extraction import ExtractionIngestor, ToollessExtractionContext
 from .model import (
     ActionIntent,
@@ -31,6 +32,8 @@ __all__ = [
     "IntentStrength",
     "PrivatePlace",
     "SQLiteActionGateway",
+    "SQLiteAssistantService",
+    "DeterministicAssistantParser",
     "ToollessExtractionContext",
     "ToollessExtractionModel",
 ]

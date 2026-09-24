@@ -29,8 +29,8 @@ class MigrationV10IntegrationTests(unittest.TestCase):
 
             with SQLiteCanonicalRepository(db, clock=FrozenClock(BASE)) as repo:
                 repo.initialize()
-                self.assertEqual(SCHEMA_VERSION, 10)
-                self.assertEqual(repo.schema_version(), 10)
+                self.assertEqual(SCHEMA_VERSION, 11)
+                self.assertEqual(repo.schema_version(), 11)
                 self.assertEqual(repo.get_server_revision("legacy"), 3)
                 tables = {
                     r[0] for r in repo.connection.execute(

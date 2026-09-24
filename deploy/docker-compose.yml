@@ -12,10 +12,26 @@ services:
       SEOS_PROXY_HEADERS: "1"
       SEOS_FORWARDED_ALLOW_IPS: "*"
       SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
+      SEOS_FCM_ENDPOINT: ${SEOS_FCM_ENDPOINT:-}
+      SEOS_FCM_BEARER_TOKEN: ${SEOS_FCM_BEARER_TOKEN:-}
     volumes:
       - seos-data:/data
     expose:
       - "8765"
+
+  notification-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    command: ["python", "-m", "student_execution_os.notifications.worker", "--database", "/data/student-execution-os.db"]
+    environment:
+      SEOS_FCM_ENDPOINT: ${SEOS_FCM_ENDPOINT:-}
+      SEOS_FCM_BEARER_TOKEN: ${SEOS_FCM_BEARER_TOKEN:-}
+    volumes:
+      - seos-data:/data
 
   caddy:
     image: caddy:2

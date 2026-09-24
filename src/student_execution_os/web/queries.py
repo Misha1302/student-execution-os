@@ -4,6 +4,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from student_execution_os.agent import (
     AuthenticatedPrincipal,
     IntentStrength,
     SQLiteActionGateway,
+    SQLiteAssistantService,
 )
 from student_execution_os.connectors.model import ConnectorHealth
 from student_execution_os.domain.clock import FrozenClock
@@ -24,6 +26,7 @@ from student_execution_os.domain.model import (
     CutoffBoundary,
     CutoffState,
     EventTimeSemantics,
+    EventLocationOption,
     HardCutoff,
     Importance,
     LocationEffect,
@@ -32,14 +35,28 @@ from student_execution_os.domain.model import (
     TemporalPrecision,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.persistence.product import SQLiteAttachmentRepository, SQLiteSavedViewRepository
+from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 from student_execution_os.reliability import SQLiteDataLifecycle
-from student_execution_os.notifications import SQLiteNotificationRepository
+from student_execution_os.notifications import (
+    FCMConfig,
+    NotificationPolicyEngine,
+    SQLiteNotificationPreferencesRepository,
+    SQLiteNotificationRepository,
+    register_device,
+)
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     PlanningService,
     SQLitePlanStore,
     SQLitePlanningStateSource,
     build_planning_snapshot,
+)
+from student_execution_os.planning.model import PlanningPolicy
+from student_execution_os.planning.outlook import (
+    SQLitePlanningProfileRepository,
+    overlap_minutes,
+    planning_intervals,
 )
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
@@ -137,13 +154,135 @@ class UiService:
         now = self._now()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("UiService clock must be timezone-aware")
+        profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
         return build_planning_snapshot(
             SQLitePlanningStateSource(repo),
             account_id=self.account_id,
             analysis_horizon_start=now,
             analysis_horizon_end=now + timedelta(hours=hours),
             plan_output_horizon_end=now + timedelta(hours=min(hours, 36)),
+            policy=PlanningPolicy(
+                version=f"daily-product-v1:{profile.version}:{profile.optional_event_policy}",
+                optional_event_policy=profile.optional_event_policy,
+            ),
         )
+
+    def planning_profile(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLitePlanningProfileRepository(repo).get(self.account_id).payload()
+
+    def update_planning_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLitePlanningProfileRepository(repo).update(self.account_id, payload).payload()
+
+    @staticmethod
+    def _merged_minutes(intervals: list[tuple[datetime, datetime]]) -> int:
+        if not intervals:
+            return 0
+        ordered = sorted(intervals)
+        merged: list[list[datetime]] = []
+        for start, end in ordered:
+            if not merged or start >= merged[-1][1]:
+                merged.append([start, end])
+            elif end > merged[-1][1]:
+                merged[-1][1] = end
+        return sum(int((end - start).total_seconds() // 60) for start, end in merged)
+
+    def outlook(self, range_name: str, anchor: str | None) -> dict[str, Any]:
+        if range_name not in {"week", "month"}:
+            raise ValueError("outlook range must be week or month")
+        with self._repo() as repo:
+            profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            from zoneinfo import ZoneInfo
+            local_now = self._now().astimezone(ZoneInfo(profile.timezone_name))
+            anchor_date = datetime.fromisoformat(anchor).date() if anchor else local_now.date()
+            if range_name == "week":
+                delta = (anchor_date.isoweekday() - profile.first_day_of_week) % 7
+                start_date = anchor_date - timedelta(days=delta)
+                days = 7
+            else:
+                month_start = anchor_date.replace(day=1)
+                delta = (month_start.isoweekday() - profile.first_day_of_week) % 7
+                start_date = month_start - timedelta(days=delta)
+                days = 42
+            zone = ZoneInfo(profile.timezone_name)
+            horizon_start = datetime.combine(start_date, datetime.min.time(), zone).astimezone(timezone.utc)
+            horizon_end = datetime.combine(start_date + timedelta(days=days), datetime.min.time(), zone).astimezone(timezone.utc)
+            snapshot = build_planning_snapshot(
+                SQLitePlanningStateSource(repo), account_id=self.account_id,
+                analysis_horizon_start=horizon_start, analysis_horizon_end=horizon_end,
+                plan_output_horizon_start=horizon_start, plan_output_horizon_end=horizon_end,
+                policy=PlanningPolicy(
+                    version=f"outlook-v1:{profile.version}:{profile.optional_event_policy}",
+                    optional_event_policy=profile.optional_event_policy,
+                ),
+            )
+            outcome = PlanningService().build(snapshot, now=self._now())
+            windows = planning_intervals(profile, start_date, days)
+            blocks = list(outcome.plan.blocks)
+            constraints = list(snapshot.constraints)
+            risks = {risk.task_id: risk for risk in outcome.risks}
+            day_rows = []
+            for index in range(days):
+                day = start_date + timedelta(days=index)
+                day_windows = [window for window in windows if window[0].astimezone(zone).date() == day]
+                capacity = sum(int((end - start).total_seconds() // 60) for start, end in day_windows)
+                occupied_parts: list[tuple[datetime, datetime]] = []
+                work_parts: list[tuple[datetime, datetime]] = []
+                occupancy = {"WORK": 0, "EVENT": 0, "TRAVEL": 0, "BUFFER": 0, "CONSTRAINT": 0}
+                for block in blocks:
+                    interval = (block.starts_at, block.ends_at)
+                    clipped = [(max(interval[0], w[0]), min(interval[1], w[1])) for w in day_windows if overlap_minutes(interval, w)]
+                    minutes = sum(int((end - start).total_seconds() // 60) for start, end in clipped)
+                    if not minutes:
+                        continue
+                    key = {"WORK": "WORK", "EVENT_PROJECTION": "EVENT", "TRAVEL_TRANSITION": "TRAVEL", "BUFFER": "BUFFER"}[block.type.value]
+                    occupancy[key] += minutes
+                    occupied_parts.extend(clipped)
+                    if key == "WORK":
+                        work_parts.extend(clipped)
+                for constraint in constraints:
+                    interval = (constraint.interval.starts_at, constraint.interval.ends_at)
+                    clipped = [(max(interval[0], w[0]), min(interval[1], w[1])) for w in day_windows if overlap_minutes(interval, w)]
+                    occupancy["CONSTRAINT"] += sum(int((end - start).total_seconds() // 60) for start, end in clipped)
+                    occupied_parts.extend(clipped)
+                deadlines = [
+                    {"task_id": task.obligation.id, "title": task.obligation.title, "at": _jsonify(task.actual_cutoff.at)}
+                    for task in snapshot.tasks
+                    if task.actual_cutoff.at is not None and task.actual_cutoff.at.astimezone(zone).date() == day
+                ]
+                day_rows.append({
+                    "date": day.isoformat(), "planning_capacity_minutes": capacity,
+                    "occupancy": occupancy, "planned_load_minutes": self._merged_minutes(work_parts),
+                    "free_capacity_minutes": max(0, capacity - self._merged_minutes(occupied_parts)),
+                    "shortfall_minutes": max(0, self._merged_minutes(occupied_parts) - capacity),
+                    "deadlines": deadlines,
+                    "risk": [
+                        {"task_id": task_id, "state": risk.state.value, "latest_safe_start": _jsonify(risk.latest_safe_start)}
+                        for task_id, risk in risks.items()
+                        if risk.latest_safe_start is not None and risk.latest_safe_start.astimezone(zone).date() == day
+                    ],
+                    "provisional": outcome.plan.feasibility_status.value == "UNKNOWN",
+                })
+            weeks = []
+            if range_name == "month":
+                for offset in range(0, 42, 7):
+                    chunk = day_rows[offset:offset + 7]
+                    weeks.append({
+                        "starts_on": chunk[0]["date"],
+                        "planning_capacity_minutes": sum(row["planning_capacity_minutes"] for row in chunk),
+                        "planned_load_minutes": sum(row["planned_load_minutes"] for row in chunk),
+                        "free_capacity_minutes": sum(row["free_capacity_minutes"] for row in chunk),
+                        "risk_days": [row["date"] for row in chunk if row["risk"] or row["shortfall_minutes"]],
+                    })
+            return {
+                "range": range_name, "anchor": anchor_date.isoformat(),
+                "horizon_start": _jsonify(horizon_start), "horizon_end": _jsonify(horizon_end),
+                "analysis_horizon_end": _jsonify(snapshot.analysis_horizon_end),
+                "profile": profile.payload(), "feasibility_status": outcome.plan.feasibility_status.value,
+                "uncertainty_reasons": list(outcome.plan.explanations) if outcome.plan.feasibility_status.value == "UNKNOWN" else [],
+                "days": day_rows, "weeks": weeks,
+            }
 
     @staticmethod
     def _task(task, *, risk=None, effective=None) -> dict[str, Any]:
@@ -211,17 +350,49 @@ class UiService:
                 "origin_place_id": event.location_effect.origin_place_id,
                 "destination_place_id": event.location_effect.destination_place_id,
             },
+            "location_options": [{
+                "id": option.id, "label": option.label,
+                "location_effect": {"kind": option.effect.kind.value,
+                                    "origin_place_id": option.effect.origin_place_id,
+                                    "destination_place_id": option.effect.destination_place_id},
+            } for option in event.location_options],
+            "selected_location_option_id": event.selected_location_option_id,
             "arrival_requirement_minutes": event.arrival_requirement_minutes,
             "canonical": True,
         }
 
     def today(self) -> dict[str, Any]:
         with self._repo() as repo:
+            planning_started = perf_counter()
             snapshot = self._snapshot(repo, hours=36)
             store = SQLitePlanStore(repo)
             previous = store.get_latest(self.account_id)
             outcome = PlanningService().build(snapshot, now=self._now(), previous_plan=previous)
             store.save(outcome.plan)
+            notifications = NotificationPolicyEngine(repo).reconcile(self.account_id, snapshot, outcome)
+            metrics = SQLiteOperationalMetrics(repo)
+            metrics.record(
+                "plan_run_latency_ms",
+                (perf_counter() - planning_started) * 1000,
+                account_id=self.account_id,
+                correlation_id=outcome.plan.id,
+                dimensions={"status": outcome.plan.feasibility_status.value, "surface": "today"},
+            )
+            metrics.record(
+                "notification_reconcile_count",
+                len(notifications),
+                account_id=self.account_id,
+                correlation_id=outcome.plan.id,
+            )
+            budget_exhausted = sum(
+                1 for risk in outcome.risks if "RISK_EVALUATION_BUDGET_EXHAUSTED" in risk.reasons
+            )
+            metrics.record(
+                "solver_budget_exhausted_count",
+                budget_exhausted,
+                account_id=self.account_id,
+                correlation_id=outcome.plan.id,
+            )
             risks = {r.task_id: r for r in outcome.risks}
             reconciliation = SQLiteReconciliationRepository(repo)
             tasks = []
@@ -258,10 +429,52 @@ class UiService:
                     "expires_at": None if estimate_rows is None else estimate_rows[3],
                     "source": None if estimate_rows is None else estimate_rows[4],
                 })
+            all_tasks = [self._task(task) for task in SQLitePlanningStateSource(repo).list_tasks(self.account_id)]
+            needs_refinement = [task for task in all_tasks if task["status"] == "DRAFT"]
+            active_tasks = {task["id"]: task for task in tasks}
+            now = self._now()
+            current_block = next((
+                block for block in outcome.plan.blocks
+                if block.type.value == "WORK" and block.starts_at <= now < block.ends_at
+            ), None)
+            current_action = None
+            if current_block is not None:
+                task = active_tasks.get(current_block.obligation_id)
+                current_action = {
+                    "task_id": current_block.obligation_id,
+                    "title": None if task is None else task["title"],
+                    "starts_at": _jsonify(current_block.starts_at),
+                    "ends_at": _jsonify(current_block.ends_at),
+                    "source": "CURRENT_WORK_BLOCK",
+                }
+            elif outcome.next_actions:
+                first = outcome.next_actions[0]
+                current_action = {
+                    "task_id": first.task_id,
+                    "title": first.what,
+                    "recommended_duration_minutes": first.recommended_duration_minutes,
+                    "relevant_at": _jsonify(first.relevant_at),
+                    "source": "NEXT_ACTION",
+                }
+            interruptions = [
+                block for block in self._plan_payload(outcome.plan, tasks, events, snapshot.constraints)["blocks"]
+                if block["type"] in {"EVENT_PROJECTION", "TRAVEL_TRANSITION", "BUFFER"}
+                and _dt(block["ends_at"]) >= now
+            ][:5]
+            repair_actions = [] if outcome.plan.feasibility_status.value == "FEASIBLE" else [{
+                "kind": "REPAIR_PLAN",
+                "status": outcome.plan.feasibility_status.value,
+                "reasons": list(outcome.plan.explanations),
+            }]
+            plan_payload = self._plan_payload(outcome.plan, tasks, events, snapshot.constraints)
             return {
                 "now": _jsonify(self._now()),
                 "server_revision": snapshot.input_server_revision,
-                "plan": self._plan_payload(outcome.plan, tasks, events, snapshot.constraints),
+                "plan": plan_payload,
+                "current_action": current_action,
+                "interruptions": interruptions,
+                "repair_actions": repair_actions,
+                "needs_refinement": needs_refinement,
                 "next_actions": _jsonify(outcome.next_actions),
                 "tasks": tasks,
                 "travel": {
@@ -405,7 +618,55 @@ class UiService:
 
     def notifications(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
-            return [_jsonify(item) for item in SQLiteNotificationRepository(repo).list(self.account_id)]
+            result = []
+            for item in SQLiteNotificationRepository(repo).list(self.account_id):
+                payload = _jsonify(item)
+                delivery = repo.connection.execute(
+                    "SELECT state,delivery_key,next_attempt_at,attempt_count,last_error FROM notification_delivery_outbox "
+                    "WHERE account_id=? AND notification_id=?", (self.account_id, item.id)
+                ).fetchone()
+                payload["delivery"] = None if delivery is None else dict(delivery)
+                payload["suppression_or_failure_reason"] = item.last_error
+                result.append(payload)
+            return result
+
+    def notification_preferences(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteNotificationPreferencesRepository(repo).get(self.account_id).payload()
+
+    def update_notification_preferences(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteNotificationPreferencesRepository(repo).update(self.account_id, payload).payload()
+
+    def devices(self) -> list[dict[str, Any]]:
+        with self._repo() as repo:
+            rows = repo.connection.execute(
+                "SELECT id,platform,label,active,version,created_at,updated_at FROM mobile_devices "
+                "WHERE account_id=? ORDER BY created_at,id", (self.account_id,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def register_device(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return register_device(repo, self.account_id, payload)
+
+    def revoke_device(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            expected = int(payload["expected_version"])
+            with repo._tx() as conn:
+                cur = conn.execute(
+                    "UPDATE mobile_devices SET active=0,token='',version=version+1,updated_at=? "
+                    "WHERE account_id=? AND id=? AND version=?",
+                    (_jsonify(self._now()), self.account_id, device_id, expected),
+                )
+                if cur.rowcount != 1:
+                    from student_execution_os.domain.errors import VersionConflict
+                    raise VersionConflict("device registration version changed")
+            row = repo.connection.execute(
+                "SELECT id,platform,label,active,version,created_at,updated_at FROM mobile_devices WHERE account_id=? AND id=?",
+                (self.account_id, device_id),
+            ).fetchone()
+            return dict(row)
 
     def evidence(self) -> dict[str, Any]:
         with self._repo() as repo:
@@ -570,6 +831,12 @@ class UiService:
                         (self.account_id,),
                     ).fetchall()
                 ],
+                "external_capabilities": {
+                    "fcm": "CONFIGURED" if FCMConfig.from_environment().configured else "UNCONFIGURED",
+                    "llm": "UNCONFIGURED",
+                    "routing": "UNCONFIGURED",
+                    "oauth": "UNCONFIGURED",
+                },
             }
 
     def create_recurring_template(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -643,6 +910,10 @@ class UiService:
             return _jsonify(item)
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_effort = payload.get("estimated_total_effort_minutes")
+        effort = None if raw_effort in (None, "") else int(raw_effort)
+        raw_remaining = payload.get("remaining_effort_minutes", effort)
+        remaining = None if raw_remaining in (None, "") else int(raw_remaining)
         with self._repo() as repo:
             task = repo.create_task(
                 account_id=self.account_id,
@@ -650,13 +921,13 @@ class UiService:
                 description=payload.get("description"),
                 category=ObligationCategory(payload.get("category", ObligationCategory.GENERAL.value)),
                 importance=Importance(payload.get("importance", Importance.NORMAL.value)),
-                estimated_total_effort_minutes=int(payload["estimated_total_effort_minutes"]),
+                estimated_total_effort_minutes=effort,
                 estimated_total_effort_low_minutes=payload.get("estimated_total_effort_low_minutes"),
                 estimated_total_effort_high_minutes=payload.get("estimated_total_effort_high_minutes"),
-                remaining_effort_minutes=int(payload.get("remaining_effort_minutes", payload["estimated_total_effort_minutes"])),
+                remaining_effort_minutes=remaining,
                 remaining_effort_low_minutes=payload.get("remaining_effort_low_minutes"),
                 remaining_effort_high_minutes=payload.get("remaining_effort_high_minutes"),
-                splittable=bool(payload.get("splittable", True)),
+                splittable=bool(payload.get("splittable", False)),
                 min_chunk_minutes=payload.get("min_chunk_minutes"),
                 max_chunk_minutes=payload.get("max_chunk_minutes"),
                 actionable_from=_dt(payload.get("actionable_from")),
@@ -675,6 +946,15 @@ class UiService:
                 kwargs["actionable_from"] = _dt(payload.get("actionable_from"))
             if "remaining_effort_minutes" in payload:
                 kwargs["remaining_effort_minutes"] = int(payload["remaining_effort_minutes"])
+            if "estimated_total_effort_minutes" in payload:
+                value = payload.get("estimated_total_effort_minutes")
+                kwargs["estimated_total_effort_minutes"] = None if value is None else int(value)
+            if "splittable" in payload:
+                kwargs["splittable"] = bool(payload["splittable"])
+            if "min_chunk_minutes" in payload:
+                kwargs["min_chunk_minutes"] = payload.get("min_chunk_minutes")
+            if "max_chunk_minutes" in payload:
+                kwargs["max_chunk_minutes"] = payload.get("max_chunk_minutes")
             if "remaining_effort_low_minutes" in payload:
                 kwargs["remaining_effort_low_minutes"] = payload.get("remaining_effort_low_minutes")
             if "remaining_effort_high_minutes" in payload:
@@ -687,6 +967,75 @@ class UiService:
                 **kwargs,
             )
             return self._task(task)
+
+    def activate_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            task = repo.activate_task(
+                account_id=self.account_id,
+                obligation_id=task_id,
+                expected_version=int(payload["expected_version"]),
+                actor=ActorCategory.USER_UI,
+            )
+            return self._task(task)
+
+    def defer_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        until = _dt(payload.get("until"))
+        if until is None or until <= self._now():
+            raise ValueError("defer until must be a future offset-aware instant")
+        with self._repo() as repo:
+            task = repo.update_task(
+                account_id=self.account_id,
+                obligation_id=task_id,
+                expected_version=int(payload["expected_version"]),
+                actionable_from=until,
+                actor=ActorCategory.USER_UI,
+            )
+            return self._task(task)
+
+    def start_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            task = repo.update_task(
+                account_id=self.account_id,
+                obligation_id=task_id,
+                expected_version=int(payload["expected_version"]),
+                actionable_from=self._now(),
+                actor=ActorCategory.USER_UI,
+            )
+            return self._task(task)
+
+    def upload_attachment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteAttachmentRepository(repo).upload(self.account_id, payload)
+
+    def attachments(self, owner_kind: str, owner_id: str) -> list[dict[str, Any]]:
+        with self._repo() as repo:
+            return SQLiteAttachmentRepository(repo).list(self.account_id, owner_kind, owner_id)
+
+    def download_attachment(self, attachment_id: str):
+        with self._repo() as repo:
+            return SQLiteAttachmentRepository(repo).download(self.account_id, attachment_id)
+
+    def unlink_attachment(self, link_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteAttachmentRepository(repo).unlink(
+                self.account_id, link_id, int(payload["expected_version"])
+            )
+
+    def saved_views(self) -> list[dict[str, Any]]:
+        with self._repo() as repo:
+            return SQLiteSavedViewRepository(repo).list(self.account_id)
+
+    def create_saved_view(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteSavedViewRepository(repo).create(self.account_id, payload)
+
+    def update_saved_view(self, view_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteSavedViewRepository(repo).update(self.account_id, view_id, payload)
+
+    def delete_saved_view(self, view_id: str, expected_version: int) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteSavedViewRepository(repo).delete(self.account_id, view_id, expected_version)
 
     def lifecycle(self, obligation_id: str, action: str, expected_version: int) -> dict[str, Any]:
         with self._repo() as repo:
@@ -717,6 +1066,14 @@ class UiService:
             origin_place_id=location.get("origin_place_id"),
             destination_place_id=location.get("destination_place_id"),
         )
+        options = tuple(EventLocationOption(
+            id=str(item["id"]), label=str(item["label"]),
+            effect=LocationEffect(
+                kind=LocationEffectKind((item.get("location_effect") or {}).get("kind", "NONE")),
+                origin_place_id=(item.get("location_effect") or {}).get("origin_place_id"),
+                destination_place_id=(item.get("location_effect") or {}).get("destination_place_id"),
+            ),
+        ) for item in payload.get("location_options", []))
         with self._repo() as repo:
             event = repo.create_event(
                 account_id=self.account_id,
@@ -730,6 +1087,17 @@ class UiService:
                 attendance_policy=AttendancePolicy(payload.get("attendance_policy", AttendancePolicy.REQUIRED.value)),
                 location_effect=effect,
                 arrival_requirement_minutes=int(payload.get("arrival_requirement_minutes", 0)),
+                actor=ActorCategory.USER_UI,
+                location_options=options,
+                selected_location_option_id=payload.get("selected_location_option_id"),
+            )
+            return self._event(event)
+
+    def select_event_location(self, event_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            event = repo.select_event_location_option(
+                account_id=self.account_id, obligation_id=event_id,
+                option_id=str(payload["option_id"]), expected_version=int(payload["expected_version"]),
                 actor=ActorCategory.USER_UI,
             )
             return self._event(event)
@@ -772,6 +1140,16 @@ class UiService:
                 "scope": "one obligation",
                 "effect": "Lifecycle becomes CANCELLED; evidence history remains unchanged; current plan becomes stale.",
             }
+
+    def assistant_interpret(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteAssistantService(repo, self.principal).interpret(
+                str(payload.get("text", "")), payload.get("context")
+            )
+
+    def assistant_apply(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteAssistantService(repo, self.principal).apply(payload)
 
     def agent_cancel_confirm_execute(self, intent_id: str, idempotency_key: str | None = None) -> dict[str, Any]:
         with self._repo() as repo:

@@ -58,6 +58,9 @@ class TravelProjectionBuilder:
         fixed_occupancy = [event.interval for event in required]
 
         for event in required:
+            if event.location_options and event.selected_location_option_id is None:
+                unknown.append(f"UNSELECTED_HYBRID_LOCATION:{event.obligation.id}")
+                continue
             effect = event.location_effect
             required_origin: str | None = None
             resulting_place = current_place

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import base64
 import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass
@@ -195,6 +196,15 @@ _DIRECT_ACCOUNT_TABLES = (
     "occurrence_overrides",
     "notifications",
     "notification_delivery_outbox",
+    "event_location_options",
+    "planning_profiles",
+    "notification_preferences",
+    "assistant_batches",
+    "assistant_apply_records",
+    "attachment_blobs",
+    "attachment_links",
+    "saved_task_views",
+    "operational_metrics",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
@@ -230,6 +240,7 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
 _ACCOUNT_CREDENTIAL_TABLES = (
     "auth_sessions",
     "auth_users",
+    "mobile_devices",
 )
 
 _GLOBAL_LIFECYCLE_TABLES = {
@@ -262,7 +273,14 @@ def _assert_lifecycle_schema_known(connection: sqlite3.Connection) -> None:
 
 
 def _rows(connection: sqlite3.Connection, query: str, parameters: tuple[Any, ...]) -> list[dict[str, Any]]:
-    return [dict(row) for row in connection.execute(query, parameters).fetchall()]
+    result = []
+    for row in connection.execute(query, parameters).fetchall():
+        item = dict(row)
+        for key, value in tuple(item.items()):
+            if isinstance(value, bytes):
+                item[key] = {"encoding": "base64", "data": base64.b64encode(value).decode("ascii")}
+        result.append(item)
+    return result
 
 
 class SQLiteDataLifecycle:

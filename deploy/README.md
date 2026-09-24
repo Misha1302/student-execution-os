@@ -15,6 +15,12 @@ use the separate nginx deployment below; it does not start Caddy or claim public
 After you and the people you invite have registered, close registration:
 set `SEOS_REGISTRATION=closed` in `deploy/.env` and run the `up -d` command again.
 
+The compose deployment also starts the durable notification worker. Push remains disabled
+unless both `SEOS_FCM_ENDPOINT` and `SEOS_FCM_BEARER_TOKEN` are supplied from the deployment
+secret store and the Android app contains valid Firebase configuration. Never commit either
+credential. A configured worker sends only typed notification metadata and a deep link; its
+stable delivery key is preserved across retries.
+
 ## Data and backups
 
 SQLite lives in the `seos-data` volume (`/data/student-execution-os.db`). Take a
@@ -45,6 +51,8 @@ SEOS_PROXY_HEADERS=1
 SEOS_FORWARDED_ALLOW_IPS=127.0.0.1
 SEOS_CORS_ORIGINS=
 SEOS_IMAGE_TAG=release
+SEOS_FCM_ENDPOINT=
+SEOS_FCM_BEARER_TOKEN=
 EOF
 chmod 0600 /etc/student-execution-os/student-execution-os.env
 
@@ -77,8 +85,16 @@ All flags can also be set through environment variables: `SEOS_DATABASE`, `SEOS_
 `SEOS_PORT`, `SEOS_REGISTRATION`, `SEOS_CORS_ORIGINS`, `SEOS_PROXY_HEADERS=1`,
 `SEOS_FORWARDED_ALLOW_IPS`.
 
+Run the worker as a separate process when deploying without Compose:
+
+```bash
+PYTHONPATH=src python -m student_execution_os.notifications.worker \
+  --database /var/lib/seos/seos.db
+```
+
 ## Not yet covered
 
 Password reset/change, email verification, per-account rate limits across several server
-processes (the limiter is in-process), push notifications to the phone. See
-ADR 0015 for the full boundary.
+processes (the limiter is in-process), external LLM, routing, OAuth, and automated FCM
+credential rotation. Diagnostics report each missing provider as `UNCONFIGURED`; local
+simulation is not presented as production delivery. See ADRs 0015 and 0016 for the boundary.

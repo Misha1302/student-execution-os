@@ -8,6 +8,7 @@ from typing import Callable
 
 from student_execution_os.domain.errors import EntityNotFound, ValidationError, VersionConflict
 from student_execution_os.persistence.sqlite import _dt, _iso
+from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import Notification, NotificationState
 
@@ -269,7 +270,12 @@ class SQLiteNotificationDeliveryOutbox:
             )
             if ncur.rowcount != 1:
                 raise VersionConflict("notification changed before retry commit")
-        return self.notifications.get(account_id, notification_id)
+        result = self.notifications.get(account_id, notification_id)
+        SQLiteOperationalMetrics(self.canonical).record(
+            "notification_delivery_failure", account_id=account_id, correlation_id=notification_id,
+            dimensions={"kind": notification.kind.value, "error": error, "terminal": dead},
+        )
+        return result
 
     def has_active_lease(self, account_id: str, notification_id: str) -> bool:
         row = self.connection.execute(

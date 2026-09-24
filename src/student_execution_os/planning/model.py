@@ -23,6 +23,7 @@ class PlanningPolicy:
     minute_grid: int = 1
     start_soon_lead_minutes: int = 120
     max_next_actions: int = 5
+    optional_event_policy: str = "FAIL_CLOSED"
 
     def __post_init__(self) -> None:
         if not self.version:
@@ -33,6 +34,10 @@ class PlanningPolicy:
             raise ValueError("start_soon_lead_minutes cannot be negative")
         if not 1 <= self.max_next_actions <= 5:
             raise ValueError("max_next_actions must be in [1,5]")
+        if self.optional_event_policy not in {
+            "FAIL_CLOSED", "OMIT_OPTIONAL", "OMIT_OPTIONAL_AND_PREFERRED"
+        }:
+            raise ValueError("unknown optional event planning policy")
 
 
 @dataclass(frozen=True)

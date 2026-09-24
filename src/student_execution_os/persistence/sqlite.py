@@ -27,6 +27,7 @@ from student_execution_os.domain.model import (
     Dependency,
     DependencySuccessorKind,
     Event,
+    EventLocationOption,
     EventTimeSemantics,
     HalfOpenInterval,
     HardCutoff,
@@ -50,7 +51,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _UNSET = object()
 
 
@@ -113,6 +114,7 @@ class SQLiteCanonicalRepository:
             (8, Path(__file__).with_name("migrations") / "008_account_deletion.sql"),
             (9, Path(__file__).with_name("migrations") / "009_notification_delivery_outbox.sql"),
             (10, Path(__file__).with_name("migrations") / "010_auth.sql"),
+            (11, Path(__file__).with_name("migrations") / "011_daily_product.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -235,6 +237,7 @@ class SQLiteCanonicalRepository:
         description: str | None,
         importance: Importance,
         obligation_id: str | None,
+        lifecycle_status: LifecycleStatus = LifecycleStatus.ACTIVE,
     ) -> Obligation:
         now = self.clock.now()
         return Obligation(
@@ -244,7 +247,7 @@ class SQLiteCanonicalRepository:
             category=category,
             title=title,
             description=description,
-            lifecycle_status=LifecycleStatus.ACTIVE,
+            lifecycle_status=lifecycle_status,
             importance=importance,
             created_at=now,
             updated_at=now,
@@ -279,8 +282,8 @@ class SQLiteCanonicalRepository:
         title: str,
         category: ObligationCategory,
         importance: Importance,
-        estimated_total_effort_minutes: int,
-        remaining_effort_minutes: int,
+        estimated_total_effort_minutes: int | None,
+        remaining_effort_minutes: int | None,
         splittable: bool,
         actual_cutoff: HardCutoff,
         actor: ActorCategory,
@@ -294,7 +297,11 @@ class SQLiteCanonicalRepository:
         estimated_total_effort_high_minutes: int | None = None,
         remaining_effort_low_minutes: int | None = None,
         remaining_effort_high_minutes: int | None = None,
+        lifecycle_status: LifecycleStatus | None = None,
     ) -> Task:
+        resolved_status = lifecycle_status or (
+            LifecycleStatus.DRAFT if estimated_total_effort_minutes is None else LifecycleStatus.ACTIVE
+        )
         obligation = self._new_obligation(
             account_id=account_id,
             kind=ObligationKind.TASK,
@@ -303,6 +310,7 @@ class SQLiteCanonicalRepository:
             description=description,
             importance=importance,
             obligation_id=obligation_id,
+            lifecycle_status=resolved_status,
         )
         task = Task(
             obligation=obligation,
@@ -371,8 +379,12 @@ class SQLiteCanonicalRepository:
         )
         return Task(
             obligation=obligation,
-            estimated_total_effort_minutes=int(row["estimated_total_effort_minutes"]),
-            remaining_effort_minutes=int(row["remaining_effort_minutes"]),
+            estimated_total_effort_minutes=(
+                None if row["estimated_total_effort_minutes"] is None else int(row["estimated_total_effort_minutes"])
+            ),
+            remaining_effort_minutes=(
+                None if row["remaining_effort_minutes"] is None else int(row["remaining_effort_minutes"])
+            ),
             splittable=bool(row["splittable"]),
             min_chunk_minutes=row["min_chunk_minutes"],
             max_chunk_minutes=row["max_chunk_minutes"],
@@ -414,6 +426,11 @@ class SQLiteCanonicalRepository:
         remaining_effort_minutes: int | object = _UNSET,
         remaining_effort_low_minutes: int | None | object = _UNSET,
         remaining_effort_high_minutes: int | None | object = _UNSET,
+        estimated_total_effort_minutes: int | None | object = _UNSET,
+        splittable: bool | object = _UNSET,
+        min_chunk_minutes: int | None | object = _UNSET,
+        max_chunk_minutes: int | None | object = _UNSET,
+        activate: bool = False,
     ) -> Task:
         current = self.get_task(account_id, obligation_id)
         if actual_cutoff is not _UNSET:
@@ -430,18 +447,27 @@ class SQLiteCanonicalRepository:
                 f"expected obligation version {expected_version}, current {current.obligation.version}"
             )
         now = self.clock.now()
-        new_obligation = replace(current.obligation, updated_at=now, version=expected_version + 1)
+        next_status = LifecycleStatus.ACTIVE if activate else current.obligation.lifecycle_status
+        new_obligation = replace(
+            current.obligation, lifecycle_status=next_status, updated_at=now, version=expected_version + 1
+        )
+        next_estimate = (
+            current.estimated_total_effort_minutes
+            if estimated_total_effort_minutes is _UNSET else estimated_total_effort_minutes
+        )
+        next_remaining = (
+            current.remaining_effort_minutes
+            if remaining_effort_minutes is _UNSET else remaining_effort_minutes
+        )
+        if current.estimated_total_effort_minutes is None and next_estimate is not None and remaining_effort_minutes is _UNSET:
+            next_remaining = next_estimate
         candidate = Task(
             obligation=new_obligation,
-            estimated_total_effort_minutes=current.estimated_total_effort_minutes,
-            remaining_effort_minutes=(
-                current.remaining_effort_minutes
-                if remaining_effort_minutes is _UNSET
-                else int(remaining_effort_minutes)
-            ),
-            splittable=current.splittable,
-            min_chunk_minutes=current.min_chunk_minutes,
-            max_chunk_minutes=current.max_chunk_minutes,
+            estimated_total_effort_minutes=next_estimate,
+            remaining_effort_minutes=next_remaining,
+            splittable=current.splittable if splittable is _UNSET else bool(splittable),
+            min_chunk_minutes=current.min_chunk_minutes if min_chunk_minutes is _UNSET else min_chunk_minutes,
+            max_chunk_minutes=current.max_chunk_minutes if max_chunk_minutes is _UNSET else max_chunk_minutes,
             actionable_from=current.actionable_from if actionable_from is _UNSET else actionable_from,
             actual_cutoff=current.actual_cutoff if actual_cutoff is _UNSET else actual_cutoff,
             target_at=current.target_at if target_at is _UNSET else target_at,
@@ -452,17 +478,21 @@ class SQLiteCanonicalRepository:
         )
         with self._tx() as conn:
             cur = conn.execute(
-                "UPDATE obligations SET updated_at=?, version=? WHERE account_id=? AND id=? AND version=?",
-                (_iso(now), expected_version + 1, account_id, obligation_id, expected_version),
+                "UPDATE obligations SET lifecycle_status=?,updated_at=?, version=? WHERE account_id=? AND id=? AND version=?",
+                (next_status.value, _iso(now), expected_version + 1, account_id, obligation_id, expected_version),
             )
             if cur.rowcount != 1:
                 raise VersionConflict("obligation version changed before commit")
             conn.execute(
-                "UPDATE tasks SET remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=? WHERE obligation_id=?",
+                "UPDATE tasks SET estimated_total_effort_minutes=?,remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,splittable=?,min_chunk_minutes=?,max_chunk_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=? WHERE obligation_id=?",
                 (
+                    candidate.estimated_total_effort_minutes,
                     candidate.remaining_effort_minutes,
                     candidate.remaining_effort_low_minutes,
                     candidate.remaining_effort_high_minutes,
+                    int(candidate.splittable),
+                    candidate.min_chunk_minutes,
+                    candidate.max_chunk_minutes,
                     _iso(candidate.actionable_from),
                     candidate.actual_cutoff.state.value,
                     _iso(candidate.actual_cutoff.at),
@@ -481,6 +511,20 @@ class SQLiteCanonicalRepository:
                 actor=actor,
             )
         return candidate
+
+    def activate_task(
+        self, *, account_id: str, obligation_id: str, expected_version: int, actor: ActorCategory
+    ) -> Task:
+        current = self.get_task(account_id, obligation_id)
+        if current.obligation.lifecycle_status is not LifecycleStatus.DRAFT:
+            raise ValidationError("only DRAFT tasks can be activated")
+        return self.update_task(
+            account_id=account_id,
+            obligation_id=obligation_id,
+            expected_version=expected_version,
+            actor=actor,
+            activate=True,
+        )
 
     def get_obligation(self, account_id: str, obligation_id: str) -> Obligation:
         row = self.connection.execute(
@@ -520,6 +564,16 @@ class SQLiteCanonicalRepository:
             candidate = current.cancelled(now)
         elif action == "REOPEN":
             candidate = current.reopened(now)
+            if current.kind is ObligationKind.TASK:
+                task_row = conn.execute(
+                    "SELECT estimated_total_effort_minutes FROM tasks WHERE obligation_id=?",
+                    (obligation_id,),
+                ).fetchone()
+                if task_row is not None and task_row["estimated_total_effort_minutes"] is None:
+                    # Reopening must not manufacture an ACTIVE task that violates
+                    # the positive-effort invariant. An unrefined task returns to
+                    # the refinement queue and can be activated explicitly later.
+                    candidate = replace(candidate, lifecycle_status=LifecycleStatus.DRAFT)
         else:
             raise AssertionError(action)
         cur = conn.execute(
@@ -638,6 +692,8 @@ class SQLiteCanonicalRepository:
         arrival_requirement_minutes: int = 0,
         description: str | None = None,
         obligation_id: str | None = None,
+        location_options: tuple[EventLocationOption, ...] = (),
+        selected_location_option_id: str | None = None,
     ) -> Event:
         if time_semantics is not EventTimeSemantics.FIXED_INTERVAL:
             raise UnsupportedCapability("FLEXIBLE_WINDOW is not enabled in this release")
@@ -656,6 +712,8 @@ class SQLiteCanonicalRepository:
             arrival_requirement_minutes=arrival_requirement_minutes,
             description=description,
             obligation_id=obligation_id,
+            location_options=location_options,
+            selected_location_option_id=selected_location_option_id,
         )
 
     def create_fixed_event(
@@ -673,9 +731,19 @@ class SQLiteCanonicalRepository:
         arrival_requirement_minutes: int = 0,
         description: str | None = None,
         obligation_id: str | None = None,
+        location_options: tuple[EventLocationOption, ...] = (),
+        selected_location_option_id: str | None = None,
     ) -> Event:
         self._require_account(account_id)
-        resolved_location_effect = location_effect or LocationEffect()
+        if selected_location_option_id is not None:
+            selected = next((item for item in location_options if item.id == selected_location_option_id), None)
+            if selected is None:
+                raise ValidationError("selected location option does not exist")
+            resolved_location_effect = selected.effect
+        else:
+            resolved_location_effect = location_effect or LocationEffect()
+        for option in location_options:
+            self._validate_location_effect_places(account_id=account_id, location_effect=option.effect)
         self._validate_location_effect_places(
             account_id=account_id,
             location_effect=resolved_location_effect,
@@ -696,12 +764,14 @@ class SQLiteCanonicalRepository:
             attendance_policy=attendance_policy,
             location_effect=resolved_location_effect,
             arrival_requirement_minutes=arrival_requirement_minutes,
+            location_options=location_options,
+            selected_location_option_id=selected_location_option_id,
         )
         with self._tx() as conn:
             self._require_account(account_id)
             self._insert_obligation(conn, obligation)
             conn.execute(
-                "INSERT INTO events(obligation_id,time_semantics,starts_at,ends_at,attendance_policy,location_effect_kind,origin_place_id,destination_place_id,arrival_requirement_minutes) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO events(obligation_id,time_semantics,starts_at,ends_at,attendance_policy,location_effect_kind,origin_place_id,destination_place_id,arrival_requirement_minutes,selected_location_option_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     obligation.id,
                     event.time_semantics.value,
@@ -712,8 +782,15 @@ class SQLiteCanonicalRepository:
                     event.location_effect.origin_place_id,
                     event.location_effect.destination_place_id,
                     event.arrival_requirement_minutes,
+                    event.selected_location_option_id,
                 ),
             )
+            for option in event.location_options:
+                conn.execute(
+                    "INSERT INTO event_location_options(id,account_id,event_id,label,location_effect_kind,origin_place_id,destination_place_id) VALUES (?,?,?,?,?,?,?)",
+                    (option.id, account_id, obligation.id, option.label, option.effect.kind.value,
+                     option.effect.origin_place_id, option.effect.destination_place_id),
+                )
             self._record_change(
                 conn,
                 account_id=account_id,
@@ -766,12 +843,20 @@ class SQLiteCanonicalRepository:
 
     def get_event(self, account_id: str, obligation_id: str) -> Event:
         row = self.connection.execute(
-            "SELECT o.*,e.time_semantics,e.starts_at,e.ends_at,e.attendance_policy,e.location_effect_kind,e.origin_place_id,e.destination_place_id,e.arrival_requirement_minutes "
+            "SELECT o.*,e.time_semantics,e.starts_at,e.ends_at,e.attendance_policy,e.location_effect_kind,e.origin_place_id,e.destination_place_id,e.arrival_requirement_minutes,e.selected_location_option_id "
             "FROM obligations o JOIN events e ON e.obligation_id=o.id WHERE o.account_id=? AND o.id=? AND o.kind='EVENT'",
             (account_id, obligation_id),
         ).fetchone()
         if row is None:
             raise EntityNotFound("event not found")
+        option_rows = self.connection.execute(
+            "SELECT * FROM event_location_options WHERE account_id=? AND event_id=? ORDER BY id",
+            (account_id, obligation_id),
+        ).fetchall()
+        options = tuple(EventLocationOption(
+            id=item["id"], label=item["label"],
+            effect=LocationEffect(LocationEffectKind(item["location_effect_kind"]), item["origin_place_id"], item["destination_place_id"]),
+        ) for item in option_rows)
         return Event(
             obligation=self._obligation_from_row(row),
             time_semantics=EventTimeSemantics(row["time_semantics"]),
@@ -783,7 +868,36 @@ class SQLiteCanonicalRepository:
                 row["destination_place_id"],
             ),
             arrival_requirement_minutes=int(row["arrival_requirement_minutes"]),
+            location_options=options,
+            selected_location_option_id=row["selected_location_option_id"],
         )
+
+    def select_event_location_option(
+        self, *, account_id: str, obligation_id: str, option_id: str,
+        expected_version: int, actor: ActorCategory,
+    ) -> Event:
+        current = self.get_event(account_id, obligation_id)
+        if current.obligation.version != expected_version:
+            raise VersionConflict("event version changed")
+        selected = next((option for option in current.location_options if option.id == option_id), None)
+        if selected is None:
+            raise EntityNotFound("event location option not found")
+        now = self.clock.now()
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE obligations SET updated_at=?,version=version+1 WHERE account_id=? AND id=? AND version=?",
+                (_iso(now), account_id, obligation_id, expected_version),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("event version changed before location selection")
+            conn.execute(
+                "UPDATE events SET selected_location_option_id=?,location_effect_kind=?,origin_place_id=?,destination_place_id=? WHERE obligation_id=?",
+                (option_id, selected.effect.kind.value, selected.effect.origin_place_id,
+                 selected.effect.destination_place_id, obligation_id),
+            )
+            self._record_change(conn, account_id=account_id, entity_type="OBLIGATION", entity_id=obligation_id,
+                                action="SELECT_EVENT_LOCATION_OPTION", actor=actor, payload={"option_id": option_id})
+        return self.get_event(account_id, obligation_id)
 
     def create_project(
         self,

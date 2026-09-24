@@ -31,6 +31,34 @@ function editSheet(task) {
   });
 }
 
+function refineSheet(task) {
+  const dialog = openSheet({
+    eyebrow: task.title,
+    title: t('task.refine'),
+    body: `<label class="field"><span>${esc(t('form.effort'))}</span><input type="number" inputmode="numeric" min="1" step="5" data-effort autofocus></label>
+      <p class="help">${esc(t('task.refineHelp'))}</p>`,
+    actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button><button type="button" class="button primary" data-save>${esc(t('common.save'))}</button>`,
+  });
+  dialog.querySelector('[data-save]').addEventListener('click', async (event) => {
+    const effort = Number(dialog.querySelector('[data-effort]').value);
+    if (!effort) return;
+    setBusy(event.currentTarget, true);
+    await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}`, { method: 'PATCH', body: {
+      expected_version: task.version, estimated_total_effort_minutes: effort, remaining_effort_minutes: effort,
+    } }), { success: t('task.saved') });
+    dialog.close('saved');
+  });
+}
+
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+    reader.readAsDataURL(file);
+  });
+}
+
 export default {
   id: 'task',
   tab: 'tasks',
@@ -38,7 +66,10 @@ export default {
   title: () => t('task.title'),
   async load({ fresh, params }) {
     const result = await load('/api/v1/tasks', { fresh });
-    return { ...result, data: result.data.find((x) => x.id === params[0]) || null };
+    const task = result.data.find((x) => x.id === params[0]) || null;
+    if (!task) return { ...result, data: null };
+    const attachments = await load(`/api/v1/attachments?owner_kind=OBLIGATION&owner_id=${encodeURIComponent(task.id)}`, { fresh });
+    return { ...result, stale: result.stale || attachments.stale, data: { ...task, attachments: attachments.data } };
   },
   render(task) {
     if (!task) return empty(t('task.missing'), t('task.missingHint'), 'tasks');
@@ -59,6 +90,7 @@ export default {
       </section>
 
       <section class="card effort-card">
+        ${task.status === 'DRAFT' ? `<div class="banner warn"><div><strong>${esc(t('today.needsRefinement'))}</strong><p>${esc(t('task.refineHelp'))}</p></div></div>` : ''}
         <div class="effort-row"><span>${esc(t('task.effort'))}</span><strong>${esc(t('task.effortValue', { left: fmtDuration(left), total: fmtDuration(total) }))}</strong></div>
         <span class="progress big" aria-label="${pct}%"><span data-w="${pct}"></span></span>
         ${task.remaining_effort_low_minutes != null && task.remaining_effort_high_minutes != null ? `<p class="help">${esc(t('task.range', { lo: fmtDuration(task.remaining_effort_low_minutes), hi: fmtDuration(task.remaining_effort_high_minutes) }))}</p>` : ''}
@@ -88,10 +120,21 @@ export default {
         ${truth.state === 'CONFLICT' ? `<p class="help">${esc(t('task.conflictHelp'))}</p>` : ''}
       </section>` : ''}
 
+      <section class="card">
+        <h3>${esc(t('task.attachments'))}</h3>
+        <div class="list">${task.attachments?.map((item) => `<a class="row" href="/api/v1/attachments/${encodeURIComponent(item.id)}/download" download>
+          <span class="row-main"><strong>${esc(item.original_name)}</strong><small>${esc(item.mime_type)} · ${esc(fmtDuration(Math.max(1, Math.round(item.size_bytes / 60000))))}</small></span></a>`).join('') || `<p class="muted">${esc(t('task.noAttachments'))}</p>`}</div>
+        <input class="hidden" type="file" data-attachment-input>
+        <button class="button ghost wide" data-action="attachment-pick">${esc(t('task.addAttachment'))}</button>
+      </section>
+
       <section class="detail-actions">
         ${active ? `
           <button class="button" data-action="detail-edit">${esc(t('task.edit'))}</button>
           <button class="button ok" data-action="detail-lifecycle" data-op="complete">${icon('check')}${esc(t('lifecycle.complete'))}</button>
+          <button class="button danger ghost" data-action="detail-lifecycle" data-op="cancel">${esc(t('lifecycle.cancel'))}</button>`
+        : task.status === 'DRAFT' ? `<button class="button" data-action="detail-refine">${esc(t('task.refine'))}</button>
+          ${task.estimated_total_effort_minutes ? `<button class="button primary" data-action="detail-activate">${esc(t('task.activate'))}</button>` : ''}
           <button class="button danger ghost" data-action="detail-lifecycle" data-op="cancel">${esc(t('lifecycle.cancel'))}</button>`
         : `<button class="button" data-action="detail-lifecycle" data-op="reopen">${icon('repeat')}${esc(t('lifecycle.reopen'))}</button>`}
       </section>
@@ -100,6 +143,22 @@ export default {
   actions: {
     'detail-progress'(_el, ctx) { logProgress(ctx.data); },
     'detail-edit'(_el, ctx) { editSheet(ctx.data); },
+    'detail-refine'(_el, ctx) { refineSheet(ctx.data); },
+    async 'detail-activate'(_el, ctx) {
+      await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(ctx.data.id)}/activate`, { method: 'POST', body: { expected_version: ctx.data.version } }), { success: t('task.activated') });
+    },
+    'attachment-pick'(el) { el.closest('.card').querySelector('[data-attachment-input]').click(); },
     'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title }); },
+  },
+  mount(root, task) {
+    root.querySelector('[data-attachment-input]')?.addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const content = await fileBase64(file);
+      await mutate(() => api('/api/v1/attachments', { method: 'POST', body: {
+        owner_kind: 'OBLIGATION', owner_id: task.id, original_name: file.name,
+        mime_type: file.type || 'application/octet-stream', content_base64: content,
+      } }), { success: t('task.attachmentAdded') });
+    });
   },
 };

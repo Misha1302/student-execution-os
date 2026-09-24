@@ -6,6 +6,7 @@ from typing import Callable
 
 from student_execution_os.domain.errors import EntityNotFound, IdempotencyConflict, ValidationError, VersionConflict
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
+from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 from student_execution_os.planning import SQLitePlanStore
 
 from .model import Notification, NotificationKind, NotificationState, QuietHours
@@ -81,6 +82,22 @@ class SQLiteNotificationRepository:
             # notification, but it never creates a duplicate or erases a user
             # snooze. Once delivered, that logical transition stays delivered.
             if existing.state is NotificationState.DELIVERED:
+                SQLiteOperationalMetrics(self.canonical).record(
+                    "notification_duplicate_suppressed", account_id=account_id,
+                    correlation_id=existing.id, dimensions={"kind": kind.value, "state": existing.state.value},
+                )
+                return existing
+            if (
+                existing.domain_revision == domain_revision
+                and existing.plan_id == plan_id
+                and existing.plan_revision == plan_revision
+                and existing.scheduled_for == effective_time
+                and existing.cooldown_until == cooldown_until
+            ):
+                SQLiteOperationalMetrics(self.canonical).record(
+                    "notification_duplicate_suppressed", account_id=account_id,
+                    correlation_id=existing.id, dimensions={"kind": kind.value, "state": existing.state.value},
+                )
                 return existing
             next_state = (
                 NotificationState.SNOOZED.value
@@ -218,7 +235,12 @@ class SQLiteNotificationRepository:
             )
             if cur.rowcount != 1:
                 raise VersionConflict("notification version changed before suppression commit")
-        return self.get(item.account_id, item.id)
+        result = self.get(item.account_id, item.id)
+        SQLiteOperationalMetrics(self.canonical).record(
+            "notification_suppressed", account_id=item.account_id, correlation_id=item.id,
+            dimensions={"kind": item.kind.value, "reason": reason},
+        )
+        return result
 
     @staticmethod
     def _from_row(row) -> Notification:

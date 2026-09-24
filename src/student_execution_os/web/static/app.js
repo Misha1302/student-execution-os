@@ -1,7 +1,7 @@
-import { session, restoreSession, refreshHealth, onUnauthenticated } from './js/api.js';
+import { api, session, restoreSession, refreshHealth, onUnauthenticated } from './js/api.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets } from './js/ui.js';
-import { isNative, onBackButton, exitApp, onResume, hideSplash } from './js/native.js';
+import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet } from './js/native.js';
 import { applyTheme } from './js/theme.js';
 import { peek, load } from './js/store.js';
 import { shell } from './js/actions.js';
@@ -267,6 +267,12 @@ async function boot() {
     route = parseHash();
   }
   await render();
+  if (isNative() && session.token) {
+    setupPush(async (token) => {
+      const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Capacitor Android' } });
+      await prefSet('seos.pushDevice', JSON.stringify({ id: device.id, version: device.version }));
+    }, (deepLink) => { location.hash = deepLink.startsWith('#') ? deepLink : '#/today'; }).catch(() => {});
+  }
   hideSplash();
 }
 

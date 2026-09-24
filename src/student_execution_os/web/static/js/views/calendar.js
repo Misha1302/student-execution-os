@@ -71,7 +71,7 @@ export default {
   detail: true,
   title: () => t('nav.calendar'),
   load: ({ fresh }) => load('/api/v1/calendar', { fresh }),
-  render(data) {
+  render(data, request = {}) {
     const templates = new Map((data.recurring_templates || []).map((x) => [x.id, x]));
     const cur = now();
     const items = [
@@ -79,6 +79,7 @@ export default {
       ...(data.occurrences || []).filter((o) => !o.cancelled).map((o) => ({ kind: 'occ', at: o.starts_at, end: o.ends_at, title: templates.get(o.template_id)?.title || o.template_id, ref: o })),
     ].filter((x) => new Date(x.end) >= new Date(cur.getTime() - 86400000)).sort((a, b) => new Date(a.at) - new Date(b.at));
     this._items = items;
+    this._deepLinkEvent = request?.event || null;
     const groups = new Map();
     items.forEach((it, i) => {
       const key = dayKey(it.at);
@@ -106,6 +107,12 @@ export default {
       </div>
       <section class="section">${agenda || empty(t('cal.empty'), t('cal.emptyHint'), 'calendar')}</section>
       ${series ? `<section class="section"><div class="section-head"><h2>${esc(t('cal.series'))}</h2></div><div class="stack">${series}</div></section>` : ''}`;
+  },
+  mount() {
+    if (!this._deepLinkEvent) return;
+    const event = this._items?.find((item) => item.kind === 'event' && item.ref.id === this._deepLinkEvent);
+    this._deepLinkEvent = null;
+    if (event) eventSheet(event.ref);
   },
   actions: {
     'cal-item'(el, ctx) {

@@ -61,6 +61,30 @@ export function hideSplash() {
   plugin('SplashScreen')?.hide?.().catch?.(() => {});
 }
 
+export async function speechToText() {
+  const speech = plugin('SpeechRecognition');
+  if (!speech) throw new Error('Speech recognition is unavailable');
+  const permission = await speech.requestPermissions();
+  if (!['granted', 'GRANTED'].includes(permission?.speechRecognition)) throw new Error('Microphone permission denied');
+  const result = await speech.start({ language: document.documentElement.lang || 'ru-RU', maxResults: 1, partialResults: false });
+  return result?.matches?.[0] || '';
+}
+
+export async function setupPush(onToken, onDeepLink) {
+  const push = plugin('PushNotifications');
+  if (!push) return { configured: false };
+  const permission = await push.requestPermissions();
+  if (permission.receive !== 'granted') return { configured: false, denied: true };
+  await push.addListener('registration', ({ value }) => onToken(value));
+  await push.addListener('registrationError', () => {});
+  await push.addListener('pushNotificationActionPerformed', ({ notification }) => {
+    const data = notification?.data || {};
+    onDeepLink?.(data.deep_link || (data.task_id ? `#/task/${encodeURIComponent(data.task_id)}` : '#/today'));
+  });
+  await push.register();
+  return { configured: true };
+}
+
 // Saves a JSON document: share sheet on Android, a regular download in browsers.
 export async function saveJson(filename, text) {
   const fs = plugin('Filesystem');

@@ -142,6 +142,13 @@ class Planner:
 
         plan_id = hashlib.sha256(("plan|" + snapshot.input_hash).encode("utf-8")).hexdigest()[:32]
         explanations = list(feasibility.reasons)
+        for event in snapshot.events:
+            if event.attendance_policy is AttendancePolicy.OPTIONAL and snapshot.policy.optional_event_policy in {
+                "OMIT_OPTIONAL", "OMIT_OPTIONAL_AND_PREFERRED"
+            }:
+                explanations.append(f"OPTIONAL_EVENT_OMITTED:{event.obligation.id}")
+            elif event.attendance_policy is AttendancePolicy.PREFERRED and snapshot.policy.optional_event_policy == "OMIT_OPTIONAL_AND_PREFERRED":
+                explanations.append(f"PREFERRED_EVENT_OMITTED:{event.obligation.id}")
         if previous_plan is not None and not previous_plan.is_current_for(snapshot):
             explanations.append("REPLAN_INPUT_CHANGED")
         return PlanSnapshot(

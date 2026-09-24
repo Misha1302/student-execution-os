@@ -322,8 +322,9 @@ h2.status-unknown { color: var(--warn); }
 .now-card { background: linear-gradient(160deg, var(--accent-soft), var(--surface) 70%); cursor: pointer; }
 .now-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .now-card h3 { font-size: 21px; font-weight: 750; overflow-wrap: anywhere; }
-.now-actions { display: flex; gap: 8px; margin-top: 4px; }
-.now-actions .button.primary { flex: 1; }
+.now-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 4px; }
+.now-actions .button { min-width: 0; padding-inline: 10px; }
+.now-actions .button:last-child { grid-column: 1 / -1; }
 
 .travel-card { flex-direction: row; gap: 14px; align-items: stretch; }
 .travel-leave { flex: none; display: flex; flex-direction: column; justify-content: center; padding-right: 14px; border-right: 1px solid var(--line); }

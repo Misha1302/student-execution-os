@@ -9,6 +9,30 @@ const BLOCK_CLASS = {
 
 let selectedDay = null;
 
+function rangeNav(active) {
+  return `<nav class="day-strip" aria-label="${esc(t('plan.range'))}">
+    ${[['today', t('nav.today')], ['week', t('plan.week')], ['month', t('plan.month')]].map(([id, label]) =>
+      `<a class="chip ${active === id ? 'selected' : ''}" href="#/plan${id === 'today' ? '' : `?step=${id}`}">${esc(label)}</a>`).join('')}
+  </nav>`;
+}
+
+function outlookView(data) {
+  const month = data.range === 'month';
+  return `${rangeNav(data.range)}
+    <section class="section">
+      ${data.uncertainty_reasons?.length ? `<div class="banner warn">${icon('alert')}<div><strong>${esc(t('plan.provisional'))}</strong><p>${esc(data.uncertainty_reasons.map((x) => code('reason', x)).join(' · '))}</p></div></div>` : ''}
+      <div class="list">${data.days.map((day) => `<article class="row">
+        <span class="row-time"><strong>${esc(fmtDay(`${day.date}T12:00:00`))}</strong><small>${esc(fmtDuration(day.planning_capacity_minutes))}</small></span>
+        <span class="row-main"><strong>${esc(t('plan.free', { d: fmtDuration(day.free_capacity_minutes) }))}</strong>
+          <small>${esc(t('plan.load', { d: fmtDuration(day.planned_load_minutes) }))}${day.deadlines.length ? ` · ${esc(t('plan.deadlines', { n: day.deadlines.length }))}` : ''}</small></span>
+        ${day.provisional ? chip(t('plan.provisional'), 'warn') : day.risk.length || day.shortfall_minutes ? chip(t('plan.riskDay'), 'danger') : ''}
+      </article>`).join('')}</div>
+    </section>
+    ${month ? `<section class="section"><div class="list">${data.weeks.map((week) => `<a class="row" href="#/plan?step=week">
+      <span class="row-main"><strong>${esc(t('plan.weekOf', { date: fmtDay(`${week.starts_on}T12:00:00`) }))}</strong><small>${esc(t('plan.free', { d: fmtDuration(week.free_capacity_minutes) }))}</small></span>
+      ${week.risk_days.length ? chip(t('plan.riskDays', { n: week.risk_days.length }), 'warn') : ''}</a>`).join('')}</div></section>` : ''}`;
+}
+
 export function agendaItems(plan) {
   const items = [];
   for (const e of plan.canonical_events || []) {
@@ -50,12 +74,15 @@ export default {
   id: 'plan',
   tab: 'plan',
   title: () => t('nav.plan'),
-  async load({ fresh }) {
+  async load({ fresh, query }) {
+    const range = query?.step;
+    if (range === 'week' || range === 'month') return load(`/api/v1/outlook?range=${range}`, { fresh });
     const result = await load('/api/v1/today', { fresh });
     setServerNow(result.data.now);
     return { ...result, data: result.data.plan };
   },
   render(plan) {
+    if (plan.range === 'week' || plan.range === 'month') return outlookView(plan);
     const items = agendaItems(plan);
     const days = [...new Set(items.map((i) => dayKey(i.starts_at)))];
     const today = dayKey(now());
@@ -80,7 +107,7 @@ export default {
     }).join('');
     this._visible = visible;
     const dayOptions = days.map((d) => [d, fmtDay(`${d}T12:00:00`)]);
-    return `
+    return `${rangeNav('today')}
       ${heroStatus(plan)}
       <section class="section">
         <div class="day-strip">${chipGroup('plan-day', dayOptions, selectedDay)}</div>

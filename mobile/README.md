@@ -73,3 +73,8 @@ installed over the existing app.
 Native features used through `window.Capacitor.Plugins` (no bundler needed): Preferences
 (session token/server storage), App (Android back button, resume refresh), StatusBar,
 SplashScreen, Haptics, Filesystem + Share (account export).
+PushNotifications registers/rotates the FCM token with the authenticated server and
+opens Task/Today deep links; SpeechRecognition supplies text only and then uses the
+same assistant preview/apply boundary. Denying microphone permission leaves typed
+capture available. Production push additionally requires Firebase Android
+configuration and server-side FCM secrets; otherwise diagnostics say `UNCONFIGURED`.

@@ -1,7 +1,8 @@
 import { load } from '../store.js';
+import { api } from '../api.js';
 import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, now, sameDay } from '../i18n.js';
 import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead } from '../ui.js';
-import { logProgress } from '../actions.js';
+import { logProgress, lifecycle, mutate } from '../actions.js';
 
 export function parseWhyNow(value) {
   const out = {};
@@ -82,7 +83,10 @@ function nowCard(action, task, plan) {
     <h3>${esc(action.what)}</h3>
     <p class="muted">${esc(t('today.block', { d: fmtDuration(action.recommended_duration_minutes) }))}${action.relevant_at ? ` · ${esc(t('today.due', { when: fmtDateTime(action.relevant_at) }))}` : ''}</p>
     ${task ? `<div class="now-actions">
+      <button class="button primary" data-action="start-task" data-id="${esc(task.id)}">${esc(t('today.start'))}</button>
       <button class="button primary" data-action="progress" data-id="${esc(task.id)}" data-minutes="${esc(action.recommended_duration_minutes)}">${icon('check')}${esc(t('today.didBlock', { d: fmtDuration(action.recommended_duration_minutes) }))}</button>
+      <button class="button ghost" data-action="complete-task" data-id="${esc(task.id)}">${esc(t('lifecycle.complete'))}</button>
+      <button class="button ghost" data-action="defer-task" data-id="${esc(task.id)}">${esc(t('today.notNow'))}</button>
       <button class="button ghost" data-action="open-task" data-id="${esc(task.id)}">${esc(t('common.open'))}</button>
     </div>` : ''}
   </article>`;
@@ -134,6 +138,14 @@ export default {
         }).join('')}</div>
       </section>` : ''}
 
+      ${data.needs_refinement?.length ? `<section class="section">
+        ${sectionHead(t('today.needsRefinement'))}
+        <div class="list">${data.needs_refinement.map((x) => `<button class="row" data-action="open-task" data-id="${esc(x.id)}">
+          <span class="row-main"><strong>${esc(x.title)}</strong><small>${esc(t('today.needsEstimate'))}</small></span>
+          ${chip(code('status', 'DRAFT'), 'warn')}
+        </button>`).join('')}</div>
+      </section>` : ''}
+
       ${travel ? `<section class="section">${sectionHead(t('today.travel'))}${travel}</section>` : ''}
 
       ${atRisk.length ? `<section class="section">
@@ -166,6 +178,20 @@ export default {
     progress(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
       if (task) logProgress(task, el.dataset.minutes);
+    },
+    async 'start-task'(el, ctx) {
+      const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
+      if (task) await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}/start`, { method: 'POST', body: { expected_version: task.version } }), { success: t('today.started') });
+    },
+    async 'complete-task'(el, ctx) {
+      const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
+      if (task) await lifecycle(task.id, task.version, 'complete');
+    },
+    async 'defer-task'(el, ctx) {
+      const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
+      if (!task) return;
+      const until = new Date(now().getTime() + 60 * 60000).toISOString();
+      await mutate(() => api(`/api/v1/tasks/${encodeURIComponent(task.id)}/defer`, { method: 'POST', body: { expected_version: task.version, until } }), { success: t('today.deferred') });
     },
   },
 };

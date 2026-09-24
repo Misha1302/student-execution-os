@@ -30,7 +30,7 @@ function taskSheet() {
     body: `<div class="form">
       ${field(t('form.title'), `<input data-f="title" maxlength="180" required placeholder="${esc(t('form.taskPlaceholder'))}" enterkeyhint="next">`)}
       <div class="field"><span>${esc(t('form.effort'))}</span>
-        ${chipGroup('effort', [...EFFORTS.map((m) => [m, fmtDuration(m)]), ['custom', t('form.custom')]], 60)}
+        ${chipGroup('effort', [['unknown', t('form.effortUnknown')], ...EFFORTS.map((m) => [m, fmtDuration(m)]), ['custom', t('form.custom')]], 'unknown')}
         <input type="number" inputmode="numeric" min="5" step="5" data-f="effort" class="hidden" placeholder="${esc(t('form.minutes'))}">
       </div>
       <div class="field"><span>${esc(t('form.deadline'))}</span>
@@ -47,8 +47,8 @@ function taskSheet() {
           ${field(t('form.category'), `<select data-f="category">${['HOMEWORK', 'EXAM', 'LESSON', 'WORK', 'ADMIN', 'ERRAND', 'PERSONAL_APPOINTMENT', 'MEETING', 'GENERAL'].map((c) => `<option value="${c}" ${c === 'HOMEWORK' ? 'selected' : ''}>${esc(code('category', c))}</option>`).join('')}</select>`)}
           ${field(t('form.target'), `<input type="datetime-local" data-f="target">`, t('form.targetHelp'))}
           ${field(t('form.actionableFrom'), `<input type="datetime-local" data-f="actionable">`)}
-          <div class="field"><span>${esc(t('form.split'))}</span>${chipGroup('split', [['true', t('form.split.yes')], ['false', t('form.split.no')]], 'true')}</div>
-          <div class="field-row">
+          <div class="field"><span>${esc(t('form.split'))}</span>${chipGroup('split', [['false', t('form.split.no')], ['true', t('form.split.yes')]], 'false')}</div>
+          <div class="field-row hidden" data-split-fields>
             ${field(t('form.minChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="min" value="30">`)}
             ${field(t('form.maxChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="max" value="90">`)}
           </div>
@@ -62,6 +62,7 @@ function taskSheet() {
   const $f = (name) => dialog.querySelector(`[data-f="${name}"]`);
   dialog.addEventListener('chipchange', (e) => {
     if (e.detail.name === 'effort') $f('effort').classList.toggle('hidden', e.detail.value !== 'custom');
+    if (e.detail.name === 'split') dialog.querySelector('[data-split-fields]').classList.toggle('hidden', e.detail.value !== 'true');
     if (e.detail.name === 'deadline') {
       const v = e.detail.value;
       $f('cutoff').classList.toggle('hidden', v !== 'exact');
@@ -75,8 +76,8 @@ function taskSheet() {
     const title = $f('title').value.trim();
     if (!title) { $f('title').focus(); toast(t('form.titleRequired'), { error: true }); return; }
     const effortChoice = chipValue(dialog, 'effort');
-    const effort = Number(effortChoice === 'custom' ? $f('effort').value : effortChoice);
-    if (!effort || effort <= 0) { toast(t('form.effortRequired'), { error: true }); return; }
+    const effort = effortChoice === 'unknown' ? null : Number(effortChoice === 'custom' ? $f('effort').value : effortChoice);
+    if (effortChoice !== 'unknown' && (!effort || effort <= 0)) { toast(t('form.effortRequired'), { error: true }); return; }
     const d = chipValue(dialog, 'deadline');
     let cutoff = { state: 'UNKNOWN' };
     if (d === 'ABSENT') cutoff = { state: 'ABSENT' };

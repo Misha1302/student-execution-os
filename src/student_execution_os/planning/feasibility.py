@@ -184,7 +184,16 @@ class FeasibilityEngine:
                 and event.attendance_policy is not AttendancePolicy.REQUIRED
                 and self._overlaps_horizon(event.interval, snapshot)
             ):
-                return f"UNSUPPORTED_OPTIONAL_EVENT_POLICY:{event.obligation.id}"
+                policy = snapshot.policy.optional_event_policy
+                allowed = (
+                    event.attendance_policy is AttendancePolicy.OPTIONAL
+                    and policy in {"OMIT_OPTIONAL", "OMIT_OPTIONAL_AND_PREFERRED"}
+                ) or (
+                    event.attendance_policy is AttendancePolicy.PREFERRED
+                    and policy == "OMIT_OPTIONAL_AND_PREFERRED"
+                )
+                if not allowed:
+                    return f"UNSUPPORTED_OPTIONAL_EVENT_POLICY:{event.obligation.id}"
         values = [
             snapshot.analysis_horizon_start,
             snapshot.analysis_horizon_end,

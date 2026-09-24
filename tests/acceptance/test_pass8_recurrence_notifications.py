@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import unittest
+from unittest.mock import patch
 
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.domain.model import (
@@ -12,10 +13,13 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.notifications import (
+    FCMChannel,
+    FCMConfig,
     NotificationKind,
     NotificationState,
     QuietHours,
     SQLiteNotificationRepository,
+    register_device,
 )
 from student_execution_os.persistence import SQLiteCanonicalRepository
 from student_execution_os.planning import SQLitePlanningStateSource, build_planning_snapshot
@@ -263,6 +267,23 @@ class Pass8RecurrenceNotificationTests(unittest.TestCase):
         self.assertEqual(recomputed.scheduled_for, BASE + timedelta(minutes=6))
         self.assertEqual(len(self.notifications.list("a")), 1)
 
+    def test_identical_notification_reconciliation_does_not_advance_workflow_version(self):
+        values = dict(
+            account_id="a", suppression_key="same-transition",
+            kind=NotificationKind.RISK_THRESHOLD,
+            scheduled_for=BASE + timedelta(minutes=5),
+            domain_revision=self.repo.get_server_revision("a"), entity_ref="t1",
+            group_key="risk:t1", cooldown_until=BASE + timedelta(minutes=15),
+        )
+        first = self.notifications.schedule(**values)
+        second = self.notifications.schedule(**values)
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(second.version, first.version)
+        metric = self.repo.connection.execute(
+            "SELECT value FROM operational_metrics WHERE account_id='a' AND metric_name='notification_duplicate_suppressed'"
+        ).fetchone()
+        self.assertEqual(metric[0], 1)
+
     def test_quiet_hours_defers_using_iana_civil_time(self):
         quiet = QuietHours(
             timezone_name="Europe/Amsterdam",
@@ -277,6 +298,27 @@ class Pass8RecurrenceNotificationTests(unittest.TestCase):
         )
         local = notification.scheduled_for.astimezone(ZoneInfo("Europe/Amsterdam"))
         self.assertEqual((local.hour, local.minute), (7, 0))
+
+    def test_fcm_channel_uses_active_device_and_stable_delivery_key(self):
+        register_device(self.repo, "a", {"token": "device-token", "device_id": "phone"})
+        notification = self.notifications.schedule(
+            account_id="a", suppression_key="fcm", kind=NotificationKind.PLAN_CONFLICT,
+            scheduled_for=BASE, domain_revision=self.repo.get_server_revision("a"), group_key="plan",
+        )
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b'{"name":"projects/demo/messages/1"}'
+
+        with patch("urllib.request.urlopen", return_value=Response()) as send:
+            receipt = FCMChannel(
+                FCMConfig("https://fcm.example/messages:send", "secret"), canonical=self.repo
+            ).send(notification, "delivery-stable")
+        self.assertTrue(receipt.delivered)
+        request = send.call_args.args[0]
+        self.assertEqual(request.headers["X-idempotency-key"], "delivery-stable:phone")
+        self.assertIn(b'"deep_link": "#/today"', request.data)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ class NotificationKind(StrEnum):
     PLAN_CONFLICT = "PLAN_CONFLICT"
     SOURCE_CHANGE = "SOURCE_CHANGE"
     COMPLETION_FOLLOWUP = "COMPLETION_FOLLOWUP"
+    PREPARATION = "PREPARATION"
 
 
 class NotificationState(StrEnum):

@@ -186,8 +186,8 @@ class Obligation:
 @dataclass(frozen=True)
 class Task:
     obligation: Obligation
-    estimated_total_effort_minutes: int
-    remaining_effort_minutes: int
+    estimated_total_effort_minutes: int | None
+    remaining_effort_minutes: int | None
     splittable: bool
     min_chunk_minutes: int | None
     max_chunk_minutes: int | None
@@ -202,9 +202,15 @@ class Task:
     def __post_init__(self) -> None:
         if self.obligation.kind is not ObligationKind.TASK:
             raise ValidationError("Task requires TASK obligation kind")
-        if self.estimated_total_effort_minutes <= 0:
+        draft = self.obligation.lifecycle_status is LifecycleStatus.DRAFT
+        if (self.estimated_total_effort_minutes is None) != (self.remaining_effort_minutes is None):
+            raise ValidationError("estimated and remaining effort must both be known or both be unknown")
+        if self.estimated_total_effort_minutes is None:
+            if not draft:
+                raise ValidationError("only DRAFT tasks may have unknown effort")
+        elif self.estimated_total_effort_minutes <= 0:
             raise ValidationError("estimated total effort must be positive")
-        if self.remaining_effort_minutes < 0:
+        if self.remaining_effort_minutes is not None and self.remaining_effort_minutes < 0:
             raise ValidationError("remaining effort cannot be negative")
         if self.min_chunk_minutes is not None and self.min_chunk_minutes <= 0:
             raise ValidationError("min_chunk_minutes must be positive")
@@ -216,21 +222,29 @@ class Task:
             and self.max_chunk_minutes < self.min_chunk_minutes
         ):
             raise ValidationError("max_chunk_minutes must be >= min_chunk_minutes")
-        if not self.splittable and self.remaining_effort_minutes > 0:
+        if not self.splittable and self.remaining_effort_minutes is not None and self.remaining_effort_minutes > 0:
             if self.min_chunk_minutes is not None and self.remaining_effort_minutes < self.min_chunk_minutes:
                 raise ValidationError("non-splittable remaining effort is shorter than configured minimum block")
             if self.max_chunk_minutes is not None and self.remaining_effort_minutes > self.max_chunk_minutes:
                 raise ValidationError("non-splittable remaining effort exceeds configured maximum block")
         if self.estimated_total_effort_low_minutes is not None:
+            if self.estimated_total_effort_minutes is None:
+                raise ValidationError("effort range cannot be known while expected effort is unknown")
             if self.estimated_total_effort_low_minutes <= 0 or self.estimated_total_effort_low_minutes > self.estimated_total_effort_minutes:
                 raise ValidationError("estimated effort low must be positive and <= expected")
         if self.estimated_total_effort_high_minutes is not None:
+            if self.estimated_total_effort_minutes is None:
+                raise ValidationError("effort range cannot be known while expected effort is unknown")
             if self.estimated_total_effort_high_minutes < self.estimated_total_effort_minutes:
                 raise ValidationError("estimated effort high must be >= expected")
         if self.remaining_effort_low_minutes is not None:
+            if self.remaining_effort_minutes is None:
+                raise ValidationError("remaining range cannot be known while expected remaining effort is unknown")
             if self.remaining_effort_low_minutes < 0 or self.remaining_effort_low_minutes > self.remaining_effort_minutes:
                 raise ValidationError("remaining effort low must be >= 0 and <= expected")
         if self.remaining_effort_high_minutes is not None:
+            if self.remaining_effort_minutes is None:
+                raise ValidationError("remaining range cannot be known while expected remaining effort is unknown")
             if self.remaining_effort_high_minutes < self.remaining_effort_minutes:
                 raise ValidationError("remaining effort high must be >= expected")
         require_aware(self.actionable_from, "actionable_from")
@@ -273,6 +287,17 @@ class LocationEffect:
 
 
 @dataclass(frozen=True)
+class EventLocationOption:
+    id: str
+    label: str
+    effect: LocationEffect
+
+    def __post_init__(self) -> None:
+        if not self.id or not self.label.strip():
+            raise ValidationError("event location option requires id and label")
+
+
+@dataclass(frozen=True)
 class Event:
     obligation: Obligation
     time_semantics: EventTimeSemantics
@@ -280,6 +305,8 @@ class Event:
     attendance_policy: AttendancePolicy
     location_effect: LocationEffect
     arrival_requirement_minutes: int = 0
+    location_options: tuple[EventLocationOption, ...] = ()
+    selected_location_option_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.obligation.kind is not ObligationKind.EVENT:
@@ -288,6 +315,15 @@ class Event:
             raise ValidationError("Event model currently materializes FIXED_INTERVAL only")
         if self.arrival_requirement_minutes < 0:
             raise ValidationError("arrival requirement cannot be negative")
+        option_ids = [option.id for option in self.location_options]
+        if len(option_ids) != len(set(option_ids)):
+            raise ValidationError("event location option ids must be unique")
+        if self.selected_location_option_id is not None:
+            selected = next((option for option in self.location_options if option.id == self.selected_location_option_id), None)
+            if selected is None or selected.effect != self.location_effect:
+                raise ValidationError("selected event location option must exist and own the effective location")
+        elif self.location_options and self.location_effect.kind is not LocationEffectKind.NONE:
+            raise ValidationError("hybrid event without a selected option cannot claim an effective location")
 
 
 class ProjectStatus(StrEnum):

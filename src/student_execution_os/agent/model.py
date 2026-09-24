@@ -14,7 +14,33 @@ class IntentStrength(StrEnum):
 
 
 class AgentCommand(StrEnum):
+    CREATE_TASK = "CREATE_TASK"
+    CREATE_EVENT = "CREATE_EVENT"
+    REFINE_TASK = "REFINE_TASK"
+    LOG_PROGRESS = "LOG_PROGRESS"
+    COMPLETE_OBLIGATION = "COMPLETE_OBLIGATION"
     CANCEL_OBLIGATION = "CANCEL_OBLIGATION"
+
+
+@dataclass(frozen=True)
+class ProposedAction:
+    id: str
+    command: AgentCommand
+    payload: dict[str, Any]
+    confidence: float
+    unresolved_fields: tuple[str, ...]
+    expected_version: int | None
+    provenance: dict[str, str]
+    requires_confirmation: bool = False
+
+
+@dataclass(frozen=True)
+class ActionBatch:
+    id: str
+    actions: tuple[ProposedAction, ...]
+    provider: str
+    created_at: str
+    expires_at: str
 
 
 class ActionIntentStatus(StrEnum):
