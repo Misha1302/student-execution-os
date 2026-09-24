@@ -31,6 +31,13 @@ services:
     depends_on:
       - api
     command: ["python", "-m", "student_execution_os.reminders.worker", "--database", "/data/student-execution-os.db"]
+    healthcheck:
+      # The image's default check probes the API port; the worker has none.
+      test: ["CMD", "python", "-m", "student_execution_os.reminders.worker", "--database", "/data/student-execution-os.db", "--check-heartbeat"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     environment:
       SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_FCM_SERVICE_ACCOUNT_JSON: ${SEOS_FCM_SERVICE_ACCOUNT_JSON:-}

@@ -40,6 +40,20 @@ def heartbeat(database: str, payload: dict) -> None:
             )
 
 
+def heartbeat_is_fresh(database: str, max_age_seconds: float = 180.0) -> bool:
+    """Container health check: the worker loop wrote a heartbeat recently."""
+    import sqlite3
+
+    try:
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5) as conn:
+            row = conn.execute("SELECT beat_at FROM worker_heartbeats WHERE name='reminder-worker'").fetchone()
+    except sqlite3.Error:
+        return False
+    if row is None:
+        return False
+    return (_now() - datetime.fromisoformat(row[0])).total_seconds() < max_age_seconds
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Student Execution OS reminder worker")
     parser.add_argument("--database", required=True)
@@ -47,7 +61,10 @@ def main() -> int:
     parser.add_argument("--tick-seconds", type=float, default=60.0)
     parser.add_argument("--dispatch-seconds", type=float, default=5.0)
     parser.add_argument("--once", action="store_true", help="one engine tick and one dispatch, then exit")
+    parser.add_argument("--check-heartbeat", action="store_true", help="exit 0 if the worker heartbeat is fresh")
     args = parser.parse_args()
+    if args.check_heartbeat:
+        return 0 if heartbeat_is_fresh(args.database) else 1
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     provider = provider_from_environment()
     engine = ReminderEngine(args.database)
