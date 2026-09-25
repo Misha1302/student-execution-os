@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v14**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v15**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -84,6 +84,18 @@ and deleted with the account. Without a key everything works with the local pars
 server-wide `SEOS_LLM_*` key is gone; operator credentials (`SEOS_PLATFORM_LLM_*`) serve
 only accounts with a platform-managed entitlement — the seam for a future paid plan
 ([roadmap](docs/ROADMAP.md)).
+
+Schema v15 makes the app **offline-first** and adds fixed-time events (ADR 0018):
+
+- Every task/event change (create, edit, start, done, «не сейчас», reschedule, won't do,
+  archive, delete) is queued durably on the device and shown on every screen at once;
+  the queue is sent in the background and replayed exactly once after reconnect or restart.
+- "Сегодня с 21 до 22 провести занятие по программированию" becomes an event 21:00–22:00
+  (1 h) with a clean title and no deadline, with an optional reminder before it.
+- Tasks: «Не буду делать», archive/restore and delete (tombstoned against late replays);
+  counted progress ("3 из 10 задач").
+- Sleep hours (Settings) keep work out of the night and reminders quiet; Plan shows seven
+  days with swipe; Today never hides open tasks; reasons are plain sentences.
 
 The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
@@ -173,6 +185,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Hosted auth and mobile client ADR](docs/adr/0015-hosted-auth-and-mobile-client.md)
 - [Daily product surfaces and schema v11 ADR](docs/adr/0016-daily-product-surfaces.md)
 - [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
+- [Offline-first client, events and lifecycle (v15) ADR](docs/adr/0018-offline-first-events-and-lifecycle.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
@@ -193,6 +206,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 7. Reliability/security/conformance hardening. **Implemented through schema v12.**
 8. Offline task-operation replication and execution reminders. **Implemented for the MVP; external FCM/LLM/routing/OAuth providers remain configuration-dependent.**
 9. Per-account AI keys (BYOK). **Implemented in schema v14.** Paid/managed AI: see [docs/ROADMAP.md](docs/ROADMAP.md).
+10. Offline-first client, fixed-time events, task lifecycle, sleep hours. **Implemented in schema v15.**
 
 ## License
 

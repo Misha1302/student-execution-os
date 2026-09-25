@@ -51,7 +51,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 _UNSET = object()
 
 
@@ -124,6 +124,7 @@ class SQLiteCanonicalRepository:
             (12, Path(__file__).with_name("migrations") / "012_execution_loop.sql"),
             (13, Path(__file__).with_name("migrations") / "013_capture_and_reminder_actions.sql"),
             (14, Path(__file__).with_name("migrations") / "014_llm_credentials.sql"),
+            (15, Path(__file__).with_name("migrations") / "015_lifecycle_events_progress.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -623,6 +624,10 @@ class SQLiteCanonicalRepository:
             candidate = current.completed(now)
         elif action == "CANCEL":
             candidate = current.cancelled(now)
+        elif action == "ARCHIVE":
+            candidate = current.archived(now)
+        elif action == "UNARCHIVE":
+            candidate = current.unarchived(now)
         elif action == "REOPEN":
             candidate = current.reopened(now)
             if current.kind is ObligationKind.TASK:
@@ -705,6 +710,65 @@ class SQLiteCanonicalRepository:
 
     def reopen_obligation(self, **kwargs) -> Obligation:
         return self._transition_obligation(action="REOPEN", **kwargs)
+
+    def archive_obligation(self, **kwargs) -> Obligation:
+        return self._transition_obligation(action="ARCHIVE", **kwargs)
+
+    def unarchive_obligation(self, **kwargs) -> Obligation:
+        return self._transition_obligation(action="UNARCHIVE", **kwargs)
+
+    def is_deleted_obligation(self, account_id: str, obligation_id: str) -> bool:
+        return self.connection.execute(
+            "SELECT 1 FROM deleted_obligations WHERE account_id=? AND obligation_id=?", (account_id, obligation_id)
+        ).fetchone() is not None
+
+    def delete_obligation(
+        self, *, account_id: str, obligation_id: str, expected_version: int, actor: ActorCategory
+    ) -> None:
+        """Remove a user's task or event for good.
+
+        Every row that references it cascades (task/event subtype, evidence links,
+        overrides, attachments links, pins); reminder state and undelivered reminder
+        messages are removed explicitly because they reference it by value. A tombstone
+        keeps late offline replays from resurrecting it.
+        """
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT kind,version FROM obligations WHERE account_id=? AND id=?", (account_id, obligation_id)
+            ).fetchone()
+            if row is None:
+                raise EntityNotFound("obligation not found")
+            if int(row["version"]) != expected_version:
+                raise VersionConflict(f"expected version {expected_version}, current {row['version']}")
+            now = self.clock.now()
+            conn.execute(
+                "UPDATE reminder_messages SET delivery_state='CANCELLED',lease_owner=NULL,lease_expires_at=NULL,"
+                "last_error='DELETED' WHERE account_id=? AND delivery_state IN ('PENDING','LEASED') AND EXISTS ("
+                "SELECT 1 FROM json_each(reminder_messages.task_ids_json) WHERE value=?)",
+                (account_id, obligation_id),
+            )
+            conn.execute("DELETE FROM reminder_states WHERE account_id=? AND task_id=?", (account_id, obligation_id))
+            conn.execute(
+                "DELETE FROM attachment_links WHERE account_id=? AND owner_kind='OBLIGATION' AND owner_id=?",
+                (account_id, obligation_id),
+            )
+            conn.execute(
+                "DELETE FROM dependencies WHERE account_id=? AND (predecessor_task_id=? OR successor_id=?)",
+                (account_id, obligation_id, obligation_id),
+            )
+            conn.execute(
+                "DELETE FROM milestones WHERE account_id=? AND owner_kind='OBLIGATION' AND owner_id=?",
+                (account_id, obligation_id),
+            )
+            conn.execute("DELETE FROM obligations WHERE account_id=? AND id=?", (account_id, obligation_id))
+            conn.execute(
+                "INSERT OR REPLACE INTO deleted_obligations(account_id,obligation_id,kind,deleted_at) VALUES (?,?,?,?)",
+                (account_id, obligation_id, row["kind"], _iso(now)),
+            )
+            self._record_change(
+                conn, account_id=account_id, entity_type="OBLIGATION", entity_id=obligation_id,
+                action="DELETE", actor=actor,
+            )
 
     def _validate_location_effect_places(
         self,
@@ -868,6 +932,10 @@ class SQLiteCanonicalRepository:
         ends_at: datetime,
         actor: ActorCategory,
         attendance_policy: AttendancePolicy | None = None,
+        title: str | object = _UNSET,
+        description: str | None | object = _UNSET,
+        category: ObligationCategory | object = _UNSET,
+        importance: Importance | object = _UNSET,
     ) -> Event:
         current = self.get_event(account_id, obligation_id)
         if current.obligation.version != expected_version:
@@ -876,11 +944,20 @@ class SQLiteCanonicalRepository:
             )
         interval = HalfOpenInterval(starts_at, ends_at)
         policy = attendance_policy or current.attendance_policy
+        ob = current.obligation
+        next_title = ob.title if title is _UNSET else str(title).strip()
+        if not next_title:
+            raise ValidationError("title is required")
+        next_description = ob.description if description is _UNSET else (description or None)
+        next_category = ob.category if category is _UNSET else ObligationCategory(category)
+        next_importance = ob.importance if importance is _UNSET else Importance(importance)
         now = self.clock.now()
         with self._tx() as conn:
             cur = conn.execute(
-                "UPDATE obligations SET updated_at=?,version=version+1 WHERE account_id=? AND id=? AND version=?",
-                (_iso(now), account_id, obligation_id, expected_version),
+                "UPDATE obligations SET title=?,description=?,category=?,importance=?,updated_at=?,version=version+1 "
+                "WHERE account_id=? AND id=? AND version=?",
+                (next_title, next_description, next_category.value, next_importance.value, _iso(now),
+                 account_id, obligation_id, expected_version),
             )
             if cur.rowcount != 1:
                 raise VersionConflict("obligation version changed before commit")

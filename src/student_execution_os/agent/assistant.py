@@ -93,6 +93,12 @@ class DeterministicAssistantParser:
             raise ValidationError("input is not supported by the deterministic RU/EN parser")
         unresolved = [field for field in parsed.pop("unresolved") if field != "title"]
         parsed.pop("cutoff_time_assumed", None)
+        if parsed.get("kind") == "EVENT":
+            payload = {key: parsed[key] for key in ("title", "description", "starts_at", "ends_at", "category", "importance")
+                       if parsed.get(key) is not None}
+            return [{"command": AgentCommand.CREATE_EVENT.value, "payload": payload, "confidence": 0.85,
+                     "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]
+        parsed.pop("kind", None)
         payload = {key: value for key, value in parsed.items() if value is not None or key in _NULLABLE_CAPTURE}
         return [{"command": AgentCommand.CREATE_TASK.value, "payload": payload,
                  "confidence": 0.8 if not unresolved else 0.6, "unresolved_fields": unresolved,

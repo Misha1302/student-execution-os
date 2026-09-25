@@ -3,6 +3,7 @@ import { t, code, fmtDuration, now } from './i18n.js';
 import { esc, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy } from './ui.js';
 import { mutate } from './actions.js';
 import { openCapture } from './capture.js';
+import { newEventSheet } from './events.js';
 
 function nextHour() {
   const d = now();
@@ -13,51 +14,6 @@ function nextHour() {
 
 function field(label, control, hint = '') {
   return `<label class="field"><span>${esc(label)}</span>${control}${hint ? `<small class="help">${esc(hint)}</small>` : ''}</label>`;
-}
-
-function eventSheet() {
-  const start = nextHour();
-  const dialog = openSheet({
-    title: t('compose.event'),
-    full: true,
-    body: `<div class="form">
-      ${field(t('form.title'), `<input data-f="title" maxlength="180" placeholder="${esc(t('form.eventPlaceholder'))}">`)}
-      ${field(t('form.starts'), `<input type="datetime-local" data-f="start" value="${esc(localInputValue(start))}">`)}
-      <div class="field"><span>${esc(t('form.duration'))}</span>
-        ${chipGroup('duration', [[30, fmtDuration(30)], [60, fmtDuration(60)], [90, fmtDuration(90)], [120, fmtDuration(120)], [180, fmtDuration(180)]], 90)}
-      </div>
-      <div class="field"><span>${esc(t('form.attendance'))}</span>
-        ${chipGroup('attendance', ['REQUIRED', 'PREFERRED', 'OPTIONAL'].map((v) => [v, code('attendance', v)]), 'REQUIRED')}
-      </div>
-      <div class="field"><span>${esc(t('form.location'))}</span>
-        ${chipGroup('location', [['NONE', code('location', 'NONE')], ['REMOTE', code('location', 'REMOTE')]], 'NONE')}
-        <small class="help">${esc(t('form.locationHelp'))}</small>
-      </div>
-      ${field(t('form.category'), `<select data-f="category">${['LESSON', 'EXAM', 'MEETING', 'WORK', 'PERSONAL_APPOINTMENT', 'GENERAL'].map((c) => `<option value="${c}">${esc(code('category', c))}</option>`).join('')}</select>`)}
-    </div>`,
-    actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
-      <button type="button" class="button primary" data-save>${esc(t('compose.create'))}</button>`,
-  });
-  const $f = (name) => dialog.querySelector(`[data-f="${name}"]`);
-  setTimeout(() => $f('title').focus(), 80);
-  dialog.querySelector('[data-save]').addEventListener('click', async (e) => {
-    const title = $f('title').value.trim();
-    const startsAt = isoFromLocalInput($f('start').value);
-    if (!title || !startsAt) { toast(t('form.titleAndTime'), { error: true }); return; }
-    const endsAt = new Date(new Date(startsAt).getTime() + Number(chipValue(dialog, 'duration')) * 60000).toISOString();
-    setBusy(e.currentTarget, true);
-    const created = await mutate(() => api('/api/v1/events', {
-      method: 'POST',
-      body: {
-        title, starts_at: startsAt, ends_at: endsAt,
-        category: $f('category').value,
-        attendance_policy: chipValue(dialog, 'attendance'),
-        location_effect: { kind: chipValue(dialog, 'location') },
-      },
-    }), { success: t('compose.eventCreated') });
-    setBusy(e.currentTarget, false);
-    if (created) dialog.close('saved');
-  });
 }
 
 function recurringSheet() {
@@ -114,8 +70,9 @@ function recurringSheet() {
   });
 }
 
-// Tasks are captured in one flow (capture.js); events and series keep their own forms.
-export const composers = { task: () => openCapture(), event: eventSheet, recurring: recurringSheet };
+// Tasks and events are captured in one flow (capture.js); forms remain for a blank
+// event (events.js) and for a series.
+export const composers = { task: () => openCapture(), event: () => newEventSheet(), recurring: recurringSheet };
 
 export function compose() {
   return openCapture();

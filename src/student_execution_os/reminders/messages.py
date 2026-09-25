@@ -119,6 +119,8 @@ def compose(stage: Stage, facts: list[TaskFacts], *, repeat: bool, now: datetime
             "actions": actions,
         }
     item = facts[0]
+    if item.kind == "EVENT":
+        return _event_reminder(item, labels, now=now, zone=zone, locale=locale)
     key = "START_NOW_REPEAT" if stage is Stage.START_NOW and repeat else stage
     title_t, body_t = _TEXT[locale][key]
     due = _when(item.due_at, now, zone, locale)
@@ -138,3 +140,23 @@ def compose(stage: Stage, facts: list[TaskFacts], *, repeat: bool, now: datetime
     }
     return {"title": title_t.format(**values), "body": body_t.format(**values),
             "deep_link": f"/task/{item.task_id}", "actions": actions}
+
+
+def _event_reminder(item: TaskFacts, labels: dict[str, str], *, now: datetime, zone: ZoneInfo, locale: str) -> dict:
+    """"Скоро: «Занятие по программированию»" — 21:00–22:00. Opening the app is the only action."""
+    starts = item.target_at
+    title = item.title if len(item.title) <= 60 else item.title[:57] + "…"
+    span = ""
+    if starts is not None:
+        span = starts.astimezone(zone).strftime("%H:%M")
+        if item.ends_at is not None:
+            span += "–" + item.ends_at.astimezone(zone).strftime("%H:%M")
+    minutes = None if starts is None else max(0, round((starts - now).total_seconds() / 60))
+    if locale == "ru":
+        head = f"Скоро: «{title}»" if minutes else f"Начинается: «{title}»"
+        body = f"{_when(starts, now, zone, locale)}" + (f" ({span})" if span else "") + (f", через {minutes} мин" if minutes else "")
+    else:
+        head = f"Coming up: “{title}”" if minutes else f"Starting now: “{title}”"
+        body = f"{_when(starts, now, zone, locale)}" + (f" ({span})" if span else "") + (f", in {minutes} min" if minutes else "")
+    return {"title": head, "body": body, "deep_link": "/today",
+            "actions": [{"id": "OPEN", "label": labels["OPEN"], **ACTIONS["OPEN"]}]}

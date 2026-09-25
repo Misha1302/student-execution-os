@@ -22,6 +22,12 @@ def _local(value: str | None) -> str | None:
 
 
 def summarize(result: dict) -> dict:
+    if result.get("kind") == "EVENT":
+        return {
+            "kind": "EVENT", "title": result["title"], "category": result["category"],
+            "starts_at": _local(result["starts_at"]), "ends_at": _local(result["ends_at"]),
+            "duration_minutes": result["duration_minutes"], "unresolved": result["unresolved"],
+        }
     cutoff = result["actual_cutoff"]
     return {
         "title": result["title"], "estimated_total_effort_minutes": result["estimated_total_effort_minutes"],

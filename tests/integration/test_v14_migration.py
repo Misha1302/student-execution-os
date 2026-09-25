@@ -52,7 +52,7 @@ class V14MigrationTest(unittest.TestCase):
             client = TestClient(create_app(db, account_id="acct-old", principal_id="u", now=lambda: NOW))
             health = client.get("/api/v1/health").json()
             self.assertEqual(health["schema_version"], SCHEMA_VERSION)
-            self.assertEqual(SCHEMA_VERSION, 14)
+            self.assertGreaterEqual(SCHEMA_VERSION, 14)
             task = client.get("/api/v1/tasks/task-old").json()
             self.assertEqual((task["title"], task["version"]), ("Old essay", 1))
             done = client.post("/api/v1/sync", json={"operations": [{
@@ -66,7 +66,7 @@ class V14MigrationTest(unittest.TestCase):
             with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
                 repo.initialize()  # re-entrant
                 self.assertEqual([r[0] for r in repo.connection.execute("SELECT version FROM schema_migrations")],
-                                 list(range(1, 15)))
+                                 list(range(1, SCHEMA_VERSION + 1)))
                 self.assertEqual(repo.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_documented_rollback_leaves_a_v13_shaped_database(self):
@@ -76,6 +76,9 @@ class V14MigrationTest(unittest.TestCase):
                 repo.initialize()
                 repo.create_account("a")
             conn = sqlite3.connect(db)
+            # Newer releases are rolled back first (see their ADRs), then v14.
+            conn.executescript("DROP TABLE deleted_obligations; DROP TABLE event_reminders; "
+                               "DROP TABLE task_progress_counts; DELETE FROM schema_migrations WHERE version=15;")
             conn.executescript("DROP TABLE llm_credentials; DROP TABLE llm_entitlements; "
                                "DELETE FROM schema_migrations WHERE version=14;")
             conn.commit()

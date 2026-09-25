@@ -97,11 +97,15 @@ console.log('{{"ok":true}}');
         self.assertIn("pushNotificationActionPerformed", native)
         # Dictation feeds the same parse and card as typing; nothing is created until Create.
         capture = (ROOT / "src/student_execution_os/web/static/js/capture.js").read_text()
-        voice_block = capture.split("async function listenOnce(", 1)[1].split("\n  }\n", 1)[0]
-        self.assertIn("speechToText", voice_block)
+        voice_block = capture.split("async function listen(", 1)[1].split("\n  }\n", 1)[0]
+        self.assertIn("startDictation", voice_block)
         self.assertIn("parseLocal()", voice_block)
-        self.assertNotIn("queueOperation", voice_block)
+        self.assertNotIn("change(", voice_block)
         self.assertNotIn("/assistant/apply", voice_block)
+        # Recording is explicit: a stop control and visible recording/processing/error states.
+        self.assertIn("data-voice-stop", capture)
+        for state in ("recording", "processing", "error"):
+            self.assertIn(f"'{state}'", capture + native)
         # Reminder notifications are rendered natively with background action buttons.
         self.assertIn(".reminders.ReminderMessagingService", manifest)
         self.assertIn(".reminders.ReminderActionReceiver", manifest)

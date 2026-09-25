@@ -162,6 +162,16 @@ class BrowserUiTest(unittest.TestCase):
     def _ready(page, view: str) -> None:
         page.wait_for_selector(f'#workspace[data-view="{view}"][data-view-state="ready"]')
 
+    PENDING_OPS_JS = ("Object.entries(localStorage).filter(([k]) => k.startsWith('seos.ops.'))"
+                      ".flatMap(([, v]) => JSON.parse(v)).filter((x) => x.state === 'PENDING').length")
+
+    def _wait_sync(self, page, *, tries: int = 60) -> None:
+        """Changes are queued locally and sent in the background: wait until sent."""
+        for _ in range(tries):  # the page CSP forbids wait_for_function's string eval
+            if page.evaluate(self.PENDING_OPS_JS) == 0 and self.posts:
+                return
+            page.wait_for_timeout(100)
+
     @staticmethod
     def _text(page) -> str:
         return page.locator("#workspace").inner_text()
@@ -321,6 +331,7 @@ class BrowserUiTest(unittest.TestCase):
         sheet.locator('[data-f="category"]').select_option("EXAM")
         sheet.locator("[data-save]").click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         path, payload = self.posts[-1]
         operation = payload["operations"][0]
         self.assertEqual((path, operation["type"]), ("/api/v1/sync", "task.update"))
@@ -331,6 +342,7 @@ class BrowserUiTest(unittest.TestCase):
         page.locator('[data-action="detail-reschedule"]').click()
         page.locator('dialog.sheet[open] [data-deadline="d1"]').click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         operation = self.posts[-1][1]["operations"][0]
         self.assertEqual(operation["type"], "task.update")
         old = datetime.fromisoformat(task["actual_cutoff"]["at"])
@@ -341,6 +353,7 @@ class BrowserUiTest(unittest.TestCase):
         page.locator('[data-action="detail-reschedule"]').click()
         page.locator('dialog.sheet[open] [data-later="morning"]').click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         operation = self.posts[-1][1]["operations"][0]
         self.assertEqual(operation["type"], "task.defer")
         self.assertTrue(operation["payload"]["until"].endswith("06:00:00.000Z"))  # 09:00 Moscow
@@ -392,6 +405,7 @@ class BrowserUiTest(unittest.TestCase):
         sheet.locator('[data-value="30"]').click()
         sheet.locator("[data-save]").click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         path, payload = self.posts[-1]
         operation = payload["operations"][0]
         # Snooze goes through the offline queue and names the reminder it answers.
@@ -546,6 +560,7 @@ class BrowserUiTest(unittest.TestCase):
         self._screenshot(page, "mobile-capture.png")
         sheet.locator("[data-create]").click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         path, payload = self.posts[-1]
         operation = payload["operations"][0]
         self.assertEqual((path, operation["type"]), ("/api/v1/sync", "task.create"))
@@ -579,6 +594,7 @@ class BrowserUiTest(unittest.TestCase):
         sheet.locator('[data-f="description"]').dispatch_event("change")
         sheet.locator("[data-create]").click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         sent = self.posts[-1][1]["operations"][0]["payload"]
         self.assertEqual(sent["title"], "Buy groceries")
         self.assertEqual((sent["estimated_total_effort_minutes"], sent["actual_cutoff"]), (30, {"state": "ABSENT"}))
@@ -592,6 +608,7 @@ class BrowserUiTest(unittest.TestCase):
         sheet.locator('[data-answer="deadline"][data-value="unknown"]').click()
         sheet.locator("[data-create]").click()
         page.locator(".toast").first.wait_for()
+        self._wait_sync(page)
         sent = self.posts[-1][1]["operations"][0]["payload"]
         self.assertIsNone(sent["estimated_total_effort_minutes"])
         self.assertEqual(sent["actual_cutoff"], {"state": "UNKNOWN"})
@@ -625,7 +642,7 @@ class BrowserUiTest(unittest.TestCase):
         self.offline.clear()
         page.evaluate("window.dispatchEvent(new Event('online'))")
         for _ in range(50):  # the page CSP forbids wait_for_function's string eval
-            if page.evaluate("Object.entries(localStorage).filter(([k]) => k.startsWith('seos.ops.')).every(([, v]) => JSON.parse(v).length === 0)"):
+            if page.evaluate(self.PENDING_OPS_JS) == 0:
                 break
             page.wait_for_timeout(100)
         synced = [p for path, p in self.posts if path == "/api/v1/sync"]

@@ -99,6 +99,14 @@ const FILLERS = new Set([
 const NOT_CLOCK = new Set(['a', 'an', 'couple', 'few', 'several', 'пару', 'пары', 'несколько', 'полтора', 'полторы', 'ноль', 'zero']);
 const COUNTED = 'задач|этап|раз|страниц|глав|упражнен|пункт|част|шаг|урок|steps?|pages?|chapters?|tasks?|parts?|times?';
 const EDGE_PREPS = new Set(['в', 'во', 'к', 'ко', 'до', 'на', 'по', 'с', 'со', 'за', 'at', 'by', 'on', 'in', 'for', 'until', 'before', 'from']);
+// Something that happens at a fixed time rather than work to fit somewhere.
+const EVENT_WORDS = '(?<!\\w)(?:пар[аеуы]|лекци\\w*|семинар\\w*|заняти\\w*|урок\\w*|встреч\\w*|созвон\\w*|звонок|'
+  + 'тренировк\\w*|собрани\\w*|собеседовани\\w*|консультаци\\w*|при[её]м\\w*|вебинар\\w*|репетици\\w*|'
+  + 'meeting|(?:a|the)\\s+call|call\\s+with|class|lecture|seminar|lesson|training|practice|workout|appointment|interview|webinar)(?!\\w)';
+// ...unless the phrase is about getting ready for it ("подготовиться к семинару в 18").
+const PREPARE_WORDS = '(?<!\\w)(?:подготов\\w*|готовить\\w*|prepare\\w*|study\\s+for)(?!\\w)';
+// A university "пара" (and lectures/seminars, which are pairs) lasts 90 minutes.
+const LONG_EVENT_WORDS = '(?<!\\w)(?:пар[аеуы]|лекци\\w*|семинар\\w*)(?!\\w)';
 const EXAM_DATIVE = {
   экзамен: 'экзамену', зачет: 'зачёту', зачёт: 'зачёту', контрольная: 'контрольной',
   контрольную: 'контрольной', коллоквиум: 'коллоквиуму', тест: 'тесту', сессия: 'сессии', сессию: 'сессии',
@@ -159,6 +167,20 @@ function hourOf(hour, suffix, explicit) {
   if (s === 'am' || s === 'утра') return hour === 12 ? 0 : hour;
   if (explicit && s === '') return hour;
   return hour >= 1 && hour <= 7 ? hour + 12 : hour;
+}
+
+// Clock times of "с h1 до h2" → [start, end, ends the next day].
+function intervalOf(h1, m1, s1, exact1, h2, m2, s2, exact2) {
+  if (h1 > 23 || h2 > 23 || m1 > 59 || m2 > 59) return null;
+  let start = hourOf(h1, s1 || s2, exact1 || h1 > 12);
+  if (!s1 && s2 && start > hourOf(h2, s2, true)) start = hourOf(h1, null, true); // "11-1pm": 11:00 to 13:00
+  let end = hourOf(h2, s2, exact2 || h2 > 12 || Boolean(s2));
+  const begin = start * 60 + m1;
+  let finish = end * 60 + m2;
+  if (finish <= begin && !s2 && h2 < 12 && (h2 + 12) * 60 + m2 > begin) { end = h2 + 12; finish = end * 60 + m2; }
+  let overnight = false;
+  if (finish <= begin) { if (!s2) end = h2; overnight = true; } // "с 23 до 1"
+  return [[start % 24, m1], [end % 24, m2], overnight];
 }
 
 function monthOf(token) {
@@ -328,6 +350,28 @@ class Parser {
     this.push({ start: x.start, end: x.end, kind: 'date', value, cue: cueOf(preposition) });
   }
 
+  intervals() {
+    const clock = '(\\d{1,2})(?:[:.](\\d{2}))?';
+    const unit = '(?:\\s*(?:час(?:а|ов)?|ч\\.?))?';
+    const suffix = '(?:\\s*(утра|дня|вечера|ночи|am|pm|a\\.m\\.|p\\.m\\.))?';
+    const side = `${clock}${unit}${suffix}`;
+    const notAmount = `(?!\\s*(?:минут|мин|hours?|mins?|minutes?|дн|недел|week|day|${COUNTED}))`;
+    const rules = [
+      [`(?<![\\w.:])(?:с|со|from|between)\\s+${side}\\s*(?:до|по|to|till|until|and|[-–—])\\s*${side}${notAmount}(?![\\w:])`, false],
+      [`(?<![\\w.:/])${clock}${suffix}\\s*[-–—]\\s*${clock}${suffix}${notAmount}(?![\\w:])`, true],
+    ];
+    for (const [pattern, bare] of rules) {
+      for (const x of this.scan(pattern)) {
+        const [, h1, m1, s1, h2, m2, s2] = x.m;
+        if (bare && !(m1 || m2 || s1 || s2)) continue; // "2-3" is an amount ("2-3 часа"), not a time span
+        const span = intervalOf(Number(h1), Number(m1 || 0), s1, Boolean(m1), Number(h2), Number(m2 || 0), s2, Boolean(m2));
+        if (!span) continue;
+        this.take(x.start, x.end);
+        this.push({ start: x.start, end: x.end, kind: 'range', value: span });
+      }
+    }
+  }
+
   times() {
     const prep = '(?:(к|до|в|во|около|после|с|со|не\\s+позже|не\\s+позднее|не\\s+раньше|at|by|before|until|after|from|around)\\s+)?';
     const suffix = '(?:\\s*(утра|дня|вечера|ночи|am|pm|a\\.m\\.|p\\.m\\.))?';
@@ -384,6 +428,12 @@ class Parser {
     }
     for (const x of this.scan(`(?<!\\w)${prefix}(?:полтора\\s+часа|час\\s+с\\s+половиной|(?:an?\\s+)?hour\\s+and\\s+a\\s+half|1\\.5\\s*(?:h|hours?|ч))(?!\\w)${tail}`)) record(x, 90);
     for (const x of this.scan(`(?<!\\w)${prefix}(?:полчаса|пол\\s+часа|half\\s+an\\s+hour|half\\s+hour)(?!\\w)${tail}`)) record(x, 30);
+    // "2-3 часа": plan for the upper bound.
+    for (const x of this.scan(`(?<!\\w)${prefix}(\\d+(?:[.,]\\d+)?)\\s*[-–—]\\s*(\\d+(?:[.,]\\d+)?)\\s*(часик\\w*|час(?:а|ов)?|ч\\.?|hours?|hrs?|h|минут\\w*|мин\\.?|minutes?|mins?)(?!\\w)${tail}`)) {
+      const v = num(x.m[2]);
+      const hours = 'чh'.includes(x.m[3][0]);
+      if (v != null && v <= (hours ? 24 : 600)) record(x, hours ? v * 60 : v);
+    }
     for (const x of this.scan(`(?<!\\w)${prefix}(${NUM})\\s*(?:-?\\s*)(часик\\w*|час(?:а|ов)?|ч\\.?|hours?|hrs?|h)(?!\\w)${tail}`)) {
       const v = num(x.m[1]);
       if (v != null && v <= 24) record(x, v * 60);
@@ -460,7 +510,7 @@ function group(pieces, low) {
       const gap = low.slice(Math.max(...last.pieces.map((p) => p.end)), piece.start);
       const kinds = new Set(last.pieces.map((p) => p.kind));
       const compatible = !(kinds.has(piece.kind) || piece.kind === 'instant' || kinds.has('instant')
-        || (['time', 'part'].includes(piece.kind) && (kinds.has('time') || kinds.has('part'))));
+        || (['time', 'part', 'range'].includes(piece.kind) && (kinds.has('time') || kinds.has('part') || kinds.has('range'))));
       if (compatible && /^[\s,]*(?:(?:и|в|во|к|до|на|at|on|by)\s*)?[\s,]*$/u.test(gap)) { last.pieces.push(piece); continue; }
     }
     moments.push({ pieces: [piece] });
@@ -470,6 +520,40 @@ function group(pieces, low) {
     if (following.length) following[0].pieces.push({ ...cue });
   }
   return moments;
+}
+
+// A fixed-time event: "с 21 до 22 …", or "пара/созвон/встреча … в 18:00".
+function eventTimes(parser, moments, remindSpans, hasDeadlineWords, effort) {
+  const { now } = parser;
+  const ranged = moments.find((m) => momentGet(m, 'range')) || null;
+  let moment = ranged;
+  if (!moment) {
+    if (remindSpans.length || hasDeadlineWords || !rx(EVENT_WORDS).test(parser.low) || rx(PREPARE_WORDS).test(parser.low)) return null;
+    moment = moments.find((m) => momentGet(m, 'time') && !momentGet(m, 'instant') && [null, 'start'].includes(momentCue(m))) || null;
+    if (!moment) return null;
+  }
+  const dayPiece = momentGet(moment, 'date');
+  const d = dayPiece ? dayPiece.value : toDay(now);
+  let start; let end;
+  if (ranged) {
+    const [first, last, overnight] = momentGet(moment, 'range').value;
+    start = at(d, first);
+    end = at(overnight ? addDays(d, 1) : d, last);
+  } else {
+    start = at(d, momentGet(moment, 'time').value);
+    const fallback = rx(LONG_EVENT_WORDS).test(parser.low) ? 90 : 60;
+    end = new Date(start.getTime() + (effort || fallback) * 60000);
+  }
+  // Without a named day a time that is already over means the next one; a named
+  // day is kept as said (except "в пятницу" said on a Friday evening).
+  let shift = 0;
+  if (!dayPiece && end <= now) shift = 1;
+  else if (dayPiece && dayPiece.sameWeekday && end <= now) shift = 7;
+  if (shift) {
+    const move = (date) => at(addDays(toDay(date), shift), [date.getHours(), date.getMinutes()]);
+    start = move(start); end = move(end);
+  }
+  return [start, end];
 }
 
 function resolve(moment, role, now, category, effort) {
@@ -594,6 +678,7 @@ export function parseTask(text, now = new Date()) {
   parser.relative();
   parser.periodEnds();
   parser.dates();
+  parser.intervals();
   parser.times();
   let [splittable, chunk] = parser.chunking();
   const effort = parser.effort();
@@ -606,6 +691,23 @@ export function parseTask(text, now = new Date()) {
   const fields = {};
   const moments = group(parser.pieces, parser.low);
   const hasDeadlineWords = parser.deadlineWords();
+  const event = eventTimes(parser, moments, remindSpans, hasDeadlineWords, effort);
+  if (event) {
+    const [startsAt, endsAt] = event;
+    const eventTitle = titleOf(parser, category);
+    return {
+      kind: 'EVENT',
+      title: eventTitle,
+      description,
+      category,
+      importance: importance || 'NORMAL',
+      starts_at: iso(startsAt),
+      ends_at: iso(endsAt),
+      duration_minutes: Math.floor((endsAt - startsAt) / 60000),
+      unresolved: eventTitle ? [] : ['title'],
+      cutoff_time_assumed: false,
+    };
+  }
   let cutoffDateOnly = false;
   for (const moment of moments) {
     let role = momentCue(moment);

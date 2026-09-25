@@ -1,17 +1,17 @@
 import { load } from '../store.js';
 import { t, fmtDateTime, fmtRelative, now } from '../i18n.js';
-import { esc, icon, chip, empty, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, setBusy, toast } from '../ui.js';
-import { mutate, shell } from '../actions.js';
-import { queueOperation } from '../sync.js';
+import { esc, icon, chip, empty, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast } from '../ui.js';
+import { change, shell } from '../actions.js';
 
 const ACTED = { SNOOZE: 'notif.acted.SNOOZE', DONE: 'notif.acted.DONE', START: 'notif.acted.START', RESCHEDULE: 'notif.acted.RESCHEDULE', PROGRESS: 'notif.acted.PROGRESS' };
 
 // Snoozing is a reminder.snooze operation per task: it works offline, is replayed
 // exactly once, and schedules the next reminder for the chosen moment.
-async function snoozeTasks(n, until) {
+async function snoozeTasks(n, until, success) {
+  const ids = n.task_ids || [];
   let last = null;
-  for (const taskId of n.task_ids || []) {
-    last = await queueOperation('reminder.snooze', taskId, { until, reminder_message_id: n.id });
+  for (const [i, taskId] of ids.entries()) {
+    last = await change('reminder.snooze', taskId, { until, reminder_message_id: n.id }, { success: i === ids.length - 1 ? success : null });
   }
   return last;
 }
@@ -36,9 +36,8 @@ function snoozeSheet(n) {
     else if (choice === 'tomorrow') { const d = now(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); until = d.toISOString(); }
     else until = new Date(now().getTime() + Number(choice) * 60000).toISOString();
     if (!until || new Date(until) <= now()) { toast(t('resched.past'), { error: true }); return; }
-    setBusy(e.currentTarget, true);
-    const done = await mutate(() => snoozeTasks(n, until), { success: t('notif.snoozedUntil', { when: fmtDateTime(until) }) });
-    if (done) dialog.close('saved'); else setBusy(e.currentTarget, false);
+    dialog.close('saved');
+    await snoozeTasks(n, until, t('notif.snoozedUntil', { when: fmtDateTime(until) }));
   });
 }
 
@@ -78,10 +77,7 @@ export default {
       if (!taskId || el.dataset.op === 'OPEN') { if (taskId) shell.go('task', { params: [taskId] }); else shell.go('today'); return; }
       if (el.dataset.op === 'RESCHEDULE') { location.hash = `#/task/${encodeURIComponent(taskId)}?step=reschedule`; return; }
       const type = el.dataset.op === 'START' ? 'task.start' : 'task.complete';
-      await mutate(async () => {
-        const result = await queueOperation(type, taskId, { reminder_message_id: n.id });
-        return result.entity || result;
-      }, { success: t(el.dataset.op === 'START' ? 'today.started' : 'lifecycle.done.complete') });
+      await change(type, taskId, { reminder_message_id: n.id }, { success: t(el.dataset.op === 'START' ? 'today.started' : 'lifecycle.done.complete') });
     },
   },
 };

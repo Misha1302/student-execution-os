@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
-from student_execution_os.domain.model import LifecycleStatus
+from student_execution_os.domain.model import AttendancePolicy, LifecycleStatus
 from student_execution_os.planning.model import PlanningPolicy, PlanningSnapshot
 
 _STABLE_CAPTURE_ATTEMPTS = 3
@@ -229,6 +230,8 @@ def build_planning_snapshot(
     plan_output_horizon_start: datetime | None = None,
     plan_output_horizon_end: datetime | None = None,
     policy: PlanningPolicy | None = None,
+    derived_constraints=None,
+    assume_attendance: bool = False,
 ) -> PlanningSnapshot:
     """Materialize one immutable, revision-bound planning input.
 
@@ -255,6 +258,25 @@ def build_planning_snapshot(
         analysis_horizon_end,
     )
 
+    if assume_attendance:
+        # Product default: an optional/preferred event is planned around as if the
+        # user attends, so feasibility holds under that stated assumption instead of
+        # the engine refusing to answer. An optional event that collides with another
+        # event cannot simply be "attended" — that one stays a genuine question for
+        # the user (UNSUPPORTED_OPTIONAL_EVENT_POLICY, shown as a choice in the UI).
+        def collides(event) -> bool:
+            return any(
+                other is not event
+                and other.obligation.lifecycle_status is LifecycleStatus.ACTIVE
+                and other.interval.starts_at < event.interval.ends_at
+                and event.interval.starts_at < other.interval.ends_at
+                for other in events
+            )
+        events = tuple(
+            replace(e, attendance_policy=AttendancePolicy.REQUIRED)
+            if e.attendance_policy is not AttendancePolicy.REQUIRED and not collides(e) else e
+            for e in events
+        )
     known_cutoffs = [t.actual_cutoff.at for t in tasks if t.actual_cutoff.at is not None]
     known_cutoffs.extend(
         cutoff.at
@@ -263,6 +285,11 @@ def build_planning_snapshot(
         if cutoff.at is not None
     )
     effective_analysis_end = max([analysis_horizon_end, *known_cutoffs]) if known_cutoffs else analysis_horizon_end
+    if derived_constraints is not None:
+        # Derived availability (sleep / off hours from the planning profile) joins the
+        # user's own constraints over the whole analysis horizon.
+        extra = tuple(derived_constraints(analysis_horizon_start, effective_analysis_end))
+        constraints = tuple(sorted((*constraints, *extra), key=lambda c: c.id))
     output_start = plan_output_horizon_start or analysis_horizon_start
     output_end = plan_output_horizon_end or min(analysis_horizon_end, effective_analysis_end)
     if output_end > effective_analysis_end:

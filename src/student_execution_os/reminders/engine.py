@@ -39,7 +39,7 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
     """Open tasks with the planner's risk and latest-safe-start where available."""
     from student_execution_os.planning import PlanningService, SQLitePlanningStateSource, build_planning_snapshot
     from student_execution_os.planning.model import PlanningPolicy
-    from student_execution_os.planning.outlook import SQLitePlanningProfileRepository
+    from student_execution_os.planning.outlook import SQLitePlanningProfileRepository, off_hours_constraints
 
     source = SQLitePlanningStateSource(repo)
     tasks = [task for task in source.list_tasks(account_id) if task.obligation.lifecycle_status.value in {"ACTIVE", "DRAFT"}]
@@ -53,6 +53,8 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
             plan_output_horizon_end=minute + timedelta(hours=36),
             policy=PlanningPolicy(version=f"reminders-v1:{profile.version}:{profile.optional_event_policy}",
                                   optional_event_policy=profile.optional_event_policy),
+            derived_constraints=lambda start, end: off_hours_constraints(profile, account_id, start, end),
+            assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
         risks = {risk.task_id: risk for risk in PlanningService().build(snapshot, now=minute).risks}
     except Exception:  # planning failure must not silence deadline reminders
@@ -70,7 +72,25 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
             started_at=task.started_at, last_progress_at=task.last_progress_at,
             actionable_from=task.actionable_from,
         ))
+    facts.extend(event_facts(repo, account_id, minute))
     return facts
+
+
+def event_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) -> list[TaskFacts]:
+    """Active fixed-time events around now; only those with a reminder request can fire."""
+    rows = repo.connection.execute(
+        "SELECT o.id,o.title,o.lifecycle_status,e.starts_at,e.ends_at FROM obligations o "
+        "JOIN events e ON e.obligation_id=o.id JOIN reminder_states r ON r.account_id=o.account_id AND r.task_id=o.id "
+        "WHERE o.account_id=? AND o.kind='EVENT' AND o.lifecycle_status='ACTIVE' AND r.remind_at IS NOT NULL "
+        "AND e.ends_at>?",
+        (account_id, (now - timedelta(hours=1)).isoformat()),
+    ).fetchall()
+    return [TaskFacts(
+        task_id=row["id"], title=row["title"], status=row["lifecycle_status"],
+        cutoff_at=None, target_at=datetime.fromisoformat(row["starts_at"]), latest_safe_start=None, risk_state=None,
+        remaining_minutes=None, started_at=None, last_progress_at=None, actionable_from=None,
+        kind="EVENT", ends_at=datetime.fromisoformat(row["ends_at"]),
+    ) for row in rows]
 
 
 class ReminderEngine:

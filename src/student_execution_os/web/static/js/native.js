@@ -90,6 +90,76 @@ function browserSpeechToText(Recognition) {
   });
 }
 
+// A dictation the user controls: it runs until they tap "Стоп" (or the recognizer
+// stops by itself after silence) and reports what was heard so far. Returns
+// { result: Promise<string>, stop() }. The text only fills the capture field —
+// nothing is created from speech without the user's review.
+export function startDictation({ onPartial = () => {}, onState = () => {} } = {}) {
+  const lang = SPEECH_LOCALES[String(document.documentElement.lang || 'ru').slice(0, 2)] || 'ru-RU';
+  const speech = plugin('SpeechRecognition');
+  if (!speech) {
+    const Recognition = browserSpeech();
+    if (!Recognition) return { result: Promise.reject(new NativeError('VOICE_UNAVAILABLE')), stop() {} };
+    const recognition = new Recognition();
+    recognition.lang = lang;
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+    let finals = '';
+    let interim = '';
+    const result = new Promise((resolve, reject) => {
+      recognition.onstart = () => onState('recording');
+      recognition.onresult = (event) => {
+        interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const text = String(event.results[i][0]?.transcript || '');
+          if (event.results[i].isFinal) finals = `${finals} ${text}`.trim(); else interim = `${interim} ${text}`.trim();
+        }
+        onPartial(`${finals} ${interim}`.trim());
+      };
+      recognition.onerror = (event) => {
+        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') reject(new NativeError('VOICE_DENIED'));
+        else if (event.error !== 'no-speech' && event.error !== 'aborted') reject(new NativeError('VOICE_FAILED', event.error));
+      };
+      recognition.onend = () => resolve(`${finals} ${interim}`.trim());
+    });
+    try { recognition.start(); } catch (err) { return { result: Promise.reject(new NativeError('VOICE_FAILED', String(err?.message || ''))), stop() {} }; }
+    return { result, stop: () => { onState('processing'); try { recognition.stop(); } catch { /* already stopped */ } } };
+  }
+  let latest = '';
+  let finish;
+  const handles = [];
+  const result = (async () => {
+    const available = await speech.available().catch(() => ({ available: false }));
+    if (!available?.available) throw new NativeError('VOICE_UNAVAILABLE');
+    let permission = await speech.checkPermissions().catch(() => null);
+    if (permission?.speechRecognition !== 'granted') permission = await speech.requestPermissions().catch(() => null);
+    if (permission?.speechRecognition !== 'granted') throw new NativeError('VOICE_DENIED');
+    const done = new Promise((resolve) => { finish = resolve; });
+    handles.push(await speech.addListener?.('partialResults', (data) => {
+      latest = String(data?.matches?.[0] || latest);
+      onPartial(latest);
+    }));
+    handles.push(await speech.addListener?.('listeningState', (data) => {
+      if (data?.status === 'stopped') finish?.();
+    }));
+    onState('recording');
+    try {
+      const first = await speech.start({ language: lang, maxResults: 1, partialResults: true, popup: false });
+      if (first?.matches?.[0]) { latest = String(first.matches[0]); finish?.(); }
+    } catch (err) {
+      if (!/no match|cancel|didn.t understand/i.test(String(err?.message || ''))) throw new NativeError('VOICE_FAILED', String(err?.message || ''));
+      finish?.();
+    }
+    await done;
+    return latest.trim();
+  })().finally(() => handles.forEach((h) => h?.remove?.()));
+  return {
+    result,
+    stop: () => { onState('processing'); speech.stop?.().catch?.(() => {}); setTimeout(() => finish?.(), 1500); },
+  };
+}
+
 // Speech is text input only: the transcript goes through the same capture parse and
 // card as typed text, and nothing is created until the user presses Create.
 export async function speechToText() {

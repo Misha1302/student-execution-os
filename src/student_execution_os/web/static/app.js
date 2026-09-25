@@ -3,8 +3,8 @@ import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
 import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, onAppLink } from './js/native.js';
 import { applyTheme } from './js/theme.js';
-import { peek, load, invalidate } from './js/store.js';
-import { shell } from './js/actions.js';
+import { peek, load, invalidate, setCacheFirst } from './js/store.js';
+import { shell, change, mutate } from './js/actions.js';
 import { composers } from './js/compose.js';
 import { openCapture, deviceTimeZone } from './js/capture.js';
 import { flushSync, syncState, discardSyncProblem } from './js/sync.js';
@@ -14,7 +14,8 @@ import plan from './js/views/plan.js';
 import tasks from './js/views/tasks.js';
 import task from './js/views/task-detail.js';
 import more, { MORE_ITEMS } from './js/views/more.js';
-import calendar, { eventSheet } from './js/views/calendar.js';
+import calendar from './js/views/calendar.js';
+import { eventSheet } from './js/events.js';
 import notifications from './js/views/notifications.js';
 import evidence from './js/views/evidence.js';
 import places from './js/views/places.js';
@@ -45,7 +46,8 @@ function go(name, { params = [], step, replace = false } = {}) {
 }
 
 shell.go = (name, opts = {}) => go(name, { step: opts.step, params: opts.params || [] });
-shell.rerender = (fresh = true) => render({ fresh });
+// fresh=false: a local change was queued — redraw from cache + overlay, no network.
+shell.rerender = (fresh = true) => render({ fresh, keepScroll: !fresh });
 
 const needsLogin = () => session.authMode === 'session' && !session.token;
 
@@ -106,7 +108,7 @@ function skeleton() {
 
 // ---- render ------------------------------------------------------------------------
 
-async function render({ fresh = false, reuse = false } = {}) {
+async function render({ fresh = false, reuse = false, keepScroll = false } = {}) {
   const seq = ++renderSeq;
   const view = VIEWS[route.name] || today;
   if (!view.bare && needsLogin()) { go('welcome', { replace: true }); return; }
@@ -145,7 +147,7 @@ async function render({ fresh = false, reuse = false } = {}) {
   setOffline(result.stale, result.fetchedAt);
   workspace.dataset.viewState = 'ready';
   workspace.setAttribute('aria-busy', 'false');
-  if (!reuse) window.scrollTo(0, 0);
+  if (!reuse && !keepScroll) window.scrollTo(0, 0);
 }
 
 // The CSP forbids inline style attributes, so sizes travel as data-* and are applied via CSSOM.
@@ -169,7 +171,9 @@ function context() {
 // ---- global actions ---------------------------------------------------------------
 
 async function openEvent(id) {
-  let event = (peek('/api/v1/today')?.plan?.canonical_events || []).find((e) => e.id === id);
+  let event = (peek('/api/v1/events') || []).find((e) => e.id === id)
+    || (peek('/api/v1/today')?.plan?.canonical_events || []).find((e) => e.id === id)
+    || (peek('/api/v1/plan/agenda?days=7')?.plan?.canonical_events || []).find((e) => e.id === id);
   if (!event) event = (await load('/api/v1/events')).data.find((e) => e.id === id);
   if (event) eventSheet(event);
 }
@@ -181,10 +185,12 @@ function syncSheet() {
   const pending = items.filter((x) => x.state === 'PENDING');
   const problems = items.filter((x) => x.state !== 'PENDING');
   const titleOf = (op, item) => item.result?.entity?.title || op.payload?.title
-    || (peek('/api/v1/tasks') || []).find((x) => x.id === op.entity_id)?.title || t('sync.someTask');
+    || (peek('/api/v1/tasks') || []).find((x) => x.id === op.entity_id)?.title
+    || (peek('/api/v1/today')?.plan?.canonical_events || []).find((x) => x.id === op.entity_id)?.title || t('sync.someTask');
   const row = (item, problem) => {
     const op = item.operation || {};
-    const detail = problem ? t(`sync.why.${item.state}`) : new Date(item.queued_at).toLocaleString();
+    const reason = item.result?.message ? ` — ${item.result.message}` : '';
+    const detail = problem ? `${t(`sync.why.${item.state}`)}${reason}` : new Date(item.queued_at).toLocaleString();
     return `<article class="row"><span class="row-main"><strong>${esc(t(`sync.op.${op.type}`))} · ${esc(titleOf(op, item))}</strong>
       <small>${esc(detail)}</small></span>
       ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(t('sync.dismiss'))}</button>` : ''}</article>`;
@@ -211,8 +217,6 @@ function syncSheet() {
       toast(errorMessage(err), { error: true });
     }
     dialog.close('done');
-    invalidate();
-    render({ fresh: true });
   });
 }
 
@@ -223,6 +227,12 @@ const GLOBAL_ACTIONS = {
   'compose-voice': () => openCapture({ listen: true }),
   'open-task': (el) => go('task', { params: [el.dataset.id] }),
   'open-event': (el) => openEvent(el.dataset.id),
+  // "Optional event collides with another one" → the user decides.
+  'event-attend': (el) => change('event.update', el.dataset.id, { attendance_policy: 'REQUIRED' }, { success: t('status.attending') }),
+  'allow-skip-optional': () => mutate(async () => {
+    const profile = await api('/api/v1/settings/planning-profile');
+    return api('/api/v1/settings/planning-profile', { method: 'PATCH', body: { expected_version: profile.version, optional_event_policy: 'OMIT_OPTIONAL_AND_PREFERRED' } });
+  }, { success: t('status.skipAllowed') }),
   retry: () => render({ fresh: true }),
 };
 
@@ -285,6 +295,17 @@ function handleBack() {
   exitApp();
 }
 
+// Offline-first needs every main screen cached, not only the ones already opened:
+// while online, the core read models are refreshed in the background.
+const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar'];
+let lastPrefetch = 0;
+function prefetch() {
+  if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
+  lastPrefetch = Date.now();
+  // Not fresh: what is already in memory (just loaded, not invalidated) is kept.
+  PREFETCH.forEach((path) => load(path).catch(() => {}));
+}
+
 // Registers this device's FCM token with the signed-in account (no-op in browsers
 // and in builds without Firebase configuration).
 function registerPush() {
@@ -333,10 +354,28 @@ async function boot() {
     flushSync().catch(() => {});
     if (!current || current.view.bare || document.querySelector('dialog[open]')) return;
     // Notification buttons change tasks while the app is in the background.
-    if (Date.now() - (current.fetchedAt || 0) > 5000) { invalidate(); render({ fresh: true }); }
+    if (Date.now() - (current.fetchedAt || 0) > 5000) { invalidate(); render({ fresh: true, keepScroll: true }); }
+    setTimeout(prefetch, 1500);
   });
+  window.addEventListener('online', () => setTimeout(prefetch, 1500));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') flushSync().catch(() => {}); });
   installPullToRefresh();
   window.addEventListener('seos-sync-state', () => setOffline(Boolean(current?.stale), current?.fetchedAt));
+  // The server confirmed (or refused) queued changes: replace the local projection
+  // with its answer, quietly and without losing the scroll position.
+  window.addEventListener('seos-sync-error', (event) => {
+    toast(errorMessage(event.detail?.error), { error: true, action: { label: t('sync.details'), run: () => syncSheet() } });
+  });
+  window.addEventListener('seos-sync-applied', (event) => {
+    const results = event.detail?.results || [];
+    const refused = results.filter((r) => r.status === 'CONFLICT' || r.status === 'REJECTED');
+    if (refused.length) {
+      toast(t('sync.refused', { n: refused.length }), { error: true, action: { label: t('sync.details'), run: () => syncSheet() } });
+    }
+    invalidate();
+    lastPrefetch = 0;
+    if (current && !current.view.bare) render({ fresh: true, keepScroll: true }).then(() => setTimeout(prefetch, 500));
+  });
   window.addEventListener('seos-push-received', (event) => {
     invalidate();
     toast(event.detail?.title || t('nav.notifications'));
@@ -360,8 +399,12 @@ async function boot() {
     history.replaceState(null, '', '#/today');
     route = parseHash();
   }
+  setCacheFirst(true);
   await render();
-  await flushSync().catch(() => {});
+  setCacheFirst(false);
+  if (current?.stale && !current.view.bare) render({ fresh: true, keepScroll: true });
+  flushSync().catch(() => {});
+  setTimeout(prefetch, 800);
   registerPush();
   syncPreferences();
   onAppLink(openRoute).catch(() => {});

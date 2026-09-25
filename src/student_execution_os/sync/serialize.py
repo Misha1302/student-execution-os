@@ -21,7 +21,8 @@ def jsonify(value: Any) -> Any:
     return value
 
 
-def task_payload(task, *, risk=None, effective=None, remind_at: datetime | None = None) -> dict[str, Any]:
+def task_payload(task, *, risk=None, effective=None, remind_at: datetime | None = None,
+                 count: dict[str, Any] | None = None) -> dict[str, Any]:
     cutoff = task.actual_cutoff
     ob = task.obligation
     return {
@@ -51,6 +52,8 @@ def task_payload(task, *, risk=None, effective=None, remind_at: datetime | None 
         "last_progress_at": jsonify(task.last_progress_at),
         # A reminder the user asked for that has not gone out yet (reminder state, not a task field).
         "remind_at": jsonify(remind_at),
+        # Counted progress ("3 of 10 problems"), when the task has one.
+        "count_progress": count,
         "actual_cutoff": {
             "state": cutoff.state.value,
             "at": jsonify(cutoff.at),
@@ -77,7 +80,7 @@ def task_payload(task, *, risk=None, effective=None, remind_at: datetime | None 
     }
 
 
-def event_payload(event) -> dict[str, Any]:
+def event_payload(event, *, remind_before_minutes: int | None = None, remind_at: datetime | None = None) -> dict[str, Any]:
     ob = event.obligation
     return {
         "kind": "EVENT",
@@ -105,5 +108,8 @@ def event_payload(event) -> dict[str, Any]:
         } for option in event.location_options],
         "selected_location_option_id": event.selected_location_option_id,
         "arrival_requirement_minutes": event.arrival_requirement_minutes,
+        "duration_minutes": int((event.interval.ends_at - event.interval.starts_at).total_seconds() // 60),
+        "remind_before_minutes": remind_before_minutes,
+        "remind_at": jsonify(remind_at),
         "canonical": True,
     }

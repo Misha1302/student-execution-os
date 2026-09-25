@@ -45,6 +45,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
     TemporalPrecision,
 )
+from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
 
 from .serialize import event_payload, task_payload
@@ -142,17 +143,26 @@ class Commands:
             "task.cancel": self.task_cancel,
             "task.reopen": self.task_reopen,
             "task.defer": self.task_defer,
+            "task.archive": self.task_archive,
+            "task.unarchive": self.task_unarchive,
+            "task.delete": self.task_delete,
             "reminder.snooze": self.reminder_snooze,
             "event.create": self.event_create,
             "event.update": self.event_update,
             "event.cancel": self.event_cancel,
             "event.reopen": self.event_reopen,
+            "event.delete": self.event_delete,
         }
 
     def run(self, op_type: str, entity_id: str, payload: dict[str, Any]) -> Outcome:
         handler = self.handlers.get(op_type)
         if handler is None:
             raise ValidationError(f"unknown operation type {op_type}")
+        if entity_id and self.repo.is_deleted_obligation(self.account_id, entity_id):
+            # Deleted on this or another device: a late offline operation (or a replayed
+            # create) must neither fail loudly nor bring the item back.
+            kind = "EVENT" if op_type.startswith("event.") else "TASK"
+            return Outcome(NOOP, {"kind": kind, "id": entity_id, "deleted": True}, "DELETED", "item was deleted")
         return handler(entity_id, payload)
 
     # ---- helpers ----------------------------------------------------------------------
@@ -163,7 +173,37 @@ class Commands:
     def _task_out(self, task_id: str, status: str = APPLIED, code: str | None = None, message: str | None = None) -> Outcome:
         from student_execution_os.reminders.store import ReminderStore
         remind = ReminderStore(self.repo).remind_at(self.account_id, task_id)
-        return Outcome(status, task_payload(self._task(task_id), remind_at=remind), code, message)
+        count = extras.progress_counts_for(self.repo, self.account_id, [task_id]).get(task_id)
+        return Outcome(status, task_payload(self._task(task_id), remind_at=remind, count=count), code, message)
+
+    def _event_out(self, event_id: str, status: str = APPLIED, code: str | None = None, message: str | None = None) -> Outcome:
+        from student_execution_os.reminders.store import ReminderStore
+        return Outcome(status, event_payload(
+            self.repo.get_event(self.account_id, event_id),
+            remind_before_minutes=extras.event_lead(self.repo, self.account_id, event_id),
+            remind_at=ReminderStore(self.repo).remind_at(self.account_id, event_id),
+        ), code, message)
+
+    def _count(self, payload: dict[str, Any], current: dict[str, Any] | None) -> tuple[bool, dict[str, Any] | None]:
+        """Counted progress from create/update payload fields; (changed, new value)."""
+        if not any(key in payload for key in ("count_total", "count_done", "count_unit")):
+            return False, current
+        total = current["total"] if current else None
+        if "count_total" in payload:
+            raw = payload["count_total"]
+            total = None if raw in (None, "", 0) else _minutes(raw, "count_total")
+        if total is None:
+            return True, None
+        done = current["done"] if current else 0
+        if "count_done" in payload:
+            done = _minutes(payload["count_done"], "count_done", allow_zero=True)
+        unit = extras.clean_unit(payload["count_unit"]) if "count_unit" in payload else (current or {}).get("unit")
+        return True, {"total": total, "done": min(done, total), "unit": unit}
+
+    def _save_count(self, task_id: str, value: dict[str, Any] | None) -> None:
+        extras.set_progress_count(self.repo, self.account_id, task_id, total=None if value is None else value["total"],
+                                  done=0 if value is None else value["done"], unit=None if value is None else value["unit"],
+                                  now=self.now)
 
     def _touch(self, task_id: str, *, snooze_until: datetime | None = None, remind_at: datetime | None = None) -> None:
         from student_execution_os.reminders.store import ReminderStore
@@ -183,7 +223,8 @@ class Commands:
     def _transition(self, obligation_id: str, action: str) -> None:
         ob = self.repo.get_obligation(self.account_id, obligation_id)
         method = {"complete": self.repo.complete_obligation, "cancel": self.repo.cancel_obligation,
-                  "reopen": self.repo.reopen_obligation}[action]
+                  "reopen": self.repo.reopen_obligation, "archive": self.repo.archive_obligation,
+                  "unarchive": self.repo.unarchive_obligation}[action]
         method(account_id=self.account_id, obligation_id=obligation_id, expected_version=ob.version, actor=self.actor)
 
     # ---- tasks ------------------------------------------------------------------------
@@ -215,6 +256,9 @@ class Commands:
             actual_cutoff=parse_cutoff(payload.get("actual_cutoff")),
             actor=self._capture_actor(payload),
         )
+        changed, count = self._count(payload, None)
+        if changed and count is not None:
+            self._save_count(task_id, count)
         self._touch(task_id, remind_at=remind)
         return self._task_out(task.obligation.id)
 
@@ -238,7 +282,7 @@ class Commands:
     _EDITABLE = {
         "title", "description", "importance", "category", "estimated_total_effort_minutes",
         "remaining_effort_minutes", "actual_cutoff", "target_at", "actionable_from", "splittable",
-        "min_chunk_minutes", "max_chunk_minutes", "remind_at",
+        "min_chunk_minutes", "max_chunk_minutes", "remind_at", "count_total", "count_done", "count_unit",
     }
 
     def task_update(self, task_id: str, payload: dict[str, Any]) -> Outcome:
@@ -282,6 +326,10 @@ class Commands:
         if remind_changed:
             from student_execution_os.reminders.store import ReminderStore
             ReminderStore(self.repo).set_remind_at(self.account_id, task_id, self._remind_at(payload), self.now)
+        count_changed, count = self._count(payload, extras.progress_counts_for(self.repo, self.account_id, [task_id]).get(task_id))
+        if count_changed:
+            self._save_count(task_id, count)
+            remind_changed = True
         if not fields:
             return self._task_out(task_id, APPLIED if remind_changed else NOOP, None if remind_changed else "NOTHING_TO_CHANGE")
         activate = current.obligation.lifecycle_status is LifecycleStatus.DRAFT and estimate is not None
@@ -291,15 +339,30 @@ class Commands:
         return self._task_out(task_id)
 
     def task_progress(self, task_id: str, payload: dict[str, Any]) -> Outcome:
-        minutes = _minutes(payload.get("minutes"), "minutes")
+        """Worked time ("minutes", a delta) and/or counted progress ("count", a delta)."""
+        count_delta = _minutes(payload.get("count"), "count", allow_none=True)
+        minutes = _minutes(payload.get("minutes"), "minutes", allow_none=count_delta is not None) or 0
         current = self._task(task_id)
         if current.obligation.lifecycle_status not in OPEN:
             return self._task_out(task_id, NOOP, "TASK_CLOSED", "task is already closed; progress not recorded")
         fields: dict[str, Any] = {"last_progress_at": self.now}
         if current.started_at is None:
             fields["started_at"] = self.now
-        if current.remaining_effort_minutes is not None:
+        count = extras.progress_counts_for(self.repo, self.account_id, [task_id]).get(task_id)
+        if count_delta is not None:
+            if count is None:
+                return self._task_out(task_id, REJECTED, "NO_COUNT", "the task has no counted progress")
+            count = {**count, "done": min(count["total"], count["done"] + count_delta)}
+            self._save_count(task_id, count)
+            if not minutes and current.estimated_total_effort_minutes and current.remaining_effort_minutes is not None:
+                # Nothing about time was said: the share of units left is the best estimate.
+                left = -(-current.estimated_total_effort_minutes * (count["total"] - count["done"]) // count["total"])
+                fields["remaining_effort_minutes"] = min(current.remaining_effort_minutes, left)
+        if minutes and current.remaining_effort_minutes is not None:
             fields["remaining_effort_minutes"] = max(0, current.remaining_effort_minutes - minutes)
+            if count is not None and count["done"] < count["total"]:
+                # Units are still left: time alone does not finish the task.
+                fields["remaining_effort_minutes"] = max(fields["remaining_effort_minutes"], 5)
             if current.remaining_effort_high_minutes is not None:
                 fields["remaining_effort_high_minutes"] = max(fields["remaining_effort_minutes"], current.remaining_effort_high_minutes - minutes)
             if current.remaining_effort_low_minutes is not None:
@@ -358,6 +421,9 @@ class Commands:
         if current.obligation.lifecycle_status in OPEN:
             return self._task_out(task_id, NOOP, "ALREADY_OPEN")
         self._transition(task_id, "reopen")
+        count = extras.progress_counts_for(self.repo, self.account_id, [task_id]).get(task_id)
+        if count is not None and count["done"] >= count["total"] and payload.get("remaining_effort_minutes") is None:
+            self._save_count(task_id, {**count, "done": max(0, count["total"] - 1)})
         reopened = self._task(task_id)
         remaining = _minutes(payload.get("remaining_effort_minutes"), "remaining_effort_minutes", allow_none=True)
         if reopened.estimated_total_effort_minutes is not None:
@@ -374,6 +440,28 @@ class Commands:
                 self._update(task_id, **fields)
         self._touch(task_id)
         return self._task_out(task_id)
+
+    def task_archive(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        status = self._task(task_id).obligation.lifecycle_status
+        if status is LifecycleStatus.ARCHIVED:
+            return self._task_out(task_id, NOOP, "ALREADY_ARCHIVED")
+        if status in OPEN:
+            # Put away something still open: it is "not doing it" first.
+            self._transition(task_id, "cancel")
+        self._transition(task_id, "archive")
+        return self._task_out(task_id)
+
+    def task_unarchive(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if self._task(task_id).obligation.lifecycle_status is not LifecycleStatus.ARCHIVED:
+            return self._task_out(task_id, NOOP, "NOT_ARCHIVED")
+        self._transition(task_id, "unarchive")
+        return self._task_out(task_id)
+
+    def task_delete(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        current = self._task(task_id)
+        self.repo.delete_obligation(account_id=self.account_id, obligation_id=task_id,
+                                    expected_version=current.obligation.version, actor=self.actor)
+        return Outcome(APPLIED, {"kind": "TASK", "id": task_id, "deleted": True})
 
     def task_defer(self, task_id: str, payload: dict[str, Any]) -> Outcome:
         until = parse_instant(payload.get("until"), "until")
@@ -405,6 +493,19 @@ class Commands:
 
     # ---- events -----------------------------------------------------------------------
 
+    def _event_reminder(self, event_id: str, lead: int | None) -> None:
+        """Keep the reminder moment of an event equal to "start minus lead"."""
+        from student_execution_os.reminders.store import ReminderStore
+        extras.set_event_lead(self.repo, self.account_id, event_id, lead)
+        event = self.repo.get_event(self.account_id, event_id)
+        remind = None
+        if lead is not None and event.obligation.lifecycle_status in OPEN:
+            remind = event.interval.starts_at - timedelta(minutes=lead)
+            if remind <= self.now:
+                # Too late for the heads-up but still before the start: remind right away.
+                remind = self.now + timedelta(minutes=1) if event.interval.starts_at > self.now + timedelta(minutes=1) else None
+        ReminderStore(self.repo).set_remind_at(self.account_id, event_id, remind, self.now)
+
     def event_create(self, event_id: str, payload: dict[str, Any]) -> Outcome:
         if not _ID.match(event_id):
             raise ValidationError("event id must be a client-generated identifier (8-128 safe characters)")
@@ -412,14 +513,20 @@ class Commands:
         if exists is not None:
             if exists["account_id"] != self.account_id:
                 raise ValidationError("event id is already in use")
-            return Outcome(NOOP, event_payload(self.repo.get_event(self.account_id, event_id)), "ALREADY_EXISTS")
+            return self._event_out(event_id, NOOP, "ALREADY_EXISTS")
         location = payload.get("location_effect") or {}
-        event = self.repo.create_event(
+        starts_at = parse_instant(payload.get("starts_at"), "starts_at")
+        ends_at = parse_instant(payload.get("ends_at"), "ends_at")
+        if starts_at is None or ends_at is None:
+            raise ValidationError("an event needs starts_at and ends_at")
+        if ends_at <= starts_at:
+            raise ValidationError("an event must end after it starts")
+        lead = extras.parse_lead(payload.get("remind_before_minutes"))
+        self.repo.create_event(
             account_id=self.account_id, obligation_id=event_id,
             title=_title(payload.get("title")), description=_description(payload.get("description")),
             time_semantics=EventTimeSemantics.FIXED_INTERVAL,
-            starts_at=parse_instant(payload.get("starts_at"), "starts_at"),
-            ends_at=parse_instant(payload.get("ends_at"), "ends_at"),
+            starts_at=starts_at, ends_at=ends_at,
             category=ObligationCategory(payload.get("category") or ObligationCategory.GENERAL.value),
             importance=Importance(payload.get("importance") or Importance.NORMAL.value),
             attendance_policy=AttendancePolicy(payload.get("attendance_policy") or AttendancePolicy.REQUIRED.value),
@@ -429,36 +536,72 @@ class Commands:
                 destination_place_id=location.get("destination_place_id"),
             ),
             arrival_requirement_minutes=int(payload.get("arrival_requirement_minutes") or 0),
-            actor=self.actor,
+            actor=self._capture_actor(payload),
         )
-        return Outcome(APPLIED, event_payload(event))
+        if lead is not None:
+            self._event_reminder(event_id, lead)
+        return self._event_out(event_id)
+
+    _EVENT_EDITABLE = {"title", "description", "category", "importance", "starts_at", "ends_at",
+                       "attendance_policy", "remind_before_minutes"}
 
     def event_update(self, event_id: str, payload: dict[str, Any]) -> Outcome:
+        unknown = set(payload) - self._EVENT_EDITABLE
+        if unknown:
+            raise ValidationError("fields cannot be edited: " + ", ".join(sorted(unknown)))
         current = self.repo.get_event(self.account_id, event_id)
-        event = self.repo.update_fixed_event(
+        fields: dict[str, Any] = {}
+        if "title" in payload:
+            fields["title"] = _title(payload["title"])
+        if "description" in payload:
+            fields["description"] = _description(payload["description"])
+        if "category" in payload:
+            fields["category"] = ObligationCategory(payload["category"])
+        if "importance" in payload:
+            fields["importance"] = Importance(payload["importance"])
+        starts_at = parse_instant(payload.get("starts_at"), "starts_at") or current.interval.starts_at
+        ends_at = parse_instant(payload.get("ends_at"), "ends_at") or current.interval.ends_at
+        if "starts_at" in payload and "ends_at" not in payload:
+            # Moving the start keeps the duration.
+            ends_at = starts_at + (current.interval.ends_at - current.interval.starts_at)
+        if ends_at <= starts_at:
+            raise ValidationError("an event must end after it starts")
+        policy = AttendancePolicy(payload["attendance_policy"]) if payload.get("attendance_policy") else None
+        self.repo.update_fixed_event(
             account_id=self.account_id, obligation_id=event_id, expected_version=current.obligation.version,
-            starts_at=parse_instant(payload.get("starts_at"), "starts_at") or current.interval.starts_at,
-            ends_at=parse_instant(payload.get("ends_at"), "ends_at") or current.interval.ends_at,
-            attendance_policy=AttendancePolicy(payload["attendance_policy"]) if payload.get("attendance_policy") else current.attendance_policy,
-            actor=self.actor,
+            starts_at=starts_at, ends_at=ends_at, attendance_policy=policy, actor=self.actor, **fields,
         )
-        return Outcome(APPLIED, event_payload(event))
+        lead = extras.event_lead(self.repo, self.account_id, event_id)
+        if "remind_before_minutes" in payload:
+            lead = extras.parse_lead(payload["remind_before_minutes"])
+        if "remind_before_minutes" in payload or starts_at != current.interval.starts_at:
+            self._event_reminder(event_id, lead)
+        return self._event_out(event_id)
 
     def event_cancel(self, event_id: str, payload: dict[str, Any]) -> Outcome:
         status = self.repo.get_event(self.account_id, event_id).obligation.lifecycle_status
         if status is LifecycleStatus.CANCELLED:
-            return Outcome(NOOP, event_payload(self.repo.get_event(self.account_id, event_id)), "ALREADY_CANCELLED")
+            return self._event_out(event_id, NOOP, "ALREADY_CANCELLED")
         if status not in OPEN:
-            return Outcome(CONFLICT, event_payload(self.repo.get_event(self.account_id, event_id)), "EVENT_CLOSED")
+            return self._event_out(event_id, CONFLICT, "EVENT_CLOSED")
         self._transition(event_id, "cancel")
-        return Outcome(APPLIED, event_payload(self.repo.get_event(self.account_id, event_id)))
+        return self._event_out(event_id)
 
     def event_reopen(self, event_id: str, payload: dict[str, Any]) -> Outcome:
         status = self.repo.get_event(self.account_id, event_id).obligation.lifecycle_status
         if status in OPEN:
-            return Outcome(NOOP, event_payload(self.repo.get_event(self.account_id, event_id)), "ALREADY_OPEN")
+            return self._event_out(event_id, NOOP, "ALREADY_OPEN")
         self._transition(event_id, "reopen")
-        return Outcome(APPLIED, event_payload(self.repo.get_event(self.account_id, event_id)))
+        lead = extras.event_lead(self.repo, self.account_id, event_id)
+        if lead is not None:
+            self._event_reminder(event_id, lead)
+        return self._event_out(event_id)
+
+    def event_delete(self, event_id: str, payload: dict[str, Any]) -> Outcome:
+        current = self.repo.get_event(self.account_id, event_id)
+        self.repo.delete_obligation(account_id=self.account_id, obligation_id=event_id,
+                                    expected_version=current.obligation.version, actor=self.actor)
+        return Outcome(APPLIED, {"kind": "EVENT", "id": event_id, "deleted": True})
 
 
 class SyncService:

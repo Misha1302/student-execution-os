@@ -1,4 +1,4 @@
-import { load, clearAll } from '../store.js';
+import { load, clearAll, invalidate } from '../store.js';
 import { api, session, clearAuth } from '../api.js';
 import { t, code, fmtDateTime, getLocale, setLocale, LOCALES } from '../i18n.js';
 import { esc, icon, chip, kv, openSheet, chipGroup, toast, errorMessage, setBusy, confirmSheet } from '../ui.js';
@@ -68,23 +68,64 @@ function deleteSheet(policy) {
   });
 }
 
+// One "I sleep from … to …" setting drives both halves of the product: reminders
+// stay quiet then (unless the user asked for that exact time) and the planner does
+// not put work there.
+export function wakingWindows(from, to) {
+  const [fh, fm] = from.split(':').map(Number);
+  const [th, tm] = to.split(':').map(Number);
+  const sleep = fh * 60 + fm;
+  const wake = th * 60 + tm;
+  const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  let day;
+  if (sleep === wake) throw new Error(t('settings.sleepSame'));
+  if (wake < sleep) day = [[hhmm(wake), hhmm(Math.min(sleep, 23 * 60 + 59))]]; // 23:00 → 07:00
+  else day = [...(sleep > 0 ? [['00:00', hhmm(sleep)]] : []), [hhmm(wake), '23:59']]; // 01:00 → 09:00
+  return Object.fromEntries(['1', '2', '3', '4', '5', '6', '7'].map((d) => [d, day]));
+}
+
+async function saveSleep(button, ctx) {
+  const root = button.closest('.card');
+  const from = root.querySelector('[data-f="sleep-from"]').value;
+  const to = root.querySelector('[data-f="sleep-to"]').value;
+  if (!from || !to) return;
+  let windows;
+  try { windows = wakingWindows(from, to); } catch (err) { toast(err.message, { error: true }); return; }
+  setBusy(button, true);
+  try {
+    await api('/api/v1/notification-preferences', { method: 'PATCH', body: { quiet_hours: { starts_local: from, ends_local: to } } });
+    const profile = await api('/api/v1/settings/planning-profile');
+    await api('/api/v1/settings/planning-profile', { method: 'PATCH', body: { expected_version: profile.version, planning_windows: windows } });
+    invalidate();
+    toast(t('settings.sleepSaved', { from, to }));
+    ctx.refresh();
+  } catch (err) {
+    toast(errorMessage(err), { error: true });
+  } finally {
+    setBusy(button, false);
+  }
+}
+
 export default {
   id: 'settings',
   tab: 'more',
   detail: true,
   title: () => t('nav.settings'),
   async load({ fresh }) {
-    const [diag, deletion, prefs, llm] = await Promise.all([
+    const [diag, deletion, prefs, llm, profile] = await Promise.all([
       load('/api/v1/settings/diagnostics', { fresh }),
       load('/api/v1/account/deletion-policy', { fresh }),
       load('/api/v1/notification-preferences', { fresh }).catch(() => ({ data: null })),
       loadAiSettings(), // not cached on the device
+      load('/api/v1/settings/planning-profile', { fresh }).catch(() => ({ data: null })),
     ]);
-    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm }, stale: diag.stale, fetchedAt: diag.fetchedAt };
+    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data }, stale: diag.stale, fetchedAt: diag.fetchedAt };
   },
-  render({ diag, deletion, prefs, llm }) {
+  render({ diag, deletion, prefs, llm, profile }) {
     this._deletion = deletion;
     this._prefs = prefs;
+    this._profile = profile;
+    const level = prefs ? (prefs.enabled ? prefs.intensity : 'OFF') : 'OFF';
     this._llm = llm;
     const sessionMode = session.authMode === 'session';
     const connectors = (diag.connector_health || []).map((c) => `<div class="row static">
@@ -108,8 +149,26 @@ export default {
       ${prefs ? `<section class="section">
         <div class="section-head"><h2>${esc(t('settings.reminders'))}</h2></div>
         <div class="card form">
-          <div class="field"><span>${esc(t('settings.reminderStyle'))}</span>${chipGroup('intensity', [['OFF', t('settings.remind.OFF')], ['GENTLE', t('settings.remind.GENTLE')], ['NORMAL', t('settings.remind.NORMAL')], ['PERSISTENT', t('settings.remind.PERSISTENT')]], prefs.enabled ? prefs.intensity : 'OFF')}</div>
-          <p class="help">${esc(t('settings.quiet', { from: prefs.quiet_hours.starts_local, to: prefs.quiet_hours.ends_local }))}</p>
+          <div class="field"><span>${esc(t('settings.reminderStyle'))}</span>${chipGroup('intensity', [['OFF', t('settings.remind.OFF')], ['GENTLE', t('settings.remind.GENTLE')], ['NORMAL', t('settings.remind.NORMAL')], ['PERSISTENT', t('settings.remind.PERSISTENT')]], level)}</div>
+          <p class="help" data-intensity-help>${esc(t(`settings.remindHelp.${level}`))}</p>
+          <hr>
+          <div class="field"><span>${esc(t('settings.sleep'))}</span>
+            <div class="field-row">
+              <label class="field"><span>${esc(t('settings.sleepFrom'))}</span><input type="time" data-f="sleep-from" value="${esc(prefs.quiet_hours.starts_local)}"></label>
+              <label class="field"><span>${esc(t('settings.sleepTo'))}</span><input type="time" data-f="sleep-to" value="${esc(prefs.quiet_hours.ends_local)}"></label>
+            </div>
+            <small class="help">${esc(t('settings.sleepHelp'))}</small>
+            <button class="button" data-action="save-sleep">${esc(t('common.save'))}</button>
+          </div>
+        </div>
+      </section>` : ''}
+
+      ${profile ? `<section class="section">
+        <div class="section-head"><h2>${esc(t('settings.planning'))}</h2></div>
+        <div class="card form">
+          <div class="field"><span>${esc(t('settings.optionalEvents'))}</span>
+            ${chipGroup('optional-policy', ['FAIL_CLOSED', 'OMIT_OPTIONAL', 'OMIT_OPTIONAL_AND_PREFERRED'].map((v) => [v, t(`settings.optional.${v}`)]), profile.optional_event_policy)}
+            <small class="help" data-optional-help>${esc(t(`settings.optionalHelp.${profile.optional_event_policy}`))}</small></div>
         </div>
       </section>` : ''}
 
@@ -162,8 +221,17 @@ export default {
     root.addEventListener('chipchange', (e) => {
       if (e.detail.name === 'locale') { setLocale(e.detail.value); ctx.relabel(); ctx.rerender(); }
       if (e.detail.name === 'theme') setTheme(e.detail.value);
+      if (e.detail.name === 'optional-policy') {
+        const value = e.detail.value;
+        root.querySelector('[data-optional-help]').textContent = t(`settings.optionalHelp.${value}`);
+        api('/api/v1/settings/planning-profile')
+          .then((profile) => api('/api/v1/settings/planning-profile', { method: 'PATCH', body: { expected_version: profile.version, optional_event_policy: value } }))
+          .then(() => { invalidate(); toast(t('settings.saved')); })
+          .catch((err) => toast(errorMessage(err), { error: true }));
+      }
       if (e.detail.name === 'intensity') {
         const value = e.detail.value;
+        root.querySelector('[data-intensity-help]').textContent = t(`settings.remindHelp.${value}`);
         const body = value === 'OFF' ? { enabled: false } : { enabled: true, intensity: value };
         api('/api/v1/notification-preferences', { method: 'PATCH', body })
           .then(() => toast(t('settings.saved')))
@@ -183,6 +251,7 @@ export default {
       if (ok) shell.go('welcome', { step: 'server' });
     },
     'account-export': (el) => exportAccount(el),
+    'save-sleep': (el, ctx) => saveSleep(el, ctx),
     'account-delete-preview': (_el, ctx) => deleteSheet(ctx.view._deletion),
     ...aiActions,
   },

@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from student_execution_os.domain.errors import ValidationError, VersionConflict
-from student_execution_os.domain.model import ActorCategory
+from student_execution_os.domain.model import ActorCategory, HalfOpenInterval, UserTimeConstraint, UserTimeConstraintType
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
 
 
@@ -147,3 +147,46 @@ def overlap_minutes(left: tuple[datetime, datetime], right: tuple[datetime, date
     start = max(left[0], right[0])
     end = min(left[1], right[1])
     return max(0, int((end - start).total_seconds() // 60))
+
+
+OFF_HOURS_PREFIX = "off-hours:"
+
+
+def off_hours_constraints(profile: PlanningProfile, account_id: str, start: datetime,
+                          end: datetime) -> tuple[UserTimeConstraint, ...]:
+    """The time outside the user's planning windows (sleep, by default 22:00–08:00)
+    between ``start`` and ``end`` as UNAVAILABLE constraints.
+
+    They are derived from the profile on every planning run and never stored, so a
+    changed sleep schedule applies to the next plan immediately.
+    """
+    if end <= start:
+        return ()
+    zone = _validate_zone(profile.timezone_name)
+    first = start.astimezone(zone).date() - timedelta(days=1)
+    days = (end.astimezone(zone).date() - first).days + 2
+    windows = sorted(planning_intervals(profile, first, days))
+    gaps: list[tuple[datetime, datetime]] = []
+    cursor = datetime.combine(first, time.min, zone).astimezone(timezone.utc)
+    for left, right in windows:
+        if left > cursor:
+            gaps.append((cursor, left))
+        cursor = max(cursor, right)
+    horizon_end = datetime.combine(first + timedelta(days=days), time.min, zone).astimezone(timezone.utc)
+    if cursor < horizon_end:
+        gaps.append((cursor, horizon_end))
+    result = []
+    for left, right in gaps:
+        left, right = max(left, start), min(right, end)
+        if right - left < timedelta(minutes=1):
+            continue
+        left = left.replace(second=0, microsecond=0)
+        right = right.replace(second=0, microsecond=0)
+        if right <= left:
+            continue
+        result.append(UserTimeConstraint(
+            id=f"{OFF_HOURS_PREFIX}{left.isoformat()}", account_id=account_id,
+            type=UserTimeConstraintType.UNAVAILABLE, interval=HalfOpenInterval(left, right),
+            obligation_id=None, reason="OFF_HOURS", version=1,
+        ))
+    return tuple(result)

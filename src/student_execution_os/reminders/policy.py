@@ -134,6 +134,10 @@ class TaskFacts:
     started_at: datetime | None
     last_progress_at: datetime | None
     actionable_from: datetime | None
+    # A fixed-time event ("занятие 21:00–22:00") only ever gets the reminder the user
+    # asked for (N minutes before its start); starts_at travels in target_at.
+    kind: str = "TASK"
+    ends_at: datetime | None = None
 
     @property
     def episode_key(self) -> str:

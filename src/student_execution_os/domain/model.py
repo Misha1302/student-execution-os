@@ -170,10 +170,25 @@ class Obligation:
             version=self.version + 1,
         )
 
-    def reopened(self, now: datetime) -> Self:
+    def archived(self, now: datetime) -> Self:
+        """Put a finished (completed or cancelled) item away; ``completed_at`` is kept."""
         require_aware(now, "now")
         if self.lifecycle_status not in (LifecycleStatus.COMPLETED, LifecycleStatus.CANCELLED):
-            raise ValidationError("only completed/cancelled obligations can be reopened")
+            raise ValidationError("only completed/cancelled obligations can be archived")
+        return replace(self, lifecycle_status=LifecycleStatus.ARCHIVED, updated_at=now, version=self.version + 1)
+
+    def unarchived(self, now: datetime) -> Self:
+        """Take an item out of the archive into the state it was archived from."""
+        require_aware(now, "now")
+        if self.lifecycle_status is not LifecycleStatus.ARCHIVED:
+            raise ValidationError("only archived obligations can be restored from the archive")
+        status = LifecycleStatus.COMPLETED if self.completed_at is not None else LifecycleStatus.CANCELLED
+        return replace(self, lifecycle_status=status, updated_at=now, version=self.version + 1)
+
+    def reopened(self, now: datetime) -> Self:
+        require_aware(now, "now")
+        if self.lifecycle_status not in (LifecycleStatus.COMPLETED, LifecycleStatus.CANCELLED, LifecycleStatus.ARCHIVED):
+            raise ValidationError("only completed/cancelled/archived obligations can be reopened")
         return replace(
             self,
             lifecycle_status=LifecycleStatus.ACTIVE,

@@ -2,7 +2,8 @@ import { load } from '../store.js';
 import { api } from '../api.js';
 import { t, code, fmtTime, fmtDay, fmtDuration, fmtDateTime, dayKey, now } from '../i18n.js';
 import { esc, icon, chip, kv, empty, openSheet, localInputValue, isoFromLocalInput, setBusy } from '../ui.js';
-import { lifecycle, mutate } from '../actions.js';
+import { mutate } from '../actions.js';
+import { eventSheet } from '../events.js';
 import { composers } from '../compose.js';
 
 // "FREQ=WEEKLY;INTERVAL=2;COUNT=16" → "раз в две недели, 16 раз".
@@ -10,42 +11,6 @@ function ruleText(rule) {
   const parts = Object.fromEntries(String(rule || '').split(';').map((p) => p.split('=')));
   const every = parts.FREQ === 'DAILY' ? t('form.repeat.daily') : parts.INTERVAL === '2' ? t('form.repeat.biweekly') : t('form.repeat.weekly');
   return parts.COUNT ? t('cal.ruleCount', { every, n: parts.COUNT }) : every;
-}
-
-function eventSheet(e) {
-  const active = e.status === 'ACTIVE';
-  const dialog = openSheet({
-    eyebrow: e.location_effect.kind === 'MOVE' ? t('cal.bookedMove') : t('cal.fixedEvent'),
-    title: e.title,
-    body: `<p>${chip(code('status', e.status), active ? 'ok' : 'muted')}</p>
-      <dl class="kv-list">
-        ${kv(t('plan.starts'), fmtDateTime(e.starts_at))}
-        ${kv(t('plan.ends'), fmtDateTime(e.ends_at))}
-        ${kv(t('form.attendance'), code('attendance', e.attendance_policy))}
-        ${kv(t('form.location'), code('location', e.location_effect.kind))}
-        ${e.arrival_requirement_minutes ? kv(t('cal.arrival'), fmtDuration(e.arrival_requirement_minutes)) : ''}
-      </dl>
-      ${active ? `<div class="form">
-        <label class="field"><span>${esc(t('cal.moveTo'))}</span><input type="datetime-local" data-f="start" value="${esc(localInputValue(e.starts_at))}"></label>
-      </div>` : ''}`,
-    actions: active
-      ? `<button type="button" class="button danger ghost" data-cancel>${esc(t('lifecycle.cancel'))}</button>
-         <button type="button" class="button primary" data-save>${esc(t('common.save'))}</button>`
-      : `<button type="button" class="button" data-reopen>${esc(t('lifecycle.reopen'))}</button>`,
-  });
-  dialog.querySelector('[data-cancel]')?.addEventListener('click', () => { dialog.close(); lifecycle(e.id, e.version, 'cancel', { title: e.title }); });
-  dialog.querySelector('[data-reopen]')?.addEventListener('click', () => { dialog.close(); lifecycle(e.id, e.version, 'reopen'); });
-  dialog.querySelector('[data-save]')?.addEventListener('click', async (ev) => {
-    const startsAt = isoFromLocalInput(dialog.querySelector('[data-f="start"]').value);
-    if (!startsAt) return;
-    const duration = new Date(e.ends_at) - new Date(e.starts_at);
-    setBusy(ev.currentTarget, true);
-    await mutate(() => api(`/api/v1/events/${encodeURIComponent(e.id)}`, {
-      method: 'PATCH',
-      body: { expected_version: e.version, starts_at: startsAt, ends_at: new Date(new Date(startsAt).getTime() + duration).toISOString() },
-    }), { success: t('cal.moved') });
-    dialog.close('saved');
-  });
 }
 
 function occurrenceSheet(o, template) {
@@ -129,4 +94,3 @@ export default {
   },
 };
 
-export { eventSheet };

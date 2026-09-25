@@ -524,3 +524,35 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ---- offline-first, events, lifecycle, voice (v15) ---------------------------------- */
+.dot.sleep, .agenda-item.sleep { --tone: var(--text-3); --tone-soft: var(--surface-2); }
+.agenda-item.sleep { opacity: .75; }
+.agenda-item.sleep .agenda-bar { background: repeating-linear-gradient(135deg, var(--tone) 0 3px, transparent 3px 7px); }
+.day-nav { display: flex; align-items: center; gap: 6px; }
+.day-nav .day-strip { flex: 1; min-width: 0; margin: 0; padding: 0; }
+.day-nav .icon-button { flex: none; font-size: 22px; line-height: 1; }
+.day-nav .icon-button:disabled { opacity: .3; }
+[data-swipe-days] { touch-action: pan-y; }
+.row.current { background: var(--accent-soft); }
+.soon-row { display: flex; align-items: center; gap: 8px; }
+.row-main.plain { background: none; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; }
+.progress-row { display: flex; align-items: center; gap: 8px; }
+.progress-row .progress { flex: 1; }
+.progress-row small { color: var(--text-3); font-size: 12px; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.progress-row small .icon { width: 12px; height: 12px; }
+.event-card .eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); }
+.event-card .eyebrow .icon { width: 16px; height: 16px; }
+.fact.static { cursor: default; }
+.event-fields .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 380px) { .event-fields .field-row { grid-template-columns: 1fr; } }
+.capture-input .mic.recording { background: var(--danger); color: #fff; animation: pulse 1s ease-in-out infinite; }
+.voice-panel { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); }
+.voice-panel[hidden] { display: none; }
+.voice-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.voice-copy small { color: var(--text-2); overflow-wrap: anywhere; }
+.voice-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--text-3); }
+.voice-panel[data-state="recording"] .voice-dot { background: var(--danger); animation: pulse 1s ease-in-out infinite; }
+.voice-panel[data-state="processing"] .voice-dot, .voice-panel[data-state="starting"] .voice-dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.voice-panel[data-state="error"] { background: var(--danger-soft); color: var(--danger); }
+.voice-panel[data-state="error"] .voice-dot { background: var(--danger); }

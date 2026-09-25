@@ -7,7 +7,8 @@ const FILTERS = {
   active: (x) => x.status === 'ACTIVE' || x.status === 'DRAFT',
   risk: (x) => x.status === 'ACTIVE' && RISKY.has(x.risk?.state),
   done: (x) => x.status === 'COMPLETED',
-  cancelled: (x) => x.status === 'CANCELLED',
+  // "Не буду делать" and archived tasks: out of the plan, still restorable.
+  archive: (x) => x.status === 'CANCELLED' || x.status === 'ARCHIVED',
 };
 const RISK_ORDER = ['OVERDUE', 'IMPOSSIBLE', 'CRITICAL', 'AT_RISK', 'START_SOON', 'UNKNOWN', 'SAFE', 'NOT_APPLICABLE'];
 
@@ -27,11 +28,20 @@ function sortTasks(list) {
   return [...list].sort((a, b) => rank(a) - rank(b) || due(a) - due(b) || a.title.localeCompare(b.title));
 }
 
-export function taskCard(x) {
-  const d = deadlineOf(x);
+// Progress as a share: counted items when the task has them ("3 из 10"), time otherwise.
+export function progressOf(x) {
+  const count = x.count_progress;
+  if (count?.total) return { pct: Math.round((count.done / count.total) * 100), label: `${count.done}/${count.total}${count.unit ? ` ${count.unit}` : ''}` };
   const total = Number(x.estimated_total_effort_minutes || 0);
   const left = Number(x.remaining_effort_minutes || 0);
   const pct = total ? Math.round(((total - left) / total) * 100) : 0;
+  return { pct, label: pct ? `${pct}%` : '' };
+}
+
+export function taskCard(x) {
+  const d = deadlineOf(x);
+  const left = Number(x.remaining_effort_minutes || 0);
+  const { pct, label } = progressOf(x);
   const overdue = d && new Date(d.at) < now() && x.status === 'ACTIVE';
   return `<button class="task-card" data-action="open-task" data-id="${esc(x.id)}">
     <span class="task-top">
@@ -42,7 +52,7 @@ export function taskCard(x) {
       ${d ? `<span class="${overdue ? 'text-danger' : ''}">${icon(d.kind === 'cutoff' ? 'flag' : 'clock')}${esc(fmtDateTime(d.at))} · ${esc(fmtRelative(d.at))}</span>` : `<span class="muted">${icon('flag')}${esc(code('cutoffState', x.actual_cutoff?.state))}</span>`}
       <span>${x.status === 'COMPLETED' && x.completed_at ? esc(t('tasks.doneAt', { when: fmtDateTime(x.completed_at) })) : x.estimated_total_effort_minutes == null ? esc(t('card.effort.unknown')) : esc(t('tasks.left', { d: fmtDuration(left) }))}</span>
     </span>
-    <span class="progress" aria-hidden="true"><span data-w="${pct}"></span></span>
+    <span class="progress-row"><span class="progress" aria-hidden="true"><span data-w="${pct}"></span></span>${label ? `<small>${esc(label)}</small>` : ''}${x._pending ? `<small class="muted">${icon('clock')}${esc(t('sync.pendingShort'))}</small>` : ''}</span>
   </button>`;
 }
 

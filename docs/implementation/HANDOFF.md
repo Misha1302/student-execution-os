@@ -4,8 +4,19 @@
 
 ## Current architecture
 
-- Schema: v14 (v13: explicit `remind_at` reminder requests, device capabilities, retention
-  indexes; v14: per-account encrypted LLM credentials and the platform-managed entitlement seam).
+- Schema: v15 (v13: explicit `remind_at` reminder requests, device capabilities, retention
+  indexes; v14: per-account encrypted LLM credentials and the platform-managed entitlement seam;
+  v15: delete tombstones, event reminder leads, counted progress — ADR 0018).
+- Client is offline-first: `js/sync.js` (durable queue, background delivery, backoff,
+  duplicate-tap collapse) + `js/overlay.js` (pure projection of queued/acked operations onto
+  cached read models, applied by `js/store.js` on every read). No task/event change awaits
+  the network. Tests: `tests/unit/test_offline_overlay.py` (Node) and
+  `tests/browser/offline_e2e.py` (Chromium against a real uvicorn + SQLite server).
+- Events: parser `kind: "EVENT"` for intervals/event words; `event.create/update/cancel/
+  reopen/delete` sync ops; `remind_before_minutes` → `reminder_states.remind_at`; engine
+  `event_facts` → "Скоро" messages. Lifecycle: `task.archive/unarchive/delete`.
+- Planning: planning-profile windows → derived `off-hours:*` UNAVAILABLE constraints;
+  `assume_attendance` for non-colliding optional events (product default); `/api/v1/plan/agenda`.
 - API/UI: FastAPI plus the shared browser/Capacitor client.
 - Execution state: canonical `started_at` and `last_progress_at` on tasks.
 - Offline mutations: `/api/v1/sync`, client-generated operation ids, atomic

@@ -1,8 +1,7 @@
 import { load } from '../store.js';
 import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, now, sameDay } from '../i18n.js';
 import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead } from '../ui.js';
-import { logProgress, lifecycle, mutate } from '../actions.js';
-import { queueOperation } from '../sync.js';
+import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../capture.js';
 
 export function parseWhyNow(value) {
@@ -14,29 +13,55 @@ export function parseWhyNow(value) {
   return out;
 }
 
-// Plan explanations such as "UNKNOWN_HARD_CUTOFF:task-1" become sentences about the task.
-export function explainReason(reason, tasks = []) {
-  const [codeName, taskId] = String(reason || '').split(':');
-  const task = taskId ? tasks.find((x) => x.id === taskId) : null;
+// Plan explanations such as "UNKNOWN_HARD_CUTOFF:task-1" become sentences about the
+// task or event they name. Internal codes and ids never reach the screen: a code
+// without a sentence becomes a generic one.
+export function explainReason(reason, tasks = [], events = []) {
+  const [codeName, refId] = String(reason || '').split(':');
+  const task = refId ? tasks.find((x) => x.id === refId) : null;
   if (task) {
     const key = `reasonTask.${codeName}`;
     const text = t(key, { title: task.title });
     if (text !== key) return { text, task };
   }
-  return { text: code('reason', codeName), task: null };
+  const event = refId ? events.find((x) => x.id === refId) : null;
+  if (event) {
+    const key = `reasonEvent.${codeName}`;
+    const text = t(key, { title: event.title });
+    if (text !== key) return { text, event, codeName };
+  }
+  const key = `reason.${codeName}`;
+  const text = t(key);
+  return { text: text !== key ? text : t('reason.other'), task: null };
 }
 
-export function statusCopy(status, reasons = [], tasks = []) {
+// Plan notes that are information, not a problem to solve.
+const INFO_REASONS = /^(OPTIONAL_EVENT_OMITTED|PREFERRED_EVENT_OMITTED|REPLAN_INPUT_CHANGED)/;
+
+export function statusCopy(status, reasons = [], tasks = [], events = []) {
   if (status === 'FEASIBLE') return { text: t('status.copy.FEASIBLE'), task: null };
-  const first = reasons[0] ? explainReason(reasons[0], tasks) : null;
-  if (status === 'INFEASIBLE') return { text: first?.task ? first.text : t('status.copy.INFEASIBLE'), task: first?.task || null };
-  return first ? { text: first.task ? first.text : t('status.copy.UNKNOWN.reason', { reason: first.text }), task: first.task } : { text: t('status.copy.UNKNOWN'), task: null };
+  const firstReason = (reasons || []).find((r) => !INFO_REASONS.test(r));
+  const first = firstReason ? explainReason(firstReason, tasks, events) : null;
+  if (status === 'INFEASIBLE') return first?.task || first?.event ? first : { text: t('status.copy.INFEASIBLE'), task: null };
+  if (!first) return { text: t('status.copy.UNKNOWN'), task: null };
+  return first.task || first.event ? first : { text: t('status.copy.UNKNOWN.reason', { reason: first.text }), task: null };
+}
+
+function fixButtons(copy) {
+  if (copy.task) return `<button class="button small" data-action="open-task" data-id="${esc(copy.task.id)}">${esc(t('status.fix'))}</button>`;
+  if (copy.event && copy.codeName === 'UNSUPPORTED_OPTIONAL_EVENT_POLICY') {
+    return `<div class="button-row">
+      <button class="button small" data-action="event-attend" data-id="${esc(copy.event.id)}">${esc(t('status.attend'))}</button>
+      <button class="button small ghost" data-action="allow-skip-optional">${esc(t('status.allowSkip'))}</button></div>`;
+  }
+  if (copy.event) return `<button class="button small" data-action="open-event" data-id="${esc(copy.event.id)}">${esc(t('status.fix'))}</button>`;
+  return '';
 }
 
 export function heroStatus(plan, tasks = [], extra = '') {
   const s = plan.feasibility_status;
-  const copy = statusCopy(s, plan.explanations, tasks);
-  const fix = copy.task ? `<button class="button small" data-action="open-task" data-id="${esc(copy.task.id)}">${esc(t('status.fix'))}</button>` : '';
+  const copy = statusCopy(s, plan.explanations, tasks, plan.canonical_events || []);
+  const fix = fixButtons(copy);
   return `<section class="hero-status ${statusClass(s)}" data-status="${esc(s)}">
     <div class="hero-icon ${statusClass(s)}">${icon(statusIcon(s))}</div>
     <div class="hero-copy">
@@ -61,10 +86,10 @@ function boundaries(data) {
 
 function travelCard(travel) {
   if (travel?.unknown_reasons?.length) {
-    return `<div class="banner warn">${icon('alert')}<div><strong>${esc(t('travel.unknown'))}</strong><p>${esc(travel.unknown_reasons.map((r) => code('reason', r)).join(' · '))}</p></div></div>`;
+    return `<div class="banner warn">${icon('alert')}<div><strong>${esc(t('travel.unknown'))}</strong><p>${esc([...new Set(travel.unknown_reasons.map((r) => explainReason(r).text))].join(' · '))}</p></div></div>`;
   }
   if (travel?.infeasible_reasons?.length) {
-    return `<div class="banner danger">${icon('alert')}<div><strong>${esc(t('travel.infeasible'))}</strong><p>${esc(travel.infeasible_reasons.map((r) => code('reason', r)).join(' · '))}</p></div></div>`;
+    return `<div class="banner danger">${icon('alert')}<div><strong>${esc(t('travel.infeasible'))}</strong><p>${esc([...new Set(travel.infeasible_reasons.map((r) => explainReason(r).text))].join(' · '))}</p></div></div>`;
   }
   const upcoming = (travel?.transitions || []).filter((x) => new Date(x.travel_ends_at) >= now());
   return upcoming.map((x) => `
@@ -106,6 +131,46 @@ function nowCard(action, task, plan) {
   </article>`;
 }
 
+// Open tasks the plan does not put in front of the user right now — so nothing
+// disappears from Today when the plan is uncertain, a task is put off or a new
+// task was created offline and is not planned yet.
+export function soonTasks(data, cur = now()) {
+  const planned = new Set((data.next_actions || []).map((a) => a.task_id));
+  const unplanned = new Set(data.unplanned_pending || []);
+  const horizon = cur.getTime() + 3 * 86400000;
+  const due = (x) => new Date(x.actual_cutoff?.at || x.target_at || x.actionable_from || 8.64e15).getTime();
+  return (data.tasks || [])
+    .filter((x) => x.status === 'ACTIVE' && !planned.has(x.id))
+    .filter((x) => unplanned.has(x.id) || due(x) <= horizon || (x.actionable_from && new Date(x.actionable_from).getTime() <= horizon)
+      || data.plan?.feasibility_status !== 'FEASIBLE')
+    .map((x) => {
+      let why;
+      if (x.actionable_from && new Date(x.actionable_from) > cur) why = t('soon.deferred', { when: fmtDateTime(x.actionable_from) });
+      else if (unplanned.has(x.id)) why = t('soon.notPlanned');
+      else if (x.actual_cutoff?.state === 'KNOWN' && x.actual_cutoff.at) why = t('soon.due', { when: fmtDateTime(x.actual_cutoff.at) });
+      else if (x.target_at) why = t('soon.target', { when: fmtDateTime(x.target_at) });
+      else why = t('soon.anytime');
+      return { task: x, why, ready: !(x.actionable_from && new Date(x.actionable_from) > cur) };
+    })
+    .sort((a, b) => Number(b.ready) - Number(a.ready) || due(a.task) - due(b.task));
+}
+
+function fallbackNowCard(item) {
+  const task = item.task;
+  return `<article class="card now-card" data-action="open-task" data-id="${esc(task.id)}">
+    <div class="now-head"><span class="eyebrow">${esc(t('today.suggested'))}</span>${riskChip(task.risk)}</div>
+    <h3>${esc(task.title)}</h3>
+    <p class="muted">${esc(item.why)}${task.remaining_effort_minutes != null ? ` · ${esc(t('tasks.left', { d: fmtDuration(task.remaining_effort_minutes) }))}` : ''}</p>
+    <div class="now-actions">
+      ${task.started_at ? `<button class="button primary" data-action="progress" data-id="${esc(task.id)}">${icon('check')}${esc(t('task.logProgress'))}</button>`
+        : `<button class="button primary" data-action="start-task" data-id="${esc(task.id)}">${esc(t('today.start'))}</button>`}
+      <button class="button ghost" data-action="complete-task" data-id="${esc(task.id)}">${esc(t('lifecycle.complete'))}</button>
+      <button class="button ghost" data-action="defer-task" data-id="${esc(task.id)}">${esc(t('today.notNow'))}</button>
+      <button class="button ghost" data-action="reschedule-task" data-id="${esc(task.id)}">${esc(t('task.reschedule'))}</button>
+    </div>
+  </article>`;
+}
+
 export default {
   id: 'today',
   tab: 'today',
@@ -122,7 +187,11 @@ export default {
     const [first, ...rest] = actions;
     const unhealthy = (data.source_health || []).filter((s) => s.health_status !== 'CURRENT');
     const cur = now();
-    const events = (plan.canonical_events || []).filter((e) => new Date(e.ends_at) >= cur && sameDay(new Date(e.starts_at), cur));
+    const events = (plan.canonical_events || []).filter((e) => new Date(e.ends_at) >= cur && sameDay(new Date(e.starts_at), cur))
+      .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+    const soon = soonTasks(data, cur);
+    const suggestion = !first ? soon.find((x) => x.ready) : null;
+    const later = soon.filter((x) => x !== suggestion);
     const atRisk = (data.tasks || []).filter((x) => ['AT_RISK', 'CRITICAL', 'IMPOSSIBLE', 'OVERDUE'].includes(x.risk?.state));
     const travel = travelCard(data.travel);
     const bounds = boundaries(data);
@@ -137,7 +206,7 @@ export default {
 
       <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}
-        ${first ? nowCard(first, tasks.get(first.task_id), plan) : nothingYet ? '' : empty(
+        ${first ? nowCard(first, tasks.get(first.task_id), plan) : suggestion ? fallbackNowCard(suggestion) : nothingYet ? '' : empty(
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothing') : t('today.resolveFirst'),
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothingHint') : t('today.resolveFirstHint'),
           plan.feasibility_status === 'FEASIBLE' ? 'check' : 'question',
@@ -154,6 +223,15 @@ export default {
             ${riskChip({ state: why.RISK })}
           </button>`;
         }).join('')}</div>
+      </section>` : ''}
+
+      ${later.length ? `<section class="section" data-soon>
+        ${sectionHead(t('today.soon'))}
+        <div class="list">${later.map((x) => `<div class="row soon-row">
+          <button class="row-main plain" data-action="open-task" data-id="${esc(x.task.id)}"><strong>${esc(x.task.title)}</strong><small>${esc(x.why)}</small></button>
+          ${x.ready ? `<button class="button small ghost" data-action="start-task" data-id="${esc(x.task.id)}">${esc(t('today.start'))}</button>` : ''}
+          <button class="button small ghost" data-action="complete-task" data-id="${esc(x.task.id)}" aria-label="${esc(t('lifecycle.complete'))}">${icon('check')}</button>
+        </div>`).join('')}</div>
       </section>` : ''}
 
       ${data.needs_refinement?.length ? `<section class="section">
@@ -176,10 +254,18 @@ export default {
 
       <section class="section">
         ${sectionHead(t('today.events'), `<button class="link" data-nav="calendar">${esc(t('nav.calendar'))}</button>`)}
-        ${events.length ? `<div class="list">${events.map((e) => `<button class="row" data-action="open-event" data-id="${esc(e.id)}">
+        ${events.length ? `<div class="list">${events.map((e) => {
+          const running = new Date(e.starts_at) <= cur;
+          const bits = [running ? t('today.eventNow') : fmtRelative(e.starts_at)];
+          if (e.attendance_policy !== 'REQUIRED') bits.push(code('attendance', e.attendance_policy));
+          if (e.location_effect?.kind && e.location_effect.kind !== 'NONE') bits.push(code('location', e.location_effect.kind));
+          if (e.remind_before_minutes != null) bits.push(t('event.remindShort', { n: e.remind_before_minutes }));
+          return `<button class="row${running ? ' current' : ''}" data-action="open-event" data-id="${esc(e.id)}">
           <span class="row-time"><strong>${esc(fmtTime(e.starts_at))}</strong><small>${esc(fmtTime(e.ends_at))}</small></span>
-          <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(code('attendance', e.attendance_policy))}${e.location_effect.kind !== 'NONE' ? ` · ${esc(code('location', e.location_effect.kind))}` : ''}</small></span>
-        </button>`).join('')}</div>` : `<p class="muted pad">${esc(t('today.noEvents'))}</p>`}
+          <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(bits.join(' · '))}</small></span>
+          ${running ? chip(t('today.eventNowChip'), 'accent') : ''}
+        </button>`;
+        }).join('')}</div>` : `<p class="muted pad">${esc(t('today.noEvents'))}</p>`}
       </section>
 
       <section class="section">
@@ -198,11 +284,7 @@ export default {
     },
     async 'start-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
-      if (task) await mutate(async () => {
-        const at = new Date().toISOString();
-        const result = await queueOperation('task.start', task.id, {}, { optimisticTask: { ...task, started_at: task.started_at || at, last_progress_at: at } });
-        return result.entity || result;
-      }, { success: t('today.started') });
+      if (task) await change('task.start', task.id, {}, { success: t('today.started') });
     },
     async 'complete-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
@@ -216,10 +298,7 @@ export default {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
       if (!task) return;
       const until = new Date(now().getTime() + 60 * 60000).toISOString();
-      await mutate(async () => {
-        const result = await queueOperation('task.defer', task.id, { until }, { optimisticTask: { ...task, actionable_from: until, remind_at: until } });
-        return result.entity || result;
-      }, { success: t('today.deferred') });
+      await change('task.defer', task.id, { until }, { success: t('today.deferred', { when: fmtTime(until) }) });
     },
   },
 };

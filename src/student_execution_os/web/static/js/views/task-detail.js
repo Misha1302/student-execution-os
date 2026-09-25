@@ -2,8 +2,7 @@ import { load } from '../store.js';
 import { api } from '../api.js';
 import { t, code, fmtDuration, fmtDateTime, fmtRelative, now } from '../i18n.js';
 import { esc, icon, chip, riskChip, kv, empty, setBusy } from '../ui.js';
-import { lifecycle, logProgress, mutate } from '../actions.js';
-import { queueOperation } from '../sync.js';
+import { lifecycle, logProgress, mutate, change } from '../actions.js';
 import { editTaskSheet, rescheduleSheet, deadlineText } from '../capture.js';
 
 function fileBase64(file) {
@@ -45,7 +44,8 @@ export default {
     if (!task) return empty(t('task.missing'), t('task.missingHint'), 'tasks');
     const total = Number(task.estimated_total_effort_minutes || 0);
     const left = Number(task.remaining_effort_minutes || 0);
-    const pct = total ? Math.round(((total - left) / total) * 100) : 0;
+    const pct = task.count_progress?.total ? Math.round((task.count_progress.done / task.count_progress.total) * 100)
+      : total ? Math.round(((total - left) / total) * 100) : 0;
     const cutoff = task.actual_cutoff || {};
     const open = task.status === 'ACTIVE' || task.status === 'DRAFT';
     const active = task.status === 'ACTIVE';
@@ -70,6 +70,7 @@ export default {
         <small class="help">${esc(t('task.draftHelp'))}</small>
       </section>` : `<section class="card effort-card">
         <div class="effort-row"><span>${esc(t('task.effort'))}</span><strong>${esc(t('task.effortValue', { left: fmtDuration(left), total: fmtDuration(total) }))}</strong></div>
+        ${task.count_progress ? `<div class="effort-row"><span>${esc(t('task.countProgress'))}</span><strong>${esc(t('task.countValue', { done: task.count_progress.done, total: task.count_progress.total, unit: task.count_progress.unit || '', pct: Math.round((task.count_progress.done / task.count_progress.total) * 100) }))}</strong></div>` : ''}
         <span class="progress big" aria-label="${pct}%"><span data-w="${pct}"></span></span>
         ${task.remaining_effort_low_minutes != null && task.remaining_effort_high_minutes != null ? `<p class="help">${esc(t('task.range', { lo: fmtDuration(task.remaining_effort_low_minutes), hi: fmtDuration(task.remaining_effort_high_minutes) }))}</p>` : ''}
         ${active ? `<div class="button-row">
@@ -95,8 +96,12 @@ export default {
           <button class="button" data-action="detail-reschedule">${icon('calendar')}${esc(t('task.reschedule'))}</button>
           <button class="button" data-action="detail-edit">${esc(t('task.edit'))}</button>
           <button class="button danger ghost" data-action="detail-lifecycle" data-op="cancel">${esc(t('lifecycle.cancel'))}</button>`
-        : `<button class="button primary" data-action="detail-lifecycle" data-op="reopen">${icon('repeat')}${esc(t('lifecycle.reopen'))}</button>`}
+        : task.status === 'ARCHIVED' ? `<button class="button primary" data-action="detail-lifecycle" data-op="unarchive">${icon('repeat')}${esc(t('lifecycle.unarchive'))}</button>`
+        : `<button class="button primary" data-action="detail-lifecycle" data-op="reopen">${icon('repeat')}${esc(t('lifecycle.reopen'))}</button>
+           <button class="button" data-action="detail-lifecycle" data-op="archive">${esc(t('lifecycle.archive'))}</button>`}
+        <button class="button danger ghost" data-action="detail-lifecycle" data-op="delete">${esc(t('lifecycle.delete'))}</button>
       </section>
+      <p class="help pad">${esc(t(`lifecycle.help.${open ? 'open' : task.status}`))}</p>
 
       <section class="card">
         <h3>${esc(t('task.attachments'))}</h3>
@@ -112,20 +117,11 @@ export default {
     'detail-reschedule'(_el, ctx) { rescheduleSheet(ctx.data); },
     async 'detail-start'(el, ctx) {
       const task = ctx.data;
-      setBusy(el, true);
-      await mutate(async () => {
-        const at = new Date().toISOString();
-        const result = await queueOperation('task.start', task.id, {}, { optimisticTask: { ...task, started_at: at, last_progress_at: at } });
-        return result.entity || result;
-      }, { success: t('today.started') });
+      await change('task.start', task.id, {}, { success: t('today.started') });
     },
     async 'detail-effort'(el, ctx) {
       const minutes = Number(el.dataset.minutes);
-      await mutate(async () => {
-        const changes = { estimated_total_effort_minutes: minutes, remaining_effort_minutes: minutes };
-        const result = await queueOperation('task.update', ctx.data.id, changes, { optimisticTask: { ...ctx.data, ...changes, status: 'ACTIVE' } });
-        return result.entity || result;
-      }, { success: t('task.inPlan') });
+      await change('task.update', ctx.data.id, { estimated_total_effort_minutes: minutes, remaining_effort_minutes: minutes }, { success: t('task.inPlan') });
     },
     'attachment-pick'(el) { el.closest('.card').querySelector('[data-attachment-input]').click(); },
     'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title }); },

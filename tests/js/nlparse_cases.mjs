@@ -13,6 +13,12 @@ const local = (value) => {
 };
 const results = fixture.cases.map(({ text }) => {
   const r = parseTask(text, now);
+  if (r.kind === 'EVENT') {
+    return {
+      kind: 'EVENT', title: r.title, category: r.category, starts_at: local(r.starts_at), ends_at: local(r.ends_at),
+      duration_minutes: r.duration_minutes, unresolved: r.unresolved,
+    };
+  }
   const cutoff = r.actual_cutoff;
   return {
     title: r.title, estimated_total_effort_minutes: r.estimated_total_effort_minutes,

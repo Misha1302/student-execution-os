@@ -209,6 +209,9 @@ _DIRECT_ACCOUNT_TABLES = (
     "saved_task_views",
     "operational_metrics",
     "llm_entitlements",
+    "deleted_obligations",
+    "event_reminders",
+    "task_progress_counts",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

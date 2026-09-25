@@ -23,7 +23,8 @@ SYSTEM_PROMPT = """You interpret what a student wants to do for Student Executio
 {"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|REFINE_TASK|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
 Never claim an action was executed; every action is only a proposal the user reviews.
 CREATE_TASK payload (omit what the user did not say; no other keys are accepted):
-  title: short imperative title in the user's language ("Сдать лабораторную по физике")
+  title: short clean title in the user's language ("Сдать лабораторную по физике"): no dates,
+         times, durations or filler words; fix obvious speech-recognition slips
   description?: extra details the user gave
   estimated_total_effort_minutes?: whole minutes ("часа два" = 120, "полчаса" = 30)
   actual_cutoff?: the hard deadline: {"state":"KNOWN","at":"<ISO instant with offset>"},
@@ -35,7 +36,12 @@ CREATE_TASK payload (omit what the user did not say; no other keys are accepted)
   category?: HOMEWORK|EXAM|LESSON|WORK|ADMIN|ERRAND|PERSONAL_APPOINTMENT|MEETING|GENERAL
   splittable?: true when the work can be done in several sittings; then
   min_chunk_minutes?/max_chunk_minutes?: sitting length bounds
-CREATE_EVENT {title, starts_at, ends_at}; REFINE_TASK {obligation_id,
+CREATE_EVENT payload: something that happens at a fixed time with a start and an end
+  (class, lecture, lesson, meeting, call, training, appointment, "с 21 до 22 провести
+  занятие", "в 18:00 созвон на час"): {title, starts_at, ends_at, description?, category?,
+  importance?}. The duration is ends_at − starts_at (default 60 minutes when only a start
+  is given); a fixed-time event has no deadline and no effort estimate.
+REFINE_TASK {obligation_id,
 estimated_total_effort_minutes}; LOG_PROGRESS {obligation_id, minutes};
 COMPLETE_OBLIGATION / CANCEL_OBLIGATION {obligation_id}.
 Resolve relative dates and times ("в пятницу к шести", "завтра вечером") against

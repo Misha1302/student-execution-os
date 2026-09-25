@@ -11,16 +11,17 @@ import { api } from './api.js';
 import { load, peek } from './store.js';
 import { t, code, fmtDuration, fmtDateTime, fmtTime, fmtDay, now, getLocale, sameDay } from './i18n.js';
 import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, errorMessage } from './ui.js';
-import { mutate, shell } from './actions.js';
-import { newEntityId, queueOperation } from './sync.js';
+import { mutate, change, shell } from './actions.js';
+import { newEntityId, settled } from './sync.js';
 import { parseTask } from './nlparse.js';
-import { speechToText, voiceSupported } from './native.js';
+import { startDictation, voiceSupported } from './native.js';
+import { eventFieldsHtml, readEventFields, bindEventFields, eventWhen, conflictHtml, createEvent, DEFAULT_LEAD, LEADS } from './events.js';
 
 export const CATEGORIES = ['HOMEWORK', 'EXAM', 'LESSON', 'WORK', 'ADMIN', 'ERRAND', 'PERSONAL_APPOINTMENT', 'MEETING', 'GENERAL'];
 export const IMPORTANCE = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'];
 const EFFORT_CHOICES = [15, 30, 60, 120, 180];
 const FIELDS = ['title', 'description', 'category', 'importance', 'estimated_total_effort_minutes', 'actual_cutoff',
-  'target_at', 'actionable_from', 'remind_at', 'splittable', 'min_chunk_minutes', 'max_chunk_minutes'];
+  'target_at', 'actionable_from', 'remind_at', 'splittable', 'min_chunk_minutes', 'max_chunk_minutes', 'count_total', 'count_unit'];
 const COMMAND_PREFIX = /^\s*(готово|отмени|complete|cancel)\s+/iu;
 
 export const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -113,6 +114,11 @@ export function fieldsHtml(draft, { remaining = false } = {}) {
         ${field(t('form.minChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="min" value="${esc(draft.min_chunk_minutes ?? 30)}">`)}
         ${field(t('form.maxChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="max" value="${esc(draft.max_chunk_minutes ?? 90)}">`)}
       </div></div>
+    <div class="field" data-field="count"><span>${esc(t('form.count'))}</span>
+      <div class="field-row">
+        <input type="number" inputmode="numeric" min="1" max="100000" step="1" data-f="count-total" value="${esc(draft.count_total ?? draft.count_progress?.total ?? '')}" placeholder="${esc(t('form.countTotal'))}">
+        <input data-f="count-unit" maxlength="40" value="${esc(draft.count_unit ?? draft.count_progress?.unit ?? '')}" placeholder="${esc(t('form.countUnit'))}">
+      </div><small class="help">${esc(t('form.countHelp'))}</small></div>
     ${field(t('form.description'), `<textarea data-f="description" rows="3" maxlength="5000">${esc(draft.description || '')}</textarea>`, '', 'description')}
   </div>`;
 }
@@ -148,6 +154,9 @@ export function readFields(root) {
     min_chunk_minutes: splittable ? Number($f('min').value) || null : null,
     max_chunk_minutes: splittable ? Number($f('max').value) || null : null,
   };
+  const countTotal = Math.round(Number($f('count-total')?.value || 0));
+  fields.count_total = countTotal > 0 ? countTotal : null;
+  fields.count_unit = fields.count_total ? ($f('count-unit')?.value.trim() || null) : null;
   if ($f('remaining')) fields.remaining_effort_minutes = $f('remaining').value === '' ? null : Math.max(0, Math.round(Number($f('remaining').value)));
   return fields;
 }
@@ -247,12 +256,38 @@ export function createPayload(draft) {
   if (payload.remind_at && new Date(payload.remind_at) <= now()) payload.remind_at = null;
   for (const key of ['target_at', 'actionable_from', 'remind_at', 'description']) if (payload[key] == null) delete payload[key];
   if (!payload.splittable) { delete payload.min_chunk_minutes; delete payload.max_chunk_minutes; }
+  if (!payload.count_total) { delete payload.count_total; delete payload.count_unit; }
   return payload;
+}
+
+// A fixed-time event read as a task (the user said "это задача"): the slot becomes
+// the work window and its length the effort; nothing is due.
+function taskFromEvent(e) {
+  return {
+    title: e.title,
+    description: e.description ?? null,
+    category: e.category || 'GENERAL',
+    importance: e.importance || 'NORMAL',
+    actionable_from: e.starts_at,
+    target_at: e.ends_at,
+    estimated_total_effort_minutes: Math.max(5, Math.round((new Date(e.ends_at) - new Date(e.starts_at)) / 60000)),
+    actual_cutoff: { state: 'ABSENT' },
+  };
+}
+
+function eventFromTask(d) {
+  const start = d.actionable_from ? new Date(d.actionable_from) : (() => { const x = now(); x.setMinutes(0, 0, 0); x.setHours(x.getHours() + 1); return x; })();
+  const minutes = Number(d.estimated_total_effort_minutes) || 60;
+  return {
+    title: d.title, description: d.description ?? null, category: d.category || 'GENERAL', importance: d.importance || 'NORMAL',
+    starts_at: start.toISOString(), ends_at: new Date(start.getTime() + minutes * 60000).toISOString(),
+    attendance_policy: 'REQUIRED', remind_before_minutes: DEFAULT_LEAD,
+  };
 }
 
 // ---- the sheet ----------------------------------------------------------------------
 
-export function openCapture({ text = '', listen = false } = {}) {
+export function openCapture({ text = '', listen: listenNow = false } = {}) {
   let draft = { title: '', importance: 'NORMAL', category: 'GENERAL', estimated_total_effort_minutes: null, actual_cutoff: { state: 'UNKNOWN' }, splittable: false };
   let unresolved = [];
   const answered = new Set();
@@ -261,6 +296,11 @@ export function openCapture({ text = '', listen = false } = {}) {
   let serverSeq = 0;
   let serverTimer = null;
   let parseTimer = null;
+  let kind = 'TASK';           // what the card will create: 'TASK' | 'EVENT'
+  let kindChosen = false;      // the user picked the kind; parses no longer switch it
+  let eventDraft = null;
+  const eventEdited = new Set(); // event fields the user set by hand
+  let dictation = null;
 
   const dialog = openSheet({
     title: t('capture.title'),
@@ -268,7 +308,12 @@ export function openCapture({ text = '', listen = false } = {}) {
     body: `<div class="capture">
       <div class="capture-input">
         <textarea id="capture-text" rows="2" maxlength="4000" enterkeyhint="done" placeholder="${esc(t('capture.placeholder'))}">${esc(text)}</textarea>
-        ${voiceSupported() ? `<button type="button" class="icon-button mic" data-mic aria-label="${esc(t('capture.voice'))}">${icon('mic')}</button>` : ''}
+        ${voiceSupported() ? `<button type="button" class="icon-button mic" data-mic aria-pressed="false" aria-label="${esc(t('capture.voice'))}">${icon('mic')}</button>` : ''}
+      </div>
+      <div class="voice-panel" data-voice hidden>
+        <span class="voice-dot" aria-hidden="true"></span>
+        <span class="voice-copy"><strong data-voice-state></strong><small data-voice-text></small></span>
+        <button type="button" class="button small" data-voice-stop>${esc(t('voice.stop'))}</button>
       </div>
       <p class="help" data-capture-hint>${esc(t('capture.hint'))}</p>
       <div data-capture-status class="capture-status" hidden></div>
@@ -276,7 +321,8 @@ export function openCapture({ text = '', listen = false } = {}) {
       <div data-commands hidden></div>
       <details class="details" data-more>
         <summary>${icon('settings')} ${esc(t('capture.more'))}</summary>
-        ${fieldsHtml(draft)}
+        <div data-task-details>${fieldsHtml(draft)}</div>
+        <div data-event-details hidden></div>
       </details>
       <div class="capture-other">
         <button type="button" class="link" data-other="event">${icon('event')} ${esc(t('capture.event'))}</button>
@@ -291,7 +337,9 @@ export function openCapture({ text = '', listen = false } = {}) {
   const details = dialog.querySelector('[data-more]');
   const createButton = dialog.querySelector('[data-create]');
   const status = dialog.querySelector('[data-capture-status]');
-  bindFields(details);
+  const taskDetails = details.querySelector('[data-task-details]');
+  const eventDetails = details.querySelector('[data-event-details]');
+  bindFields(taskDetails);
 
   const showStatus = (message) => { status.hidden = !message; status.textContent = message || ''; };
 
@@ -303,11 +351,77 @@ export function openCapture({ text = '', listen = false } = {}) {
     if (source === 'local' && !String(input.value).trim()) draft.title = '';
   }
 
+  // A parse (local or the model's) that found a fixed-time event.
+  function adoptEvent(parsed) {
+    const next = { ...(eventDraft || { attendance_policy: 'REQUIRED', remind_before_minutes: DEFAULT_LEAD }) };
+    for (const key of ['title', 'description', 'category', 'importance', 'starts_at', 'ends_at']) {
+      if (!eventEdited.has(key) && parsed[key] !== undefined) next[key] = parsed[key];
+    }
+    eventDraft = next;
+    if (!kindChosen) kind = 'EVENT';
+    merge(taskFromEvent(eventDraft), 'event');
+  }
+
+  function ensureEventDetails() {
+    if (eventDetails.dataset.ready) return;
+    eventDetails.dataset.ready = '1';
+    eventDetails.innerHTML = eventFieldsHtml(eventDraft);
+    bindEventFields(eventDetails, { onChange: fromEventDetails });
+    eventDetails.querySelector('[data-e="title"]').addEventListener('input', fromEventDetails);
+  }
+
+  function writeEventFields() {
+    if (!eventDetails.dataset.ready) return;
+    const active = document.activeElement;
+    const set = (name, value) => { const el = eventDetails.querySelector(`[data-e="${name}"]`); if (el && el !== active) el.value = value; };
+    set('title', eventDraft.title || '');
+    set('start', localInputValue(eventDraft.starts_at));
+    set('end', localInputValue(eventDraft.ends_at));
+    set('category', eventDraft.category || 'GENERAL');
+    setChip(eventDetails, 'e-lead', eventDraft.remind_before_minutes == null ? '' : String(eventDraft.remind_before_minutes));
+  }
+
+  function fromEventDetails() {
+    let fields;
+    try { fields = readEventFields(eventDetails); } catch { return; }
+    for (const [key, value] of Object.entries(fields)) {
+      if (JSON.stringify(value ?? null) !== JSON.stringify(eventDraft?.[key] ?? null)) eventEdited.add(key);
+    }
+    eventDraft = { ...eventDraft, ...fields };
+    render();
+  }
+
+  function eventCardHtml() {
+    const lead = eventDraft.remind_before_minutes == null ? '' : String(eventDraft.remind_before_minutes);
+    return `<article class="capture-card event-card" data-kind="EVENT">
+      <span class="eyebrow">${icon('event')} ${esc(t('capture.kindEvent'))}</span>
+      <h3 class="capture-title">${esc(eventDraft.title || '')}</h3>
+      <div class="capture-facts">
+        <button type="button" class="fact" data-fact="event-time"><span class="fact-icon tone-accent">${icon('calendar')}</span>
+          <span class="fact-copy"><small>${esc(t('card.when'))}</small><strong data-event-when>${esc(eventWhen(eventDraft))}</strong></span></button>
+        <div class="fact static"><span class="fact-icon tone-muted">${icon('flag')}</span>
+          <span class="fact-copy"><small>${esc(t('card.deadline'))}</small><strong>${esc(t('event.noDeadline'))}</strong></span></div>
+      </div>
+      <div class="field"><span>${icon('bell')} ${esc(t('event.remind'))}</span>${chipGroup('card-lead', LEADS.map(([v, k]) => [v, t(k)]), lead)}</div>
+      ${conflictHtml(eventDraft)}
+      <button type="button" class="link" data-switch-kind="TASK">${esc(t('capture.asTask'))}</button>
+    </article>`;
+  }
+
   function render() {
-    const hasTitle = Boolean(String(draft.title || '').trim());
+    const isEvent = kind === 'EVENT' && eventDraft;
+    const hasTitle = Boolean(String((isEvent ? eventDraft.title : draft.title) || '').trim());
     createButton.disabled = !hasTitle || Boolean(commands);
     preview.hidden = !hasTitle || Boolean(commands);
     dialog.querySelector('[data-capture-hint]').hidden = hasTitle || Boolean(commands);
+    taskDetails.hidden = Boolean(isEvent);
+    eventDetails.hidden = !isEvent;
+    if (isEvent) {
+      ensureEventDetails();
+      writeEventFields();
+      if (hasTitle && !commands) preview.innerHTML = eventCardHtml();
+      return;
+    }
     if (hasTitle && !commands) {
       const open = unresolved.filter((f) => !answered.has(f));
       preview.innerHTML = `<article class="capture-card">
@@ -315,9 +429,10 @@ export function openCapture({ text = '', listen = false } = {}) {
         ${factsHtml(draft)}
         ${draft.description ? `<p class="muted">${esc(draft.description)}</p>` : ''}
         ${questionsHtml(open)}
+        <button type="button" class="link" data-switch-kind="EVENT">${esc(t('capture.asEvent'))}</button>
       </article>`;
     }
-    writeFields(details, draft);
+    writeFields(taskDetails, draft);
   }
 
   function parseLocal() {
@@ -327,7 +442,13 @@ export function openCapture({ text = '', listen = false } = {}) {
     const parsed = parseTask(raw, now());
     assistant = null;
     unresolved = parsed.unresolved || [];
-    merge(parsed, 'local');
+    if (parsed.kind === 'EVENT') {
+      unresolved = [];
+      adoptEvent(parsed);
+    } else {
+      if (!kindChosen) kind = 'TASK';
+      merge(parsed, 'local');
+    }
     render();
   }
 
@@ -350,7 +471,15 @@ export function openCapture({ text = '', listen = false } = {}) {
     showStatus(result.fallback && ['AUTH', 'NOT_FOUND'].includes(result.fallback_reason) ? t('capture.aiKeyProblem') : '');
     const actions = result.actions || [];
     const create = actions.length === 1 && actions[0].command === 'CREATE_TASK' ? actions[0] : null;
-    if (create) {
+    const event = actions.length === 1 && actions[0].command === 'CREATE_EVENT' && actions[0].payload?.starts_at && actions[0].payload?.ends_at ? actions[0] : null;
+    if (event) {
+      // The model's reading goes through the same card and the same event.create
+      // validation as the local parse; it only improves title and times.
+      unresolved = [];
+      adoptEvent(event.payload);
+      render();
+    } else if (create) {
+      if (!kindChosen) kind = 'TASK';
       assistant = { batch_id: result.batch_id, action_id: create.id };
       unresolved = create.unresolved_fields || [];
       merge(create.payload, 'assistant');
@@ -374,13 +503,14 @@ export function openCapture({ text = '', listen = false } = {}) {
     box.hidden = false;
     render();
     box.querySelector('[data-apply-commands]')?.addEventListener('click', async (e) => {
-      setBusy(e.currentTarget, true);
+      const button = e.currentTarget;
+      setBusy(button, true);
       const applied = await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body: {
         batch_id: result.batch_id, action_ids: result.actions.map((a) => a.id),
         confirmed_action_ids: result.actions.filter((a) => a.requires_confirmation).map((a) => a.id),
         idempotency_key: `assistant-${result.batch_id}`,
       } }), { success: t('capture.commandDone') });
-      if (applied) dialog.close('applied'); else setBusy(e.currentTarget, false);
+      if (applied) dialog.close('applied'); else setBusy(button, false);
     });
   }
 
@@ -398,7 +528,23 @@ export function openCapture({ text = '', listen = false } = {}) {
     }
   });
 
+  preview.addEventListener('chipchange', (e) => {
+    if (e.detail.name !== 'card-lead' || !eventDraft) return;
+    eventDraft.remind_before_minutes = e.detail.value === '' ? null : Number(e.detail.value);
+    eventEdited.add('remind_before_minutes');
+    writeEventFields();
+  });
+
   preview.addEventListener('click', (e) => {
+    const switcher = e.target.closest('[data-switch-kind]');
+    if (switcher) {
+      kindChosen = true;
+      kind = switcher.dataset.switchKind;
+      if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
+      if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
+      render();
+      return;
+    }
     const chip = e.target.closest('[data-answer]');
     if (chip) {
       const values = answer(chip.dataset.answer, chip.dataset.value);
@@ -411,7 +557,8 @@ export function openCapture({ text = '', listen = false } = {}) {
     const fact = e.target.closest('[data-fact]');
     if (fact) {
       details.open = true;
-      const target = details.querySelector(`[data-field="${fact.dataset.fact}"]`) || details.querySelector('[data-field="title"]');
+      const target = fact.dataset.fact === 'event-time' ? eventDetails.querySelector('[data-e="start"]')?.closest('.field')
+        : details.querySelector(`[data-field="${fact.dataset.fact}"]`) || details.querySelector('[data-field="title"]');
       target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       target?.querySelector('input,select,textarea,button')?.focus({ preventScroll: true });
     }
@@ -420,36 +567,59 @@ export function openCapture({ text = '', listen = false } = {}) {
   // Any manual edit wins over later parses of the text.
   const fromDetails = () => {
     let fields;
-    try { fields = readFields(details); } catch { return; }
+    try { fields = readFields(taskDetails); } catch { return; }
     for (const key of FIELDS) {
       if (JSON.stringify(fields[key] ?? null) !== JSON.stringify(draft[key] ?? null)) answered.add(key);
     }
     Object.assign(draft, fields);
     render();
   };
-  details.addEventListener('change', fromDetails);
-  details.addEventListener('chipchange', () => setTimeout(fromDetails));
-  details.querySelector('[data-f="title"]').addEventListener('input', fromDetails);
+  taskDetails.addEventListener('change', fromDetails);
+  taskDetails.addEventListener('chipchange', () => setTimeout(fromDetails));
+  taskDetails.querySelector('[data-f="title"]').addEventListener('input', fromDetails);
 
-  dialog.querySelector('[data-mic]')?.addEventListener('click', async (e) => listenOnce(e.currentTarget));
+  const mic = dialog.querySelector('[data-mic]');
+  const voicePanel = dialog.querySelector('[data-voice]');
+  mic?.addEventListener('click', () => (dictation ? dictation.stop() : listen()));
+  dialog.querySelector('[data-voice-stop]').addEventListener('click', () => dictation?.stop());
+  dialog.addEventListener('close', () => { dictation?.stop(); dictation = null; });
 
-  async function listenOnce(button) {
-    setBusy(button, true);
-    showStatus(t('capture.listening'));
+  function voiceState(state, text = '') {
+    voicePanel.hidden = state === 'idle';
+    voicePanel.dataset.state = state;
+    voicePanel.querySelector('[data-voice-state]').textContent = state === 'idle' ? '' : t(`voice.${state}`);
+    voicePanel.querySelector('[data-voice-text]').textContent = text;
+    voicePanel.querySelector('[data-voice-stop]').hidden = state !== 'recording';
+    if (mic) {
+      mic.classList.toggle('recording', state === 'recording');
+      mic.setAttribute('aria-pressed', String(state === 'recording'));
+      mic.setAttribute('aria-label', t(state === 'recording' ? 'voice.stop' : 'capture.voice'));
+    }
+  }
+
+  // Dictation: tap to start, tap again (or "Стоп") to finish. The transcript goes
+  // into the text field and through the same parse as typing; nothing is created
+  // until the user presses "Создать".
+  async function listen() {
+    const before = input.value.trim();
+    voiceState('starting');
+    dictation = startDictation({
+      onState: (state) => voiceState(state),
+      onPartial: (text) => voiceState('recording', text),
+    });
     try {
-      const heard = await speechToText();
-      showStatus('');
-      if (!heard) { toast(t('ask.voiceEmpty'), { error: true }); return; }
-      // Dictation goes straight into the same parse; the card is the review step.
-      input.value = input.value.trim() ? `${input.value.trim()} ${heard}` : heard;
+      const heard = await dictation.result;
+      dictation = null;
+      if (!heard) { voiceState('error', t('ask.voiceEmpty')); setTimeout(() => { if (!dictation) voiceState('idle'); }, 2500); return; }
+      voiceState('processing', heard);
+      input.value = before ? `${before} ${heard}` : heard;
       parseLocal();
+      voiceState('idle');
       enrich();
     } catch (error) {
-      showStatus('');
+      dictation = null;
       const key = { VOICE_UNAVAILABLE: 'ask.voiceUnavailable', VOICE_DENIED: 'ask.voiceDenied' }[error.code] || 'ask.voiceFailed';
-      toast(t(key), { error: true });
-    } finally {
-      setBusy(button, false);
+      voiceState('error', t(key));
     }
   }
 
@@ -460,30 +630,32 @@ export function openCapture({ text = '', listen = false } = {}) {
   }));
 
   createButton.addEventListener('click', async (e) => {
+    if (kind === 'EVENT' && eventDraft) {
+      if (details.open) fromEventDetails();
+      const fields = { ...eventDraft, title: String(eventDraft.title || '').trim() };
+      if (!fields.title) { toast(t('form.titleRequired'), { error: true }); return; }
+      if (!(new Date(fields.ends_at) > new Date(fields.starts_at))) { toast(t('event.endBeforeStart'), { error: true }); return; }
+      const id = await createEvent(fields, { toastText: t('capture.eventSaved', { when: eventWhen(fields) }) });
+      if (id) dialog.close('saved');
+      return;
+    }
     if (details.open) fromDetails();
     const payload = createPayload(draft);
     if (!payload.title) { toast(t('form.titleRequired'), { error: true }); return; }
     if (assistant) { payload.assistant_batch_id = assistant.batch_id; }
-    setBusy(e.currentTarget, true);
     const taskId = newEntityId('task');
-    const optimistic = { id: taskId, kind: 'TASK', ...payload, remaining_effort_minutes: payload.estimated_total_effort_minutes,
-      status: payload.estimated_total_effort_minutes == null ? 'DRAFT' : 'ACTIVE', version: 1, risk: null,
-      started_at: null, last_progress_at: null, completed_at: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-    const created = await mutate(async () => {
-      const result = await queueOperation('task.create', taskId, payload, { optimisticTask: optimistic });
-      return { ...(result.entity || optimistic), offline: result.status === 'PENDING' };
-    }, { success: null });
-    setBusy(e.currentTarget, false);
+    const created = await change('task.create', taskId, payload);
     if (!created) return;
     dialog.close('saved');
-    toast(created.offline ? t('capture.savedOffline') : t('compose.taskCreated'), {
+    const state = await settled(created.op_id);
+    toast(state === 'PENDING' ? t('capture.savedOffline') : t('compose.taskCreated'), {
       action: { label: t('common.open'), run: () => shell.go('task', { params: [taskId] }) },
     });
   });
 
   if (text) { parseLocal(); enrich(); }
   setTimeout(() => input.focus(), 80);
-  if (listen && voiceSupported()) listenOnce(dialog.querySelector('[data-mic]'));
+  if (listenNow && voiceSupported()) listen();
   return dialog;
 }
 
@@ -504,6 +676,9 @@ function changedFields(task, fields) {
   }
   const a = fields.actual_cutoff; const b = task.actual_cutoff || {};
   if (a.state !== b.state || (a.state === 'KNOWN' && instant(a.at) !== instant(b.at))) changes.actual_cutoff = a;
+  const count = task.count_progress || null;
+  if ((fields.count_total ?? null) !== (count?.total ?? null)) { changes.count_total = fields.count_total; changes.count_unit = fields.count_unit; }
+  else if (fields.count_total && (fields.count_unit ?? null) !== (count?.unit ?? null)) changes.count_unit = fields.count_unit;
   if ('remaining_effort_minutes' in fields && fields.remaining_effort_minutes !== task.remaining_effort_minutes
     && fields.remaining_effort_minutes != null) changes.remaining_effort_minutes = fields.remaining_effort_minutes;
   return changes;
@@ -528,12 +703,7 @@ export function editTaskSheet(task, { focus } = {}) {
     if (fields.remind_at && new Date(fields.remind_at) <= now()) { toast(t('form.remindPast'), { error: true }); return; }
     const changes = changedFields(task, fields);
     if (!Object.keys(changes).length) { dialog.close('unchanged'); return; }
-    setBusy(e.currentTarget, true);
-    const saved = await mutate(async () => {
-      const result = await queueOperation('task.update', task.id, changes, { optimisticTask: { ...task, ...changes } });
-      return result.entity || result;
-    }, { success: t('task.saved') });
-    setBusy(e.currentTarget, false);
+    const saved = await change('task.update', task.id, changes, { success: t('task.saved') });
     if (saved) dialog.close('saved');
   });
 }
@@ -571,18 +741,12 @@ export function rescheduleSheet(task) {
       </section>` : ''}`,
   });
   const update = async (changes, success) => {
-    const saved = await mutate(async () => {
-      const result = await queueOperation('task.update', task.id, changes, { optimisticTask: { ...task, ...changes } });
-      return result.entity || result;
-    }, { success });
+    const saved = await change('task.update', task.id, changes, { success });
     if (saved) dialog.close('saved');
   };
   const defer = async (until) => {
     if (new Date(until) <= now()) { toast(t('resched.past'), { error: true }); return; }
-    const saved = await mutate(async () => {
-      const result = await queueOperation('task.defer', task.id, { until }, { optimisticTask: { ...task, actionable_from: until, remind_at: until } });
-      return result.entity || result;
-    }, { success: t('resched.deferred', { when: fmtDateTime(until) }) });
+    const saved = await change('task.defer', task.id, { until }, { success: t('resched.deferred', { when: fmtDateTime(until) }) });
     if (saved) dialog.close('saved');
   };
   dialog.addEventListener('click', (e) => {

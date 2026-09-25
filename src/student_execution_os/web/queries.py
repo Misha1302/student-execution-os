@@ -35,6 +35,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
     TemporalPrecision,
 )
+from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 from student_execution_os.persistence.product import SQLiteAttachmentRepository, SQLiteSavedViewRepository
 from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
@@ -49,7 +50,9 @@ from student_execution_os.planning import (
 )
 from student_execution_os.planning.model import PlanningPolicy
 from student_execution_os.planning.outlook import (
+    OFF_HOURS_PREFIX,
     SQLitePlanningProfileRepository,
+    off_hours_constraints,
     overlap_minutes,
     planning_intervals,
 )
@@ -146,7 +149,7 @@ class UiService:
         repo._require_account(self.account_id)
         return repo
 
-    def _snapshot(self, repo: SQLiteCanonicalRepository, *, hours: int = 36):
+    def _snapshot(self, repo: SQLiteCanonicalRepository, *, hours: int = 36, output_hours: int | None = None):
         now = self._now()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("UiService clock must be timezone-aware")
@@ -156,11 +159,13 @@ class UiService:
             account_id=self.account_id,
             analysis_horizon_start=now,
             analysis_horizon_end=now + timedelta(hours=hours),
-            plan_output_horizon_end=now + timedelta(hours=min(hours, 36)),
+            plan_output_horizon_end=now + timedelta(hours=output_hours or min(hours, 36)),
             policy=PlanningPolicy(
                 version=f"daily-product-v1:{profile.version}:{profile.optional_event_policy}",
                 optional_event_policy=profile.optional_event_policy,
             ),
+            derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
+            assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
 
     def planning_profile(self) -> dict[str, Any]:
@@ -212,11 +217,13 @@ class UiService:
                     version=f"outlook-v1:{profile.version}:{profile.optional_event_policy}",
                     optional_event_policy=profile.optional_event_policy,
                 ),
+                derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
+                assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
             )
             outcome = PlanningService().build(snapshot, now=self._now())
             windows = planning_intervals(profile, start_date, days)
             blocks = list(outcome.plan.blocks)
-            constraints = list(snapshot.constraints)
+            constraints = [c for c in snapshot.constraints if not c.id.startswith(OFF_HOURS_PREFIX)]
             risks = {risk.task_id: risk for risk in outcome.risks}
             day_rows = []
             for index in range(days):
@@ -281,7 +288,8 @@ class UiService:
             }
 
     @staticmethod
-    def _task(task, *, risk=None, effective=None, remind_at: datetime | None = None) -> dict[str, Any]:
+    def _task(task, *, risk=None, effective=None, remind_at: datetime | None = None,
+              count: dict[str, Any] | None = None) -> dict[str, Any]:
         cutoff = task.actual_cutoff
         return {
             "id": task.obligation.id,
@@ -307,6 +315,7 @@ class UiService:
             "completed_at": _jsonify(task.obligation.completed_at),
             "created_at": _jsonify(task.obligation.created_at),
             "remind_at": _jsonify(remind_at),
+            "count_progress": count,
             "actual_cutoff": {
                 "state": cutoff.state.value,
                 "at": _jsonify(cutoff.at),
@@ -333,7 +342,7 @@ class UiService:
         }
 
     @staticmethod
-    def _event(event) -> dict[str, Any]:
+    def _event(event, *, lead: int | None = None, remind_at: datetime | None = None) -> dict[str, Any]:
         return {
             "id": event.obligation.id,
             "title": event.obligation.title,
@@ -359,8 +368,22 @@ class UiService:
             } for option in event.location_options],
             "selected_location_option_id": event.selected_location_option_id,
             "arrival_requirement_minutes": event.arrival_requirement_minutes,
+            "duration_minutes": int((event.interval.ends_at - event.interval.starts_at).total_seconds() // 60),
+            "remind_before_minutes": lead,
+            "remind_at": _jsonify(remind_at),
             "canonical": True,
         }
+
+    def _events_payload(self, repo, events) -> list[dict[str, Any]]:
+        # Show each event as stored: the snapshot may plan an optional event as
+        # attended (assume_attendance), but its attendance policy is the user's.
+        stored = {row["id"] for row in repo.connection.execute(
+            "SELECT id FROM obligations WHERE account_id=? AND kind='EVENT'", (self.account_id,))}
+        # (series occurrences are not stored rows; they keep their own policy)
+        events = [repo.get_event(self.account_id, e.obligation.id) if e.obligation.id in stored else e for e in events]
+        leads = extras.event_leads(repo, self.account_id)
+        reminders = ReminderStore(repo).pending_reminders(self.account_id)
+        return [self._event(e, lead=leads.get(e.obligation.id), remind_at=reminders.get(e.obligation.id)) for e in events]
 
     def today(self) -> dict[str, Any]:
         with self._repo() as repo:
@@ -390,6 +413,7 @@ class UiService:
             risks = {r.task_id: r for r in outcome.risks}
             reconciliation = SQLiteReconciliationRepository(repo)
             reminders = ReminderStore(repo).pending_reminders(self.account_id)
+            counts = extras.progress_counts(repo, self.account_id)
             tasks = []
             for task in snapshot.tasks:
                 tasks.append(self._task(
@@ -397,8 +421,9 @@ class UiService:
                     risk=risks.get(task.obligation.id),
                     effective=reconciliation.get_effective_cutoff(self.account_id, task.obligation.id),
                     remind_at=reminders.get(task.obligation.id),
+                    count=counts.get(task.obligation.id),
                 ))
-            events = [self._event(e) for e in snapshot.events]
+            events = self._events_payload(repo, snapshot.events)
             transitions = []
             travel_repo = SQLiteTravelRepository(repo)
             for t in snapshot.travel_projection.transitions:
@@ -425,7 +450,7 @@ class UiService:
                     "expires_at": None if estimate_rows is None else estimate_rows[3],
                     "source": None if estimate_rows is None else estimate_rows[4],
                 })
-            all_tasks = [self._task(task, remind_at=reminders.get(task.obligation.id))
+            all_tasks = [self._task(task, remind_at=reminders.get(task.obligation.id), count=counts.get(task.obligation.id))
                          for task in SQLitePlanningStateSource(repo).list_tasks(self.account_id)]
             needs_refinement = [task for task in all_tasks if task["status"] == "DRAFT"]
             active_tasks = {task["id"]: task for task in tasks}
@@ -528,11 +553,43 @@ class UiService:
                 "reason": c.reason,
                 "version": c.version,
                 "ownership": "CANONICAL",
-            } for c in constraints],
+            } for c in constraints if not c.id.startswith(OFF_HOURS_PREFIX)],
+            # Sleep / off hours from the planning profile (derived, never stored).
+            "off_hours": [{
+                "starts_at": _jsonify(c.interval.starts_at),
+                "ends_at": _jsonify(c.interval.ends_at),
+            } for c in constraints if c.id.startswith(OFF_HOURS_PREFIX)],
         }
 
     def plan(self) -> dict[str, Any]:
         return self.today()["plan"]
+
+    def agenda(self, days: int = 7) -> dict[str, Any]:
+        """Day-by-day plan for the Plan screen: now until the end of the ``days``-th local day.
+
+        Unlike Today it is not stored as the account's current plan; it is the same
+        planner over a longer output horizon so the user can swipe through the week.
+        """
+        days = max(1, min(int(days), 14))
+        with self._repo() as repo:
+            from zoneinfo import ZoneInfo
+            profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            zone = ZoneInfo(profile.timezone_name)
+            now = self._now()
+            local_end = datetime.combine(now.astimezone(zone).date() + timedelta(days=days), datetime.min.time(), zone)
+            hours = max(1, int((local_end.astimezone(timezone.utc) - now).total_seconds() // 3600) + 1)
+            snapshot = self._snapshot(repo, hours=hours, output_hours=hours)
+            outcome = PlanningService().build(snapshot, now=now)
+            risks = {r.task_id: r for r in outcome.risks}
+            counts = extras.progress_counts(repo, self.account_id)
+            tasks = [self._task(task, risk=risks.get(task.obligation.id), count=counts.get(task.obligation.id))
+                     for task in snapshot.tasks]
+            events = self._events_payload(repo, snapshot.events)
+            return {
+                "now": _jsonify(now), "days": days, "timezone": profile.timezone_name,
+                "plan": self._plan_payload(outcome.plan, tasks, events, snapshot.constraints),
+                "tasks": tasks,
+            }
 
     def tasks(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
@@ -544,12 +601,14 @@ class UiService:
             except Exception:
                 risks = {}
             reminders = ReminderStore(repo).pending_reminders(self.account_id)
+            counts = extras.progress_counts(repo, self.account_id)
             return [
                 self._task(
                     task,
                     risk=risks.get(task.obligation.id),
                     effective=reconciliation.get_effective_cutoff(self.account_id, task.obligation.id),
                     remind_at=reminders.get(task.obligation.id),
+                    count=counts.get(task.obligation.id),
                 )
                 for task in source.list_tasks(self.account_id)
             ]
@@ -563,7 +622,7 @@ class UiService:
 
     def events(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
-            return [self._event(e) for e in SQLitePlanningStateSource(repo).list_events(self.account_id)]
+            return self._events_payload(repo, SQLitePlanningStateSource(repo).list_events(self.account_id))
 
     @staticmethod
     def _recurring_template_payload(template) -> dict[str, Any]:

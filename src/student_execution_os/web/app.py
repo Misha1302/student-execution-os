@@ -259,6 +259,10 @@ def create_app(
     async def current_plan(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.plan()
 
+    @app.get("/api/v1/plan/agenda")
+    async def plan_agenda(days: int = 7, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.agenda(days)
+
     @app.get("/api/v1/outlook")
     async def outlook(range: str = "week", anchor: str | None = None, service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.outlook(range, anchor)

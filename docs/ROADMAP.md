@@ -35,6 +35,22 @@ Prerequisites before any real account is granted platform-managed access: billin
 subscription source of truth that writes and expires entitlements, the usage ledger
 and caps above, and choice of default platform model(s).
 
+### Progress beyond time
+
+Implemented: counted progress per task (x of y with a unit, percentage; remaining time
+shrinks proportionally). Planned:
+
+- Subtasks / checklists with their own effort and order, progress = done share.
+- Milestone-based progress for long projects (per-milestone deadlines already exist in
+  the domain) and progress history charts.
+- Recurring "N units per day" goals (reading, problem sets) planned as daily quotas.
+
+### Offline and events
+
+- Offline creation of recurring series and offline attachments (today online-only).
+- A native (SQLite) store for the Android queue instead of WebView localStorage.
+- Event location/travel choices and hybrid selection offline.
+
 ### Other open items
 
 - Password reset/change and e-mail verification.

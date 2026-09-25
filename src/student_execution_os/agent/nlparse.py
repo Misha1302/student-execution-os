@@ -123,6 +123,15 @@ _NOT_CLOCK = {"a", "an", "couple", "few", "several", "пару", "пары", "н
 _COUNTED = r"задач|этап|раз|страниц|глав|упражнен|пункт|част|шаг|урок|steps?|pages?|chapters?|tasks?|parts?|times?"
 _EDGE_PREPS = {"в", "во", "к", "ко", "до", "на", "по", "с", "со", "за", "at", "by", "on", "in", "for", "until", "before", "from"}
 
+# Something that happens at a fixed time rather than work to fit somewhere.
+_EVENT_WORDS = (r"(?<!\w)(?:пар[аеуы]|лекци\w*|семинар\w*|заняти\w*|урок\w*|встреч\w*|созвон\w*|звонок|"
+                r"тренировк\w*|собрани\w*|собеседовани\w*|консультаци\w*|при[её]м\w*|вебинар\w*|репетици\w*|"
+                r"meeting|(?:a|the)\s+call|call\s+with|class|lecture|seminar|lesson|training|practice|workout|appointment|interview|webinar)(?!\w)")
+# ...unless the phrase is about getting ready for it ("подготовиться к семинару в 18").
+_PREPARE_WORDS = r"(?<!\w)(?:подготов\w*|готовить\w*|prepare\w*|study\s+for)(?!\w)"
+# A university "пара" (and lectures/seminars, which are pairs) lasts 90 minutes.
+_LONG_EVENT_WORDS = r"(?<!\w)(?:пар[аеуы]|лекци\w*|семинар\w*)(?!\w)"
+
 _EXAM_DATIVE = {"экзамен": "экзамену", "зачет": "зачёту", "зачёт": "зачёту", "контрольная": "контрольной",
                 "контрольную": "контрольной", "коллоквиум": "коллоквиуму", "тест": "тесту", "сессия": "сессии", "сессию": "сессии"}
 
@@ -131,7 +140,7 @@ _EXAM_DATIVE = {"экзамен": "экзамену", "зачет": "зачёт�
 class _Piece:
     start: int
     end: int
-    kind: str                     # "date" | "time" | "part" | "instant" | "range"
+    kind: str                     # "date" | "time" | "part" | "instant" | "range" | "cue"
     value: object
     cue: str | None = None        # "deadline" | "remind" | "start" | "target" | None
     date_only_relative: bool = False  # "через неделю": a span, not a named day
@@ -328,6 +337,28 @@ class _Parser:
         self.take(match.start(), match.end())
         self.pieces.append(_Piece(match.start(), match.end(), "date", value, _cue(preposition)))
 
+    def intervals(self) -> None:
+        """"с 21 до 22", "с 9:30 до 11", "21:00-22:30", "from 9 to 10 pm", "9–11pm"."""
+        clock = r"(\d{1,2})(?:[:.](\d{2}))?"
+        unit = r"(?:\s*(?:час(?:а|ов)?|ч\.?))?"
+        suffix = r"(?:\s*(утра|дня|вечера|ночи|am|pm|a\.m\.|p\.m\.))?"
+        side = rf"{clock}{unit}{suffix}"
+        not_amount = rf"(?!\s*(?:минут|мин|hours?|mins?|minutes?|дн|недел|week|day|{_COUNTED}))"
+        rules = [
+            (rf"(?<![\w.:])(?:с|со|from|between)\s+{side}\s*(?:до|по|to|till|until|and|[-–—])\s*{side}{not_amount}(?![\w:])", False),
+            (rf"(?<![\w.:/]){clock}{suffix}\s*[-–—]\s*{clock}{suffix}{not_amount}(?![\w:])", True),
+        ]
+        for pattern, bare in rules:
+            for match in self.scan(pattern):
+                h1, m1, s1, h2, m2, s2 = match.groups()
+                if bare and not (m1 or m2 or s1 or s2):
+                    continue  # "2-3" is an amount ("2-3 часа"), not a time span
+                span = _interval(int(h1), int(m1 or 0), s1, bool(m1), int(h2), int(m2 or 0), s2, bool(m2))
+                if span is None:
+                    continue
+                self.take(match.start(), match.end())
+                self.pieces.append(_Piece(match.start(), match.end(), "range", span))
+
     def times(self) -> None:
         prep = r"(?:(к|до|в|во|около|после|с|со|не\s+позже|не\s+позднее|не\s+раньше|at|by|before|until|after|from|around)\s+)?"
         suffix = r"(?:\s*(утра|дня|вечера|ночи|am|pm|a\.m\.|p\.m\.))?"
@@ -390,6 +421,11 @@ class _Parser:
             record(match, 90)
         for match in self.scan(rf"(?<!\w){prefix}(?:полчаса|пол\s+часа|half\s+an\s+hour|half\s+hour)(?!\w){tail}"):
             record(match, 30)
+        # "2-3 часа": plan for the upper bound.
+        for match in self.scan(rf"(?<!\w){prefix}(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)\s*(часик\w*|час(?:а|ов)?|ч\.?|hours?|hrs?|h|минут\w*|мин\.?|minutes?|mins?)(?!\w){tail}"):
+            value = _num(match.group(2))
+            if value is not None and value <= (24 if match.group(3)[0] in "чh" else 600):
+                record(match, value * 60 if match.group(3)[0] in "чh" else value)
         for match in self.scan(rf"(?<!\w){prefix}({_NUM})\s*(?:-?\s*)(часик\w*|час(?:а|ов)?|ч\.?|hours?|hrs?|h)(?!\w){tail}"):
             value = _num(match.group(1))
             if value is not None and value <= 24:
@@ -472,6 +508,24 @@ def _hour(hour: int, suffix: str | None, *, explicit: bool) -> int:
     return hour + 12 if 1 <= hour <= 7 else hour
 
 
+def _interval(h1: int, m1: int, s1: str | None, exact1: bool,
+              h2: int, m2: int, s2: str | None, exact2: bool) -> tuple[time, time, bool] | None:
+    """Clock times of "с h1 до h2" → (start, end, ends the next day)."""
+    if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59:
+        return None
+    start = _hour(h1, s1 or s2, explicit=exact1 or h1 > 12)
+    if s1 is None and s2 is not None and start > _hour(h2, s2, explicit=True):
+        start = _hour(h1, None, explicit=True)  # "11-1pm": 11:00 to 13:00
+    end = _hour(h2, s2, explicit=exact2 or h2 > 12 or s2 is not None)
+    begin, finish = start * 60 + m1, end * 60 + m2
+    if finish <= begin and s2 is None and h2 < 12 and (h2 + 12) * 60 + m2 > begin:
+        end, finish = h2 + 12, (h2 + 12) * 60 + m2   # "с 7 до 9" said after "7" became 19:00
+    overnight = False
+    if finish <= begin:
+        end, overnight = h2 if s2 is None else end, True  # "с 23 до 1"
+    return time(start % 24, m1), time(end % 24, m2), overnight
+
+
 def _month(token: str | None) -> int | None:
     if not token:
         return None
@@ -503,7 +557,7 @@ def _group(pieces: list[_Piece], low: str) -> list[_Moment]:
             gap = low[max(p.end for p in last.pieces):piece.start]
             kinds = {p.kind for p in last.pieces}
             compatible = not (piece.kind in kinds or (piece.kind == "instant") or ("instant" in kinds)
-                              or (piece.kind in {"time", "part"} and kinds & {"time", "part"}))
+                              or (piece.kind in {"time", "part", "range"} and kinds & {"time", "part", "range"}))
             if compatible and re.fullmatch(r"[\s,]*(?:(?:и|в|во|к|до|на|at|on|by)\s*)?[\s,]*", gap):
                 last.pieces.append(piece)
                 continue
@@ -539,6 +593,7 @@ class NaturalTaskParser:
         parser.relative()
         parser.period_ends()
         parser.dates()
+        parser.intervals()
         parser.times()
         splittable, chunk = parser.chunking()
         effort = parser.effort()
@@ -552,6 +607,22 @@ class NaturalTaskParser:
         fields: dict[str, object] = {}
         moments = _group(parser.pieces, parser.low)
         has_deadline_words = parser.deadline_words()
+        event = self._event(parser, moments, remind_spans, has_deadline_words, effort, zone)
+        if event is not None:
+            starts_at, ends_at = event
+            title = _title(parser, category)
+            return {
+                "kind": "EVENT",
+                "title": title,
+                "description": description,
+                "category": category,
+                "importance": importance or "NORMAL",
+                "starts_at": _iso(starts_at),
+                "ends_at": _iso(ends_at),
+                "duration_minutes": int((ends_at - starts_at).total_seconds() // 60),
+                "unresolved": [] if title else ["title"],
+                "cutoff_time_assumed": False,
+            }
         cutoff_date_only = False
         for moment in moments:
             role = moment.cue
@@ -617,6 +688,40 @@ class NaturalTaskParser:
         payload["unresolved"] = unresolved
         payload["cutoff_time_assumed"] = cutoff_date_only
         return payload
+
+    @staticmethod
+    def _event(parser: _Parser, moments: list[_Moment], remind_spans: list[tuple[int, int]],
+               has_deadline_words: bool, effort: int | None, zone: ZoneInfo) -> tuple[datetime, datetime] | None:
+        """A fixed-time event: "с 21 до 22 …", or "пара/созвон/встреча … в 18:00"."""
+        now = parser.now
+        ranged = next((m for m in moments if m.get("range") is not None), None)
+        moment = ranged
+        if moment is None:
+            if remind_spans or has_deadline_words or not re.search(_EVENT_WORDS, parser.low) or re.search(_PREPARE_WORDS, parser.low):
+                return None
+            moment = next((m for m in moments if m.get("time") is not None and m.get("instant") is None
+                           and m.cue in {None, "start"}), None)
+            if moment is None:
+                return None
+        day_piece = moment.get("date")
+        today = now.date()
+        day = day_piece.value if day_piece is not None else today
+        if ranged is not None:
+            first, last, overnight = moment.get("range").value
+            start = datetime.combine(day, first, zone)
+            end = datetime.combine(day + timedelta(days=1 if overnight else 0), last, zone)
+        else:
+            start = datetime.combine(day, moment.get("time").value, zone)
+            default = 90 if re.search(_LONG_EVENT_WORDS, parser.low) else 60
+            end = start + timedelta(minutes=effort or default)
+        # Without a named day a time that is already over means the next one; a
+        # named day is kept as said (except "в пятницу" said on a Friday evening).
+        shift = timedelta(0)
+        if day_piece is None and end <= now:
+            shift = timedelta(days=1)
+        elif day_piece is not None and day_piece.same_weekday and end <= now:
+            shift = timedelta(days=7)
+        return start + shift, end + shift
 
     @staticmethod
     def _resolve(moment: _Moment, role: str, now: datetime, zone: ZoneInfo, category: str, effort: int | None):
