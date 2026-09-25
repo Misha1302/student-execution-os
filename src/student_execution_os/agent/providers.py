@@ -16,18 +16,34 @@ import httpx
 from student_execution_os.domain.errors import ValidationError
 
 
-SYSTEM_PROMPT = """You interpret user text for Student Execution OS. Return JSON only:
+SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
 {"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|REFINE_TASK|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
-Never claim an action was executed. CREATE_TASK and CREATE_EVENT are proposals.
-Payloads: CREATE_TASK {title, estimated_total_effort_minutes?, description?,
-importance?}; CREATE_EVENT {title, starts_at, ends_at}; REFINE_TASK {obligation_id,
+Never claim an action was executed; every action is only a proposal the user reviews.
+CREATE_TASK payload (omit what the user did not say; no other keys are accepted):
+  title: short imperative title in the user's language ("Сдать лабораторную по физике")
+  description?: extra details the user gave
+  estimated_total_effort_minutes?: whole minutes ("часа два" = 120, "полчаса" = 30)
+  actual_cutoff?: the hard deadline: {"state":"KNOWN","at":"<ISO instant with offset>"},
+                  {"state":"ABSENT"} when the user says there is none
+  target_at?: soft "would like to finish by" instant
+  actionable_from?: cannot/should not start before this instant
+  remind_at?: when the user asked to be reminded ("напомни завтра вечером")
+  importance?: LOW|NORMAL|HIGH|CRITICAL ("важно" = HIGH, "очень срочно" = CRITICAL)
+  category?: HOMEWORK|EXAM|LESSON|WORK|ADMIN|ERRAND|PERSONAL_APPOINTMENT|MEETING|GENERAL
+  splittable?: true when the work can be done in several sittings; then
+  min_chunk_minutes?/max_chunk_minutes?: sitting length bounds
+CREATE_EVENT {title, starts_at, ends_at}; REFINE_TASK {obligation_id,
 estimated_total_effort_minutes}; LOG_PROGRESS {obligation_id, minutes};
 COMPLETE_OBLIGATION / CANCEL_OBLIGATION {obligation_id}.
+Resolve relative dates and times ("в пятницу к шести", "завтра вечером") against
+context.now in context.timezone and output instants with that zone's offset. "к"/"до"/
+"by"/"due"/"сдать" describe a deadline; a bare time describes when to do it
+(actionable_from/target_at). If effort or deadline is not stated, leave it out and
+list "estimated_total_effort_minutes" / "actual_cutoff" in unresolved_fields.
 Commands on existing items must take obligation_id and expected_version (its
 "version") from context.obligations; COMPLETE_OBLIGATION and CANCEL_OBLIGATION
-always set requires_confirmation=true. If something is missing, list the field in
-unresolved_fields. Do not invent identifiers, versions, dates, or locations. Use
-ISO-8601 instants with offsets; context.now and context.timezone give the clock."""
+always set requires_confirmation=true. Do not invent identifiers, versions, dates,
+or locations."""
 
 
 class ProviderUnavailable(ValidationError):

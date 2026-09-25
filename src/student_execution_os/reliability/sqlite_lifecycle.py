@@ -16,6 +16,8 @@ from student_execution_os import __version__
 from student_execution_os.domain.errors import EntityNotFound, ValidationError, VersionConflict
 from student_execution_os.persistence.sqlite import SCHEMA_VERSION, SQLiteCanonicalRepository
 
+from .retention import RETENTION_POLICY
+
 BACKUP_FORMAT_VERSION = 1
 ACCOUNT_EXPORT_FORMAT_VERSION = 1
 _PRIVATE_FILE_MODE = 0o600
@@ -462,6 +464,7 @@ class SQLiteDataLifecycle:
             "secret_store": "NONE_CONFIGURED",
             "secret_revocation": "NOT_APPLICABLE_NO_SECRET_STORE",
             "login_credentials": "PURGED_IMMEDIATELY_ALL_SESSIONS_INVALIDATED",
+            "retention": dict(RETENTION_POLICY),
         }
 
     def delete_account(

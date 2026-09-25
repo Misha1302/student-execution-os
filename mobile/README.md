@@ -5,8 +5,10 @@ serves (`src/student_execution_os/web/static`). There is one UI codebase; this f
 adds the Android wrapper, icons and build scripts.
 
 The app talks to a Student Execution OS server running in **session mode** (users register
-and log in). The server address is entered on first launch and can be changed later in
-*Settings → Change server*. You can also bake in a default when building.
+and log in). Builds default to the hosted server, so a new user starts with sign-up, not a
+server address; `SEOS_SERVER_URL=https://…` presets another one and `SEOS_SERVER_URL=`
+(empty) builds a self-hosting app that asks on first launch. The server can be changed in
+*Settings → Advanced*.
 
 ## Build a debug APK
 
@@ -85,8 +87,18 @@ console, not committed) exists at `npm run sync` time: the sync script then writ
 `PushNotifications.register()` (which would crash the native bridge without Firebase)
 and runs with in-app reminders only.
 
-Task capture, edit, start, progress, defer, complete/cancel and reopen use the v12 sync
-protocol. The WebView stores the last read models and a server/account-scoped operation
+Reminder notifications are rendered by the app itself (`app/src/main/java/.../reminders`):
+a data-only FCM message becomes a notification with Start / Done / Snooze buttons that run in
+the background as `/api/v1/sync` operations queued in WorkManager (retried offline, applied
+exactly once), and Reschedule opens the reschedule sheet. Check it on an emulator against a
+throwaway local server:
+
+```bash
+python mobile/scripts/native_e2e.py     # emulator running, JAVA_HOME/ANDROID_HOME set
+```
+
+Task capture, edit, reschedule, start, progress, defer, snooze, complete/cancel and reopen use
+the sync protocol. The WebView stores the last read models and a server/account-scoped operation
 queue locally; pending operations survive reload, replay with stable operation ids after
 reconnect, and remain visible when the server reports a conflict. Changing servers is
 probe-first and clears the previous server's auth identity before the new login, so caches,

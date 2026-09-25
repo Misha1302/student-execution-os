@@ -1,6 +1,6 @@
 import { load } from '../store.js';
 import { t, code, fmtTime, fmtDay, fmtDuration, fmtDateTime, dayKey, now, setServerNow } from '../i18n.js';
-import { esc, icon, chip, ownershipChip, kv, empty, openSheet, chipGroup } from '../ui.js';
+import { esc, icon, chip, kv, empty, openSheet, chipGroup } from '../ui.js';
 import { heroStatus } from './today.js';
 
 const BLOCK_CLASS = {
@@ -55,9 +55,9 @@ function openItem(item) {
   const b = item.ref;
   const derived = item.ownership === 'DERIVED';
   openSheet({
-    eyebrow: derived ? code('block', item.kind) : t('plan.canonicalFact'),
+    eyebrow: derived ? code('block', item.kind) : item.kind === 'EVENT' ? t('legend.event') : code('constraint', item.kind),
     title: item.label,
-    body: `<p>${ownershipChip(item.ownership)} ${chip(`${fmtTime(item.starts_at)}–${fmtTime(item.ends_at)}`)}</p>
+    body: `<p>${chip(`${fmtTime(item.starts_at)}–${fmtTime(item.ends_at)}`)}</p>
       <dl class="kv-list">
         ${kv(t('plan.starts'), fmtDateTime(item.starts_at))}
         ${kv(t('plan.ends'), fmtDateTime(item.ends_at))}
@@ -79,7 +79,7 @@ export default {
     if (range === 'week' || range === 'month') return load(`/api/v1/outlook?range=${range}`, { fresh });
     const result = await load('/api/v1/today', { fresh });
     setServerNow(result.data.now);
-    return { ...result, data: result.data.plan };
+    return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [] } };
   },
   render(plan) {
     if (plan.range === 'week' || plan.range === 'month') return outlookView(plan);
@@ -102,13 +102,12 @@ export default {
         <span class="agenda-time"><strong>${esc(fmtTime(item.starts_at))}</strong><small>${esc(fmtTime(item.ends_at))}</small></span>
         <span class="agenda-bar" aria-hidden="true"></span>
         <span class="agenda-copy"><strong>${esc(item.label)}</strong><small>${esc(item.detail)} · ${esc(fmtDuration(minutes))}</small></span>
-        ${ownershipChip(item.ownership)}
       </button>`;
     }).join('');
     this._visible = visible;
     const dayOptions = days.map((d) => [d, fmtDay(`${d}T12:00:00`)]);
     return `${rangeNav('today')}
-      ${heroStatus(plan)}
+      ${heroStatus(plan, plan.tasks)}
       <section class="section">
         <div class="day-strip">${chipGroup('plan-day', dayOptions, selectedDay)}</div>
         <div class="legend">
@@ -119,19 +118,6 @@ export default {
           <span><i class="dot buffer"></i>${esc(t('legend.buffer'))}</span>
         </div>
         <div class="agenda mobile-agenda">${rows || empty(t('plan.emptyDay'), t('plan.emptyDayHint'), 'plan')}${!nowPlaced ? `<div class="now-line"><span>${esc(t('plan.now', { time: fmtTime(cur) }))}</span></div>` : ''}</div>
-      </section>
-      <section class="section">
-        <details class="card details">
-          <summary>${icon('evidence')} ${esc(t('plan.identity'))}</summary>
-          <dl class="kv-list">
-            ${kv(t('plan.revision'), plan.plan_revision)}
-            ${kv(t('plan.inputRevision'), plan.input_server_revision)}
-            ${kv(t('plan.inputHash'), `<span class="mono">${esc(String(plan.input_hash).slice(0, 16))}…</span>`, { raw: true })}
-            ${kv(t('plan.generated'), fmtDateTime(plan.generated_at))}
-            ${kv(t('plan.horizon'), `${fmtDateTime(plan.horizon_start)} → ${fmtDateTime(plan.horizon_end)}`)}
-          </dl>
-          ${plan.explanations?.length ? `<ul class="plain">${plan.explanations.map((x) => `<li>${esc(code('reason', x))}</li>`).join('')}</ul>` : ''}
-        </details>
       </section>`;
   },
   mount(root, _data, ctx) {

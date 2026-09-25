@@ -2,12 +2,11 @@ import { t } from '../i18n.js';
 import { esc, icon } from '../ui.js';
 import { peek } from '../store.js';
 
+// Sources/evidence diagnostics live under Settings → Advanced.
 export const MORE_ITEMS = [
   ['calendar', 'calendar', 'more.calendarHint'],
   ['notifications', 'bell', 'more.notificationsHint'],
-  ['evidence', 'evidence', 'more.evidenceHint'],
   ['places', 'place', 'more.placesHint'],
-  ['assistant', 'spark', 'more.assistantHint'],
   ['settings', 'settings', 'more.settingsHint'],
 ];
 
@@ -17,7 +16,7 @@ export default {
   title: () => t('nav.more'),
   load: async () => ({ data: null, stale: false }),
   render() {
-    const pending = (peek('/api/v1/notifications') || []).filter((n) => n.state === 'PENDING').length;
+    const pending = (peek('/api/v1/notifications') || []).filter((n) => !n.seen_at && !n.acted_at).length;
     return `<div class="menu-list">${MORE_ITEMS.map(([id, ic, hint]) => `
       <button class="menu-row" data-nav="${id}">
         <span class="menu-icon tone-accent">${icon(ic)}</span>

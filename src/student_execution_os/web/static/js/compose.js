@@ -1,17 +1,8 @@
 import { api } from './api.js';
 import { t, code, fmtDuration, now } from './i18n.js';
-import { esc, openSheet, actionSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy } from './ui.js';
+import { esc, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy } from './ui.js';
 import { mutate } from './actions.js';
-import { newEntityId, queueOperation } from './sync.js';
-
-const EFFORTS = [15, 30, 60, 90, 120, 180];
-
-function endOfDay(offsetDays) {
-  const d = now();
-  d.setDate(d.getDate() + offsetDays);
-  d.setHours(23, 59, 0, 0);
-  return d;
-}
+import { openCapture } from './capture.js';
 
 function nextHour() {
   const d = now();
@@ -22,100 +13,6 @@ function nextHour() {
 
 function field(label, control, hint = '') {
   return `<label class="field"><span>${esc(label)}</span>${control}${hint ? `<small class="help">${esc(hint)}</small>` : ''}</label>`;
-}
-
-function taskSheet() {
-  const dialog = openSheet({
-    title: t('compose.task'),
-    full: true,
-    body: `<div class="form">
-      ${field(t('form.title'), `<input data-f="title" maxlength="180" required placeholder="${esc(t('form.taskPlaceholder'))}" enterkeyhint="next">`)}
-      <div class="field"><span>${esc(t('form.effort'))}</span>
-        ${chipGroup('effort', [['unknown', t('form.effortUnknown')], ...EFFORTS.map((m) => [m, fmtDuration(m)]), ['custom', t('form.custom')]], 'unknown')}
-        <input type="number" inputmode="numeric" min="5" step="5" data-f="effort" class="hidden" placeholder="${esc(t('form.minutes'))}">
-      </div>
-      <div class="field"><span>${esc(t('form.deadline'))}</span>
-        ${chipGroup('deadline', [['UNKNOWN', t('form.deadline.unknown')], ['today', t('day.today')], ['tomorrow', t('day.tomorrow')], ['week', t('form.deadline.week')], ['exact', t('form.deadline.exact')], ['ABSENT', t('form.deadline.none')]], 'UNKNOWN')}
-        <input type="datetime-local" data-f="cutoff" class="hidden">
-        <small class="help" data-deadline-help>${esc(t('form.deadline.help.UNKNOWN'))}</small>
-      </div>
-      <div class="field"><span>${esc(t('form.importance'))}</span>
-        ${chipGroup('importance', ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'].map((v) => [v, code('importance', v)]), 'NORMAL')}
-      </div>
-      <details class="details">
-        <summary>${esc(t('form.more'))}</summary>
-        <div class="form">
-          ${field(t('form.category'), `<select data-f="category">${['HOMEWORK', 'EXAM', 'LESSON', 'WORK', 'ADMIN', 'ERRAND', 'PERSONAL_APPOINTMENT', 'MEETING', 'GENERAL'].map((c) => `<option value="${c}" ${c === 'HOMEWORK' ? 'selected' : ''}>${esc(code('category', c))}</option>`).join('')}</select>`)}
-          ${field(t('form.target'), `<input type="datetime-local" data-f="target">`, t('form.targetHelp'))}
-          ${field(t('form.actionableFrom'), `<input type="datetime-local" data-f="actionable">`)}
-          <div class="field"><span>${esc(t('form.split'))}</span>${chipGroup('split', [['false', t('form.split.no')], ['true', t('form.split.yes')]], 'false')}</div>
-          <div class="field-row hidden" data-split-fields>
-            ${field(t('form.minChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="min" value="30">`)}
-            ${field(t('form.maxChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="max" value="90">`)}
-          </div>
-          ${field(t('form.description'), `<textarea data-f="description" rows="3" maxlength="2000"></textarea>`)}
-        </div>
-      </details>
-    </div>`,
-    actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
-      <button type="button" class="button primary" data-save>${esc(t('compose.create'))}</button>`,
-  });
-  const $f = (name) => dialog.querySelector(`[data-f="${name}"]`);
-  dialog.addEventListener('chipchange', (e) => {
-    if (e.detail.name === 'effort') $f('effort').classList.toggle('hidden', e.detail.value !== 'custom');
-    if (e.detail.name === 'split') dialog.querySelector('[data-split-fields]').classList.toggle('hidden', e.detail.value !== 'true');
-    if (e.detail.name === 'deadline') {
-      const v = e.detail.value;
-      $f('cutoff').classList.toggle('hidden', v !== 'exact');
-      const helpKey = v === 'UNKNOWN' || v === 'ABSENT' ? v : 'KNOWN';
-      dialog.querySelector('[data-deadline-help]').textContent = t(`form.deadline.help.${helpKey}`);
-      if (v === 'exact' && !$f('cutoff').value) $f('cutoff').value = localInputValue(endOfDay(2));
-    }
-  });
-  setTimeout(() => $f('title').focus(), 80);
-  dialog.querySelector('[data-save]').addEventListener('click', async (e) => {
-    const title = $f('title').value.trim();
-    if (!title) { $f('title').focus(); toast(t('form.titleRequired'), { error: true }); return; }
-    const effortChoice = chipValue(dialog, 'effort');
-    const effort = effortChoice === 'unknown' ? null : Number(effortChoice === 'custom' ? $f('effort').value : effortChoice);
-    if (effortChoice !== 'unknown' && (!effort || effort <= 0)) { toast(t('form.effortRequired'), { error: true }); return; }
-    const d = chipValue(dialog, 'deadline');
-    let cutoff = { state: 'UNKNOWN' };
-    if (d === 'ABSENT') cutoff = { state: 'ABSENT' };
-    else if (d === 'today') cutoff = { state: 'KNOWN', at: endOfDay(0).toISOString() };
-    else if (d === 'tomorrow') cutoff = { state: 'KNOWN', at: endOfDay(1).toISOString() };
-    else if (d === 'week') cutoff = { state: 'KNOWN', at: endOfDay(7).toISOString() };
-    else if (d === 'exact') {
-      const at = isoFromLocalInput($f('cutoff').value);
-      if (!at) { toast(t('form.deadlineRequired'), { error: true }); return; }
-      cutoff = { state: 'KNOWN', at };
-    }
-    const splittable = chipValue(dialog, 'split') === 'true';
-    const payload = {
-      title,
-      description: $f('description').value.trim() || null,
-      category: $f('category').value,
-      importance: chipValue(dialog, 'importance'),
-      estimated_total_effort_minutes: effort,
-      remaining_effort_minutes: effort,
-      target_at: isoFromLocalInput($f('target').value),
-      actionable_from: isoFromLocalInput($f('actionable').value),
-      splittable,
-      min_chunk_minutes: splittable ? Number($f('min').value) || null : null,
-      max_chunk_minutes: splittable ? Number($f('max').value) || null : null,
-      actual_cutoff: cutoff,
-    };
-    setBusy(e.currentTarget, true);
-    const taskId = newEntityId('task');
-    const optimistic = { id: taskId, kind: 'TASK', ...payload, status: effort == null ? 'DRAFT' : 'ACTIVE', version: 1,
-      started_at: null, last_progress_at: null, completed_at: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
-    const created = await mutate(async () => {
-      const result = await queueOperation('task.create', taskId, payload, { optimisticTask: optimistic });
-      return result.entity || result;
-    }, { success: t('compose.taskCreated') });
-    setBusy(e.currentTarget, false);
-    if (created) dialog.close('saved');
-  });
 }
 
 function eventSheet() {
@@ -217,17 +114,9 @@ function recurringSheet() {
   });
 }
 
-export const composers = { task: taskSheet, event: eventSheet, recurring: recurringSheet };
+// Tasks are captured in one flow (capture.js); events and series keep their own forms.
+export const composers = { task: () => openCapture(), event: eventSheet, recurring: recurringSheet };
 
-export async function compose() {
-  const choice = await actionSheet({
-    title: t('compose.title'),
-    items: [
-      { id: 'task', icon: 'task', label: t('compose.task'), hint: t('compose.taskHint') },
-      { id: 'event', icon: 'event', label: t('compose.event'), hint: t('compose.eventHint'), tone: 'canonical' },
-      { id: 'recurring', icon: 'repeat', label: t('compose.recurring'), hint: t('compose.recurringHint'), tone: 'canonical' },
-    ],
-  });
-  if (choice) composers[choice]();
-  return choice;
+export function compose() {
+  return openCapture();
 }

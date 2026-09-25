@@ -28,6 +28,7 @@ class Stage(StrEnum):
     RISK_UP = "RISK_UP"              # planner risk got worse
     OVERDUE = "OVERDUE"              # deadline passed while the task is still open
     GROUP = "GROUP"                  # several tasks need attention in one tick
+    REMINDER = "REMINDER"            # the user asked to be reminded now (snooze end, "напомни …")
 
 
 OPEN_STATUSES = {"ACTIVE", "DRAFT"}
@@ -58,6 +59,9 @@ MIN_TASK_GAP = timedelta(minutes=15)
 RECENT_TOUCH = timedelta(minutes=10)   # the user is looking at the task right now
 INFORMATIONAL = {Stage.START_SOON, Stage.DEADLINE_24H}
 MAX_REPEAT_GAP = timedelta(hours=6)
+# A requested reminder that could not go out (server down, task deferred …) is still
+# worth sending this long after its moment; older ones are dropped silently.
+REMIND_GRACE = timedelta(hours=12)
 ACCOUNT_MIN_GAP = timedelta(minutes=10)
 
 
@@ -153,10 +157,22 @@ class ReminderState:
     snoozed_until: datetime | None = None
     closed_reason: str | None = None
     next_check_at: datetime | None = None
+    remind_at: datetime | None = None
 
     @classmethod
-    def fresh(cls, episode_key: str, *, last_interaction_at: datetime | None = None) -> "ReminderState":
-        return cls(episode_key=episode_key, last_interaction_at=last_interaction_at)
+    def fresh(cls, episode_key: str, *, last_interaction_at: datetime | None = None,
+              remind_at: datetime | None = None) -> "ReminderState":
+        return cls(episode_key=episode_key, last_interaction_at=last_interaction_at, remind_at=remind_at)
+
+    def remind_due(self, now: datetime) -> bool:
+        """A requested reminder moment has come and nothing was sent since it."""
+        return (self.remind_at is not None and self.remind_at <= now and now - self.remind_at <= REMIND_GRACE
+                and (self.last_sent_at is None or self.last_sent_at < self.remind_at))
+
+    def pending_remind(self, now: datetime) -> datetime | None:
+        if self.remind_at is not None and self.remind_at > now and (self.last_sent_at is None or self.last_sent_at < self.remind_at):
+            return self.remind_at
+        return None
 
 
 @dataclass(frozen=True)
@@ -193,11 +209,17 @@ def decide(facts: TaskFacts, previous: ReminderState | None, prefs: ReminderPref
     """Decide the reminder for one task at ``now`` (ignoring quiet hours and caps,
     which are account-level and applied by the engine)."""
     state = previous or ReminderState.fresh(facts.episode_key)
-    if state.episode_key != facts.episode_key or (
+    if not state.episode_key:
+        # Created by a user action (touch) before the engine ever looked at the task.
+        state = replace(state, episode_key=facts.episode_key)
+    elif state.episode_key != facts.episode_key or (
         facts.status in OPEN_STATUSES and state.closed_reason in {"COMPLETED", "CANCELLED"}
     ):
         # Rescheduled or reopened: the old escalation history no longer describes this task.
-        state = ReminderState.fresh(facts.episode_key, last_interaction_at=state.last_interaction_at)
+        # A reminder the user asked for and has not received yet still stands.
+        unanswered_request = state.remind_at is not None and (state.last_sent_at is None or state.last_sent_at < state.remind_at)
+        state = ReminderState.fresh(facts.episode_key, last_interaction_at=state.last_interaction_at,
+                                    remind_at=state.remind_at if unanswered_request else None)
     unanswered = _unanswered(state)
     state = replace(state, ignored_count=unanswered)
 
@@ -205,18 +227,93 @@ def decide(facts: TaskFacts, previous: ReminderState | None, prefs: ReminderPref
         return Decision(None, replace(state, closed_reason=state.closed_reason or facts.status, next_check_at=None), "NOT_ACTIVE")
     if not prefs.enabled:
         return Decision(None, replace(state, next_check_at=None), "DISABLED")
-    if state.closed_reason == "OVERDUE_NOTIFIED":
-        return Decision(None, replace(state, next_check_at=None), "EPISODE_CLOSED")
+    pending = state.pending_remind(now)
     if state.snoozed_until is not None and state.snoozed_until > now:
-        return Decision(None, replace(state, next_check_at=state.snoozed_until), "SNOOZED")
+        return Decision(None, replace(state, next_check_at=_earliest(state.snoozed_until, pending)), "SNOOZED")
+
+    candidates, wakeups = _candidates(facts, state, prefs, now)
+    if state.remind_due(now):
+        # The user asked for this moment (snooze end, "напомни …", "not now"): send it
+        # even if the same stage already went out, the episode was closed or the task
+        # was touched a minute ago. The prompt still carries the current facts.
+        chosen = next((stage for stage in _PRIORITY if stage in candidates), Stage.REMINDER)
+        return Decision(chosen, _sent(state, chosen, candidates, wakeups, facts, prefs, now, unanswered), "REMINDER_DUE")
+
+    if state.closed_reason == "OVERDUE_NOTIFIED":
+        return Decision(None, replace(state, next_check_at=pending), "EPISODE_CLOSED")
     if facts.actionable_from is not None and facts.actionable_from > now:
-        return Decision(None, replace(state, next_check_at=facts.actionable_from), "DEFERRED")
+        return Decision(None, replace(state, next_check_at=_earliest(facts.actionable_from, pending)), "DEFERRED")
 
     if state.last_interaction_at is not None and now - state.last_interaction_at < RECENT_TOUCH:
         # Whatever the user just saw in the app is the baseline; don't push about it.
         return Decision(None, replace(state, last_risk=facts.risk_state or state.last_risk,
-                                      next_check_at=state.last_interaction_at + RECENT_TOUCH), "RECENTLY_TOUCHED")
+                                      next_check_at=_earliest(state.last_interaction_at + RECENT_TOUCH, pending)), "RECENTLY_TOUCHED")
 
+    profile = prefs.profile
+    due = facts.due_at
+    if pending is not None:
+        wakeups.append(pending)
+
+    chosen: Stage | None = None
+    reason = "NOTHING_DUE"
+    next_repeat: datetime | None = None
+    for stage in _PRIORITY:
+        if stage not in candidates:
+            continue
+        if stage in REPEATING:
+            if unanswered >= profile.max_unanswered:
+                reason = "GAVE_UP_UNANSWERED"
+                continue
+            if state.last_sent_at is not None:
+                gap = repeat_gap(prefs, unanswered, now, due) if state.last_stage == stage.value else MIN_TASK_GAP
+                ready_at = state.last_sent_at + gap
+                if ready_at > now:
+                    next_repeat = _earliest(next_repeat, ready_at)
+                    reason = "WAITING_REPEAT_GAP"
+                    continue
+        else:
+            if stage.value in state.stages_sent and stage is not Stage.RISK_UP:
+                continue  # one-shot stages fire once per episode
+            if state.last_sent_at is not None and now - state.last_sent_at < MIN_TASK_GAP:
+                next_repeat = _earliest(next_repeat, state.last_sent_at + MIN_TASK_GAP)
+                reason = "WAITING_MIN_GAP"
+                continue
+        chosen = stage
+        reason = candidates[stage]
+        break
+
+    if chosen is None:
+        next_check = _earliest(next_repeat, *[w for w in wakeups if w > now])
+        # A pending risk escalation keeps the old baseline so it still fires later.
+        risk = state.last_risk if Stage.RISK_UP in candidates else (facts.risk_state or state.last_risk)
+        return Decision(None, replace(state, last_risk=risk, next_check_at=next_check), reason)
+    return Decision(chosen, _sent(state, chosen, candidates, wakeups, facts, prefs, now, unanswered), reason)
+
+
+def _sent(state: ReminderState, chosen: Stage, candidates: dict[Stage, str], wakeups: list[datetime],
+          facts: TaskFacts, prefs: ReminderPrefs, now: datetime, unanswered: int) -> ReminderState:
+    """State after sending ``chosen`` now."""
+    profile = prefs.profile
+    # The prompt that goes out already conveys any informational stage that applies now.
+    covered = {stage.value for stage in candidates if stage in INFORMATIONAL}
+    sent = replace(
+        state,
+        sent_count=state.sent_count + 1,
+        ignored_count=unanswered + 1,
+        last_sent_at=now,
+        last_stage=chosen.value,
+        last_risk=facts.risk_state or state.last_risk,
+        stages_sent=state.stages_sent | {chosen.value} | covered,
+        closed_reason="OVERDUE_NOTIFIED" if chosen is Stage.OVERDUE else state.closed_reason,
+    )
+    follow_up = None
+    if chosen in REPEATING and sent.ignored_count < profile.max_unanswered:
+        follow_up = now + repeat_gap(prefs, sent.ignored_count, now, facts.due_at)
+    return replace(sent, next_check_at=_earliest(follow_up, *[w for w in wakeups if w > now + MIN_TASK_GAP]))
+
+
+def _candidates(facts: TaskFacts, state: ReminderState, prefs: ReminderPrefs, now: datetime) -> tuple[dict[Stage, str], list[datetime]]:
+    """Stages that apply to the task right now, and the moments worth looking again."""
     profile = prefs.profile
     due = facts.due_at
     started = facts.started_at is not None or facts.last_progress_at is not None
@@ -265,57 +362,7 @@ def decide(facts: TaskFacts, previous: ReminderState | None, prefs: ReminderPref
             else:
                 wakeups.append(last_activity + profile.check_in_after)
 
-    chosen: Stage | None = None
-    reason = "NOTHING_DUE"
-    next_repeat: datetime | None = None
-    for stage in _PRIORITY:
-        if stage not in candidates:
-            continue
-        if stage in REPEATING:
-            if unanswered >= profile.max_unanswered:
-                reason = "GAVE_UP_UNANSWERED"
-                continue
-            if state.last_sent_at is not None:
-                gap = repeat_gap(prefs, unanswered, now, due) if state.last_stage == stage.value else MIN_TASK_GAP
-                ready_at = state.last_sent_at + gap
-                if ready_at > now:
-                    next_repeat = _earliest(next_repeat, ready_at)
-                    reason = "WAITING_REPEAT_GAP"
-                    continue
-        else:
-            if stage.value in state.stages_sent and stage is not Stage.RISK_UP:
-                continue  # one-shot stages fire once per episode
-            if state.last_sent_at is not None and now - state.last_sent_at < MIN_TASK_GAP:
-                next_repeat = _earliest(next_repeat, state.last_sent_at + MIN_TASK_GAP)
-                reason = "WAITING_MIN_GAP"
-                continue
-        chosen = stage
-        reason = candidates[stage]
-        break
-
-    if chosen is None:
-        next_check = _earliest(next_repeat, *[w for w in wakeups if w > now])
-        # A pending risk escalation keeps the old baseline so it still fires later.
-        risk = state.last_risk if Stage.RISK_UP in candidates else (facts.risk_state or state.last_risk)
-        return Decision(None, replace(state, last_risk=risk, next_check_at=next_check), reason)
-
-    # The prompt that goes out already conveys any informational stage that applies now.
-    covered = {stage.value for stage in candidates if stage in INFORMATIONAL}
-    sent = replace(
-        state,
-        sent_count=state.sent_count + 1,
-        ignored_count=unanswered + 1,
-        last_sent_at=now,
-        last_stage=chosen.value,
-        last_risk=facts.risk_state or state.last_risk,
-        stages_sent=state.stages_sent | {chosen.value} | covered,
-        closed_reason="OVERDUE_NOTIFIED" if chosen is Stage.OVERDUE else state.closed_reason,
-    )
-    follow_up = None
-    if chosen in REPEATING and sent.ignored_count < profile.max_unanswered:
-        follow_up = now + repeat_gap(prefs, sent.ignored_count, now, due)
-    sent = replace(sent, next_check_at=_earliest(follow_up, *[w for w in wakeups if w > now + MIN_TASK_GAP]))
-    return Decision(chosen, sent, reason)
+    return candidates, wakeups
 
 
 def _earliest_latest(*values: datetime | None) -> datetime | None:

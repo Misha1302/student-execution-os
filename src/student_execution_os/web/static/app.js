@@ -1,11 +1,12 @@
 import { api, session, restoreSession, refreshHealth, onUnauthenticated } from './js/api.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
-import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet } from './js/native.js';
+import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, onAppLink } from './js/native.js';
 import { applyTheme } from './js/theme.js';
 import { peek, load, invalidate } from './js/store.js';
 import { shell } from './js/actions.js';
-import { compose, composers } from './js/compose.js';
+import { composers } from './js/compose.js';
+import { openCapture, deviceTimeZone } from './js/capture.js';
 import { flushSync, syncState, discardSyncProblem } from './js/sync.js';
 
 import today from './js/views/today.js';
@@ -17,11 +18,10 @@ import calendar, { eventSheet } from './js/views/calendar.js';
 import notifications from './js/views/notifications.js';
 import evidence from './js/views/evidence.js';
 import places from './js/views/places.js';
-import assistant from './js/views/assistant.js';
 import settings from './js/views/settings.js';
 import welcome from './js/views/welcome.js';
 
-const VIEWS = { today, plan, tasks, task, more, calendar, notifications, evidence, places, assistant, settings, welcome };
+const VIEWS = { today, plan, tasks, task, more, calendar, notifications, evidence, places, settings, welcome };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -57,7 +57,7 @@ function buildTabbar() {
     <div class="rail-brand">${icon('today')}<span>${esc(t('app.short'))}</span></div>
     ${tab('today', 'today')}
     ${tab('plan', 'plan')}
-    <button class="fab" data-action="compose" aria-label="${esc(t('compose.title'))}">${icon('plus')}<span class="rail-only">${esc(t('compose.new'))}</span></button>
+    <button class="fab" data-action="compose" aria-label="${esc(t('capture.title'))}">${icon('plus')}<span class="rail-only">${esc(t('compose.new'))}</span></button>
     ${tab('tasks', 'tasks')}
     ${tab('more', 'more', 'mobile-only')}
     <div class="rail-group">${MORE_ITEMS.map(([id, ic]) => tab(id, ic, 'rail-only')).join('')}</div>`;
@@ -159,6 +159,7 @@ function context() {
     view: current?.view,
     data: current?.data,
     params: route.params,
+    query: route.query,
     rerender: () => render({ reuse: true }),
     refresh: () => render({ fresh: true }),
     relabel,
@@ -179,10 +180,12 @@ function syncSheet() {
   const { items } = syncState();
   const pending = items.filter((x) => x.state === 'PENDING');
   const problems = items.filter((x) => x.state !== 'PENDING');
+  const titleOf = (op, item) => item.result?.entity?.title || op.payload?.title
+    || (peek('/api/v1/tasks') || []).find((x) => x.id === op.entity_id)?.title || t('sync.someTask');
   const row = (item, problem) => {
     const op = item.operation || {};
-    const detail = problem ? (item.result?.message || item.result?.code || item.state) : new Date(item.queued_at).toLocaleString();
-    return `<article class="row"><span class="row-main"><strong>${esc(op.type)} · ${esc(item.result?.entity?.title || op.payload?.title || op.entity_id)}</strong>
+    const detail = problem ? t(`sync.why.${item.state}`) : new Date(item.queued_at).toLocaleString();
+    return `<article class="row"><span class="row-main"><strong>${esc(t(`sync.op.${op.type}`))} · ${esc(titleOf(op, item))}</strong>
       <small>${esc(detail)}</small></span>
       ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(t('sync.dismiss'))}</button>` : ''}</article>`;
   };
@@ -215,8 +218,9 @@ function syncSheet() {
 
 const GLOBAL_ACTIONS = {
   'sync-status': () => syncSheet(),
-  compose: () => compose(),
-  'compose-task': () => composers.task(),
+  compose: () => openCapture(),
+  'compose-task': () => openCapture(),
+  'compose-voice': () => openCapture({ listen: true }),
   'open-task': (el) => go('task', { params: [el.dataset.id] }),
   'open-event': (el) => openEvent(el.dataset.id),
   retry: () => render({ fresh: true }),
@@ -287,12 +291,33 @@ function registerPush() {
   if (!isNative() || !session.token) return;
   setupPush(async (token) => {
     if (!session.token) return;
-    const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Capacitor Android' } });
+    // This build renders reminder notifications itself, with working action buttons.
+    const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Android', capabilities: ['reminder-actions-v1'] } });
     await prefSet('seos.pushDevice', JSON.stringify({ id: device.id, version: device.version }));
-  }, (deepLink) => {
-    const path = String(deepLink || '/today').replace(/^#?\/?/, '');
-    location.hash = `#/${path || 'today'}`;
-  }).catch((err) => console.warn('push setup failed', err));
+  }, (deepLink) => openRoute(deepLink || '/today')).catch((err) => console.warn('push setup failed', err));
+}
+
+// Reminder texts, quiet hours and "в 18:00" in typed tasks all use the account's
+// time zone and language; keep them equal to the device's, once per session.
+let preferencesSynced = false;
+async function syncPreferences() {
+  if (preferencesSynced || needsLogin()) return;
+  try {
+    const zone = deviceTimeZone();
+    const prefs = await api('/api/v1/notification-preferences');
+    if (prefs.timezone !== zone || prefs.locale !== getLocale()) {
+      await api('/api/v1/notification-preferences', { method: 'PATCH', body: { timezone: zone, locale: getLocale() } });
+    }
+    const profile = await api('/api/v1/settings/planning-profile');
+    if (profile.timezone !== zone) await api('/api/v1/settings/planning-profile', { method: 'PATCH', body: { timezone: zone, expected_version: profile.version } });
+    preferencesSynced = true;
+  } catch { /* offline or an older server: try again next start */ }
+}
+
+function openRoute(path) {
+  closeAllSheets();
+  const clean = String(path || 'today').replace(/^#?\/?/, '');
+  location.hash = `#/${clean || 'today'}`;
 }
 
 async function boot() {
@@ -307,7 +332,8 @@ async function boot() {
   onResume(() => {
     flushSync().catch(() => {});
     if (!current || current.view.bare || document.querySelector('dialog[open]')) return;
-    if (Date.now() - (current.fetchedAt || 0) > 60000) render({ fresh: true });
+    // Notification buttons change tasks while the app is in the background.
+    if (Date.now() - (current.fetchedAt || 0) > 5000) { invalidate(); render({ fresh: true }); }
   });
   installPullToRefresh();
   window.addEventListener('seos-sync-state', () => setOffline(Boolean(current?.stale), current?.fetchedAt));
@@ -317,6 +343,7 @@ async function boot() {
     if (current && !current.view.bare) render({ fresh: true });
   });
 
+  if (/^#\/?assistant/.test(location.hash)) history.replaceState(null, '', '#/today');
   route = parseHash();
   if (!(isNative() && !session.server)) {
     try {
@@ -336,7 +363,16 @@ async function boot() {
   await render();
   await flushSync().catch(() => {});
   registerPush();
-  window.addEventListener('seos-signed-in', () => { registerPush(); flushSync().catch(() => {}); });
+  syncPreferences();
+  onAppLink(openRoute).catch(() => {});
+  window.addEventListener('seos-signed-in', (event) => {
+    preferencesSynced = false;
+    registerPush();
+    syncPreferences();
+    flushSync().catch(() => {});
+    // A brand-new account starts with its first task.
+    if (event.detail?.firstRun) setTimeout(() => openCapture(), 300);
+  });
   hideSplash();
 }
 

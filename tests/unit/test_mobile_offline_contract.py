@@ -95,10 +95,18 @@ console.log('{{"ok":true}}');
         native = (ROOT / "src/student_execution_os/web/static/js/native.js").read_text()
         self.assertIn("pushNotificationReceived", native)
         self.assertIn("pushNotificationActionPerformed", native)
-        assistant = (ROOT / "src/student_execution_os/web/static/js/views/assistant.js").read_text()
-        voice_block = assistant.split("async 'assistant-voice'(", 1)[1].split("'agent-preview'", 1)[0]
+        # Dictation feeds the same parse and card as typing; nothing is created until Create.
+        capture = (ROOT / "src/student_execution_os/web/static/js/capture.js").read_text()
+        voice_block = capture.split("async function listenOnce(", 1)[1].split("\n  }\n", 1)[0]
         self.assertIn("speechToText", voice_block)
-        self.assertNotIn("interpretText(text)", voice_block)
+        self.assertIn("parseLocal()", voice_block)
+        self.assertNotIn("queueOperation", voice_block)
+        self.assertNotIn("/assistant/apply", voice_block)
+        # Reminder notifications are rendered natively with background action buttons.
+        self.assertIn(".reminders.ReminderMessagingService", manifest)
+        self.assertIn(".reminders.ReminderActionReceiver", manifest)
+        self.assertIn('android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"', manifest)
+        self.assertIn("reminder-actions-v1", (ROOT / "src/student_execution_os/web/static/app.js").read_text())
         # Push registration is gated on a Firebase-enabled build: register() without
         # google-services.json crashes the native bridge.
         self.assertIn("pushEnabled()", native.split("export async function setupPush", 1)[1])

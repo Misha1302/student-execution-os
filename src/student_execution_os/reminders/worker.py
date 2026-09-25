@@ -14,15 +14,19 @@ import json
 import logging
 import signal
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 
+from student_execution_os.reliability.retention import purge_expired
+
 from .engine import ReminderEngine
 from .push import PushDispatcher, provider_from_environment
 
 log = logging.getLogger("student_execution_os.reminders.worker")
+PURGE_SECONDS = 3600.0
 
 
 def _now() -> datetime:
@@ -45,7 +49,8 @@ def heartbeat_is_fresh(database: str, max_age_seconds: float = 180.0) -> bool:
     import sqlite3
 
     try:
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5) as conn:
+        # sqlite3's own context manager only commits; closing() actually closes the file.
+        with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)) as conn:
             row = conn.execute("SELECT beat_at FROM worker_heartbeats WHERE name='reminder-worker'").fetchone()
     except sqlite3.Error:
         return False
@@ -80,6 +85,7 @@ def main() -> int:
     log.info("reminder worker %s started; push provider=%s configured=%s",
              args.worker_id, provider.name, provider.configured)
     next_tick = 0.0
+    next_purge = 0.0
     while not stopping:
         started = time.monotonic()
         summary: dict = {"worker_id": args.worker_id, "push_provider": provider.name,
@@ -91,8 +97,12 @@ def main() -> int:
                 summary["messages"] = sum(len(r.messages) for r in results)
                 next_tick = started + args.tick_seconds
             summary["dispatch"] = dispatcher.run_once(_now(), args.worker_id)
+            if started >= next_purge:
+                # Expired assistant input and old operation logs are deleted, not kept.
+                summary["purged"] = purge_expired(args.database, _now())
+                next_purge = started + PURGE_SECONDS
             heartbeat(args.database, summary)
-            if summary.get("messages") or any(summary["dispatch"].values()):
+            if summary.get("messages") or any(summary["dispatch"].values()) or any(summary.get("purged", {}).values()):
                 log.info(json.dumps(summary, sort_keys=True))
         except Exception:
             log.exception("reminder worker iteration failed")

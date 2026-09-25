@@ -4,4 +4,6 @@
     <string name="title_activity_main">Execution OS</string>
     <string name="package_name">io.github.misha1302.seos</string>
     <string name="custom_url_scheme">io.github.misha1302.seos</string>
+    <string name="reminder_channel">Напоминания</string>
+    <string name="reminder_channel_description">Когда пора начать, дедлайн близко или вы просили напомнить</string>
 </resources>

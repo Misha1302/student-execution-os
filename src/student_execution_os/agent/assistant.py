@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from student_execution_os.domain.errors import AuthorizationDenied, IdempotencyConflict, ValidationError, VersionConflict
 from student_execution_os.domain.model import (
@@ -22,6 +23,7 @@ from student_execution_os.domain.model import (
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 
 from .model import AgentCommand, AuthenticatedPrincipal
+from .nlparse import parse_task
 from .providers import ProviderUnavailable
 
 
@@ -84,7 +86,17 @@ class DeterministicAssistantParser:
                              "expected_version": None, "requires_confirmation": True}]
                 return [{"command": command.value, "payload": {"obligation_id": match["id"]}, "confidence": 0.85,
                          "unresolved_fields": [], "expected_version": match["version"], "requires_confirmation": True}]
-        raise ValidationError("input is not supported by the deterministic RU/EN parser")
+        # Everyday phrasing ("в пятницу к шести сдать лабу, часа два, важно").
+        now = _dt(str(context.get("now"))) if context.get("now") else None
+        parsed = parse_task(str(text), now=now or datetime.now(timezone.utc), timezone_name=str(context.get("timezone") or "UTC"))
+        if not parsed.get("title"):
+            raise ValidationError("input is not supported by the deterministic RU/EN parser")
+        unresolved = [field for field in parsed.pop("unresolved") if field != "title"]
+        parsed.pop("cutoff_time_assumed", None)
+        payload = {key: value for key, value in parsed.items() if value is not None or key in _NULLABLE_CAPTURE}
+        return [{"command": AgentCommand.CREATE_TASK.value, "payload": payload,
+                 "confidence": 0.8 if not unresolved else 0.6, "unresolved_fields": unresolved,
+                 "expected_version": None, "requires_confirmation": False}]
 
 
 def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
@@ -100,9 +112,15 @@ def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
 
 
 _ACTION_KEYS = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
+# Every field a CREATE_TASK proposal may carry maps onto the canonical task.create
+# command (sync/commands.py); anything else is rejected by validate_proposal.
+_CREATE_TASK_FIELDS = {
+    "title", "description", "category", "importance", "estimated_total_effort_minutes", "remaining_effort_minutes",
+    "actual_cutoff", "target_at", "actionable_from", "remind_at", "splittable", "min_chunk_minutes", "max_chunk_minutes",
+}
+_NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
 _PAYLOAD_KEYS = {
-    AgentCommand.CREATE_TASK.value: {"title", "description", "category", "importance", "estimated_total_effort_minutes",
-                                     "remaining_effort_minutes", "actual_cutoff", "splittable"},
+    AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS,
     AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "category", "importance",
                                       "attendance_policy", "location_effect", "arrival_requirement_minutes"},
     AgentCommand.REFINE_TASK.value: {"obligation_id", "estimated_total_effort_minutes", "activate"},
@@ -162,6 +180,10 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         title = payload["title"]
         if not isinstance(title, str) or not title.strip() or len(title) > 300:
             raise ValidationError("assistant proposal title must be 1-300 characters")
+    if payload.get("description") is not None and (not isinstance(payload["description"], str) or len(payload["description"]) > 5000):
+        raise ValidationError("assistant proposal description must be text up to 5000 characters")
+    if command == AgentCommand.CREATE_TASK.value:
+        _validate_task_fields(payload, canonical.clock.now())
     for field in ("estimated_total_effort_minutes", "remaining_effort_minutes"):
         if field in payload:
             _positive_minutes(payload[field], field, allow_none=command == AgentCommand.CREATE_TASK.value)
@@ -201,6 +223,34 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             "requires_confirmation": raw["requires_confirmation"]}
 
 
+def _validate_task_fields(payload: dict[str, Any], now: datetime) -> None:
+    """Semantic checks of the task fields a model may propose (same rules as task.create)."""
+    from student_execution_os.sync.commands import parse_cutoff, parse_instant
+
+    if "actual_cutoff" in payload:
+        if not isinstance(payload["actual_cutoff"], dict) or set(payload["actual_cutoff"]) - {"state", "at", "boundary", "precision"}:
+            raise ValidationError("assistant actual_cutoff must be {state, at?, boundary?}")
+        try:
+            parse_cutoff(payload["actual_cutoff"])
+        except ValueError as exc:
+            raise ValidationError(f"assistant actual_cutoff is invalid: {exc}") from exc
+    for field in ("target_at", "actionable_from", "remind_at"):
+        if payload.get(field) is not None:
+            if not isinstance(payload[field], str):
+                raise ValidationError(f"assistant {field} must be an ISO-8601 instant")
+            parse_instant(payload[field], field)
+    if payload.get("remind_at") is not None and parse_instant(payload["remind_at"], "remind_at") <= now:
+        raise ValidationError("assistant remind_at must be in the future")
+    if "splittable" in payload and not isinstance(payload["splittable"], bool):
+        raise ValidationError("assistant splittable must be a boolean")
+    for field in ("min_chunk_minutes", "max_chunk_minutes"):
+        if field in payload:
+            _positive_minutes(payload[field], field, allow_none=True)
+    low, high = payload.get("min_chunk_minutes"), payload.get("max_chunk_minutes")
+    if low is not None and high is not None and low > high:
+        raise ValidationError("assistant min_chunk_minutes must not exceed max_chunk_minutes")
+
+
 class SQLiteAssistantService:
     def __init__(self, canonical: SQLiteCanonicalRepository, principal: AuthenticatedPrincipal,
                  provider: AssistantProvider | None = None) -> None:
@@ -217,8 +267,16 @@ class SQLiteAssistantService:
         ).fetchall()
         from student_execution_os.reminders import ReminderStore
         prefs = ReminderStore(self.canonical).prefs(self.principal.account_id)
+        zone = prefs.timezone_name
+        requested = client.get("timezone")
+        if isinstance(requested, str) and 0 < len(requested) <= 64:
+            try:
+                ZoneInfo(requested)
+                zone = requested  # the device's zone: "в 18:00" means 18:00 where the user is
+            except (ZoneInfoNotFoundError, ValueError):
+                pass
         context: dict[str, object] = {
-            "now": _iso(self.canonical.clock.now()), "timezone": prefs.timezone_name,
+            "now": _iso(self.canonical.clock.now()), "timezone": zone,
             "obligations": [{"id": row["id"], "kind": row["kind"], "title": row["title"], "version": int(row["version"]),
                              "status": row["lifecycle_status"]} for row in rows],
         }
@@ -274,6 +332,8 @@ class SQLiteAssistantService:
         redacted = re.sub(r"\b[\w.+-]+@[\w.-]+\b", "[email]", text)[:2000]
         digest = hashlib.sha256(text.encode()).hexdigest()
         with self.canonical._tx() as conn:
+            # Expired previews can no longer be applied; their text is deleted, not kept.
+            conn.execute("DELETE FROM assistant_batches WHERE account_id=? AND expires_at<=?", (self.principal.account_id, _iso(now)))
             conn.execute(
                 "INSERT INTO assistant_batches(id,account_id,principal_id,input_hash,provider,redacted_input,actions_json,created_at,expires_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
@@ -288,9 +348,15 @@ class SQLiteAssistantService:
         key = str(payload.get("idempotency_key", ""))
         selected = payload.get("action_ids")
         confirmed = set(payload.get("confirmed_action_ids") or [])
+        edits = payload.get("edits") or {}
         if not batch_id or not key or not isinstance(selected, list) or not selected:
             raise ValidationError("batch_id, non-empty action_ids and idempotency_key are required")
-        request_hash = hashlib.sha256(json.dumps({"batch_id": batch_id, "action_ids": selected, "confirmed": sorted(confirmed)}, sort_keys=True).encode()).hexdigest()
+        if not isinstance(edits, dict) or not all(isinstance(value, dict) for value in edits.values()):
+            raise ValidationError("edits must map action ids to field objects")
+        request = {"batch_id": batch_id, "action_ids": selected, "confirmed": sorted(confirmed)}
+        if edits:
+            request["edits"] = edits
+        request_hash = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         replay = self.canonical.connection.execute(
             "SELECT request_hash,result_json FROM assistant_apply_records WHERE account_id=? AND principal_id=? AND idempotency_key=?",
             (self.principal.account_id, self.principal.principal_id, key),
@@ -312,7 +378,9 @@ class SQLiteAssistantService:
         by_id = {item["id"]: item for item in json.loads(row["actions_json"])}
         if len(set(selected)) != len(selected) or not set(selected).issubset(by_id):
             raise ValidationError("selected action id is not in the preview batch")
-        actions = [by_id[action_id] for action_id in selected]
+        if not set(edits).issubset(selected):
+            raise ValidationError("edits name an action that is not being applied")
+        actions = [self._edited(by_id[action_id], edits.get(action_id)) for action_id in selected]
         if any(action["unresolved_fields"] for action in actions):
             raise ValidationError("unresolved proposal fields must be refined before apply")
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):
@@ -333,21 +401,33 @@ class SQLiteAssistantService:
             )
         return result
 
+    def _edited(self, action: dict[str, Any], edit: dict[str, Any] | None) -> dict[str, Any]:
+        """Apply the user's answers/corrections from the preview card, then re-validate.
+
+        Setting a field in ``edits`` resolves it, including an explicit "don't know"
+        (``null`` effort → a draft; ``{"state": "UNKNOWN"}`` deadline).
+        """
+        if not edit:
+            return action
+        raw = {key: action[key] for key in _ACTION_KEYS}
+        raw["payload"] = {**action["payload"], **edit}
+        raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit]
+        clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+        return {**action, **clean, "requires_confirmation": action["requires_confirmation"]}
+
     def _execute(self, action: dict[str, object]) -> dict[str, object]:
         command = AgentCommand(action["command"])
         data = action["payload"]
         common = {"account_id": self.principal.account_id, "actor": ActorCategory.USER_VIA_LLM}
         if command is AgentCommand.CREATE_TASK:
-            effort = data.get("estimated_total_effort_minutes")
-            task = self.canonical.create_task(
-                **common, title=str(data["title"]), description=data.get("description"),
-                category=ObligationCategory(data.get("category", "GENERAL")), importance=Importance(data.get("importance", "NORMAL")),
-                estimated_total_effort_minutes=effort, remaining_effort_minutes=data.get("remaining_effort_minutes", effort),
-                splittable=bool(data.get("splittable", False)), actual_cutoff=HardCutoff.unknown(),
-            )
-            from student_execution_os.reminders import ReminderStore
-            ReminderStore(self.canonical).touch(self.principal.account_id, task.obligation.id, self.canonical.clock.now())
-            return {"action_id": action["id"], "entity_id": task.obligation.id, "version": 1, "status": task.obligation.lifecycle_status.value}
+            # The same mapping as a task.create sync operation, so every proposal field
+            # (deadline, target, start, reminder, chunking …) is stored — never dropped.
+            from student_execution_os.sync.commands import Commands
+            task_id = f"task-{uuid4()}"
+            outcome = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
+                               now=self.canonical.clock.now()).task_create(task_id, dict(data))
+            return {"action_id": action["id"], "entity_id": task_id, "version": outcome.entity["version"],
+                    "status": outcome.entity["status"], "entity": outcome.entity}
         if command is AgentCommand.CREATE_EVENT:
             effect_data = data.get("location_effect") or {"kind": "NONE"}
             if not isinstance(effect_data, dict):

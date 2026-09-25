@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 import tempfile
 from datetime import timedelta
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 
 from tests.asgi_client import TestClient
 
+from student_execution_os.persistence import SCHEMA_VERSION
 from student_execution_os.web.app import create_app
 from tests.ui_fixture import ACCOUNT, NOW, seed_ui_database
 
@@ -35,7 +37,7 @@ class WebApiTest(unittest.TestCase):
     def test_health_and_security_headers(self):
         response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["schema_version"], 12)
+        self.assertEqual(response.json()["schema_version"], SCHEMA_VERSION)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
         self.assertEqual(response.headers["cache-control"], "no-store")
@@ -116,7 +118,7 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(snoozed["acted_action"], "SNOOZE")
         after_revision = self.client.get("/api/v1/settings/diagnostics").json()["server_revision"]
         self.assertEqual(after_revision, before_revision)
-        with sqlite3.connect(self.db) as connection:
+        with closing(sqlite3.connect(self.db)) as connection:
             connection.row_factory = sqlite3.Row
             state = connection.execute(
                 "SELECT snoozed_until FROM reminder_states WHERE account_id=? AND task_id=?", (ACCOUNT, "discrete")

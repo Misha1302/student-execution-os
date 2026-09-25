@@ -21,7 +21,7 @@ def jsonify(value: Any) -> Any:
     return value
 
 
-def task_payload(task, *, risk=None, effective=None) -> dict[str, Any]:
+def task_payload(task, *, risk=None, effective=None, remind_at: datetime | None = None) -> dict[str, Any]:
     cutoff = task.actual_cutoff
     ob = task.obligation
     return {
@@ -49,6 +49,8 @@ def task_payload(task, *, risk=None, effective=None) -> dict[str, Any]:
         "target_at": jsonify(task.target_at),
         "started_at": jsonify(task.started_at),
         "last_progress_at": jsonify(task.last_progress_at),
+        # A reminder the user asked for that has not gone out yet (reminder state, not a task field).
+        "remind_at": jsonify(remind_at),
         "actual_cutoff": {
             "state": cutoff.state.value,
             "at": jsonify(cutoff.at),

@@ -4,7 +4,7 @@
 
 ## Current architecture
 
-- Schema: v12.
+- Schema: v13 (explicit `remind_at` reminder requests, device capabilities, retention indexes).
 - API/UI: FastAPI plus the shared browser/Capacitor client.
 - Execution state: canonical `started_at` and `last_progress_at` on tasks.
 - Offline mutations: `/api/v1/sync`, client-generated operation ids, atomic
@@ -18,6 +18,15 @@
   Anthropic, or OpenAI-compatible provider. Model output is a typed proposal only;
   preview, explicit confirmation, server validation, atomic apply, and idempotency
   remain application-owned.
+- Capture: `agent/nlparse.py` (server) and `web/static/js/nlparse.js` (device) parse RU/EN
+  text identically (fixture `tests/fixtures/nl_capture_cases.json`, parity test runs Node).
+  The capture card creates tasks through the `task.create` sync operation; an LLM proposal
+  only refines the card. `assistant/apply` accepts `edits` to answer unresolved fields.
+- Reminders: a user-requested moment (`remind_at`, set by snooze, "not now" and
+  "напомни …") fires once, past one-shot stage limits and quiet hours.
+- Android: `reminders/` Java package renders data-only reminder pushes with Start/Done/Snooze
+  buttons executed by WorkManager through `/api/v1/sync` (op ids derived from reminder + button).
+  `mobile/scripts/native_e2e.py` checks it on an emulator against a local server.
 - Android: native push and speech plugins are installed. FCM delivery additionally
   requires a matching Firebase Android configuration and server service account.
 

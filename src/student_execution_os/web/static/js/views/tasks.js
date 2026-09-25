@@ -4,7 +4,7 @@ import { esc, icon, chip, riskChip, empty, chipGroup } from '../ui.js';
 
 const RISKY = new Set(['START_SOON', 'AT_RISK', 'CRITICAL', 'IMPOSSIBLE', 'OVERDUE']);
 const FILTERS = {
-  active: (x) => x.status === 'ACTIVE',
+  active: (x) => x.status === 'ACTIVE' || x.status === 'DRAFT',
   risk: (x) => x.status === 'ACTIVE' && RISKY.has(x.risk?.state),
   done: (x) => x.status === 'COMPLETED',
   cancelled: (x) => x.status === 'CANCELLED',
@@ -23,6 +23,7 @@ export function deadlineOf(task) {
 function sortTasks(list) {
   const rank = (x) => RISK_ORDER.indexOf(x.risk?.state || 'UNKNOWN');
   const due = (x) => { const d = deadlineOf(x); return d ? new Date(d.at).getTime() : Infinity; };
+  if (filter === 'done') return [...list].sort((a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0));
   return [...list].sort((a, b) => rank(a) - rank(b) || due(a) - due(b) || a.title.localeCompare(b.title));
 }
 
@@ -35,11 +36,11 @@ export function taskCard(x) {
   return `<button class="task-card" data-action="open-task" data-id="${esc(x.id)}">
     <span class="task-top">
       <strong class="task-title">${esc(x.title)}</strong>
-      ${x.status === 'ACTIVE' ? riskChip(x.risk) : chip(code('status', x.status), x.status === 'COMPLETED' ? 'ok' : 'muted')}
+      ${x.status === 'ACTIVE' ? riskChip(x.risk) : chip(code('status', x.status), x.status === 'COMPLETED' ? 'ok' : x.status === 'DRAFT' ? 'warn' : 'muted')}
     </span>
     <span class="task-meta">
       ${d ? `<span class="${overdue ? 'text-danger' : ''}">${icon(d.kind === 'cutoff' ? 'flag' : 'clock')}${esc(fmtDateTime(d.at))} · ${esc(fmtRelative(d.at))}</span>` : `<span class="muted">${icon('flag')}${esc(code('cutoffState', x.actual_cutoff?.state))}</span>`}
-      <span>${esc(t('tasks.left', { d: fmtDuration(left) }))}</span>
+      <span>${x.status === 'COMPLETED' && x.completed_at ? esc(t('tasks.doneAt', { when: fmtDateTime(x.completed_at) })) : x.estimated_total_effort_minutes == null ? esc(t('card.effort.unknown')) : esc(t('tasks.left', { d: fmtDuration(left) }))}</span>
     </span>
     <span class="progress" aria-hidden="true"><span data-w="${pct}"></span></span>
   </button>`;
@@ -56,7 +57,7 @@ export default {
     const list = sortTasks(tasks.filter(FILTERS[filter]).filter((x) => !q || x.title.toLowerCase().includes(q)));
     const segments = Object.keys(FILTERS).map((k) => [k, `${t(`tasks.filter.${k}`)} ${counts[k] ? counts[k] : ''}`.trim()]);
     let body;
-    if (!tasks.length) body = empty(t('tasks.emptyAll'), t('tasks.emptyAllHint'), 'tasks') + `<button class="button primary wide" data-action="compose-task">${icon('plus')}${esc(t('compose.task'))}</button>`;
+    if (!tasks.length) body = empty(t('tasks.emptyAll'), t('tasks.emptyAllHint'), 'tasks') + `<button class="button primary wide" data-action="compose-task">${icon('plus')}${esc(t('capture.title'))}</button>`;
     else if (!list.length) body = empty(q ? t('tasks.noMatch') : t(`tasks.empty.${filter}`), '', filter === 'risk' ? 'check' : 'tasks');
     else body = `<div class="task-list">${list.map(taskCard).join('')}</div>`;
     return `

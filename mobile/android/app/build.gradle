@@ -53,7 +53,15 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // Reminder notifications with working buttons (see reminders/): the messaging
+    // service extends the push plugin's, and button actions are queued in WorkManager.
+    implementation "com.google.firebase:firebase-messaging:${rootProject.ext.has('firebaseMessagingVersion') ? rootProject.ext.firebaseMessagingVersion : '25.0.1'}"
+    implementation "androidx.work:work-runtime:$androidxWorkVersion"
     testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.json:json:20240303"
+    androidTestImplementation "androidx.test:core:1.7.0"
+    androidTestImplementation "androidx.test:runner:1.7.0"
+    androidTestImplementation "androidx.work:work-testing:$androidxWorkVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

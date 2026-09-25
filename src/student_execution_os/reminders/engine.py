@@ -119,9 +119,13 @@ class ReminderEngine:
             last = store.last_message_at(account_id)
             sent_today = store.count_since(account_id, now - timedelta(days=1))
             urgent = {task_id for task_id, d in sending.items() if is_urgent(d.stage)}
+            # A reminder the user explicitly asked for goes out at the requested moment,
+            # past quiet hours, the account gap and the daily cap.
+            requested = {task_id for task_id, d in sending.items() if d.reason == "REMINDER_DUE"}
+            urgent |= requested
             if quiet_end is not None:
                 held_reason, hold_until = "QUIET_HOURS", quiet_end
-                sending = {}
+                sending = {k: v for k, v in sending.items() if k in requested}
             else:
                 if last is not None and now - last < ACCOUNT_MIN_GAP:
                     held_reason, hold_until = "ACCOUNT_GAP", last + ACCOUNT_MIN_GAP

@@ -53,6 +53,8 @@ APPLIED, NOOP, CONFLICT, REJECTED = "APPLIED", "NOOP", "CONFLICT", "REJECTED"
 OPEN = {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 MAX_BATCH = 100
+_REMINDER_ACTIONS = {"task.start": "START", "task.complete": "DONE", "reminder.snooze": "SNOOZE",
+                     "task.defer": "RESCHEDULE", "task.update": "RESCHEDULE", "task.progress": "PROGRESS"}
 
 
 @dataclass(frozen=True)
@@ -159,11 +161,19 @@ class Commands:
         return self.repo.get_task(self.account_id, task_id)
 
     def _task_out(self, task_id: str, status: str = APPLIED, code: str | None = None, message: str | None = None) -> Outcome:
-        return Outcome(status, task_payload(self._task(task_id)), code, message)
-
-    def _touch(self, task_id: str, *, snooze_until: datetime | None = None) -> None:
         from student_execution_os.reminders.store import ReminderStore
-        ReminderStore(self.repo).touch(self.account_id, task_id, self.now, snooze_until=snooze_until)
+        remind = ReminderStore(self.repo).remind_at(self.account_id, task_id)
+        return Outcome(status, task_payload(self._task(task_id), remind_at=remind), code, message)
+
+    def _touch(self, task_id: str, *, snooze_until: datetime | None = None, remind_at: datetime | None = None) -> None:
+        from student_execution_os.reminders.store import ReminderStore
+        ReminderStore(self.repo).touch(self.account_id, task_id, self.now, snooze_until=snooze_until, remind_at=remind_at)
+
+    def _remind_at(self, payload: dict[str, Any]) -> datetime | None:
+        remind = parse_instant(payload.get("remind_at"), "remind_at")
+        if remind is not None and remind <= self.now:
+            raise ValidationError("remind_at must be in the future")
+        return remind
 
     def _update(self, task_id: str, **fields) -> None:
         current = self._task(task_id)
@@ -190,6 +200,7 @@ class Commands:
             return Outcome(NOOP, task_payload(self._task(task_id)), "ALREADY_EXISTS", "task already exists")
         effort = _minutes(payload.get("estimated_total_effort_minutes"), "estimated_total_effort_minutes", allow_none=True)
         splittable = bool(payload.get("splittable", False))
+        remind = self._remind_at(payload)
         task = self.repo.create_task(
             account_id=self.account_id, obligation_id=task_id,
             title=_title(payload.get("title")), description=_description(payload.get("description")),
@@ -202,15 +213,32 @@ class Commands:
             actionable_from=parse_instant(payload.get("actionable_from"), "actionable_from"),
             target_at=parse_instant(payload.get("target_at"), "target_at"),
             actual_cutoff=parse_cutoff(payload.get("actual_cutoff")),
-            actor=self.actor,
+            actor=self._capture_actor(payload),
         )
-        self._touch(task_id)
-        return Outcome(APPLIED, task_payload(task))
+        self._touch(task_id, remind_at=remind)
+        return self._task_out(task.obligation.id)
+
+    def _capture_actor(self, payload: dict[str, Any]) -> ActorCategory:
+        """A task confirmed from an Assistant preview keeps its LLM provenance.
+
+        The reference must name a live preview batch of this account; otherwise (for
+        example an offline capture replayed after the batch expired) the confirmed
+        values are simply the user's own input.
+        """
+        batch_id = payload.get("assistant_batch_id")
+        if not batch_id:
+            return self.actor
+        row = self.repo.connection.execute(
+            "SELECT expires_at FROM assistant_batches WHERE account_id=? AND id=?", (self.account_id, str(batch_id))
+        ).fetchone()
+        if row is None or datetime.fromisoformat(row["expires_at"]) <= self.now:
+            return self.actor
+        return ActorCategory.USER_VIA_LLM
 
     _EDITABLE = {
         "title", "description", "importance", "category", "estimated_total_effort_minutes",
         "remaining_effort_minutes", "actual_cutoff", "target_at", "actionable_from", "splittable",
-        "min_chunk_minutes", "max_chunk_minutes",
+        "min_chunk_minutes", "max_chunk_minutes", "remind_at",
     }
 
     def task_update(self, task_id: str, payload: dict[str, Any]) -> Outcome:
@@ -250,8 +278,12 @@ class Commands:
             remaining = current.remaining_effort_minutes
             if remaining is None or remaining > estimate:
                 fields["remaining_effort_minutes"] = estimate
+        remind_changed = "remind_at" in payload
+        if remind_changed:
+            from student_execution_os.reminders.store import ReminderStore
+            ReminderStore(self.repo).set_remind_at(self.account_id, task_id, self._remind_at(payload), self.now)
         if not fields:
-            return self._task_out(task_id, NOOP, "NOTHING_TO_CHANGE")
+            return self._task_out(task_id, APPLIED if remind_changed else NOOP, None if remind_changed else "NOTHING_TO_CHANGE")
         activate = current.obligation.lifecycle_status is LifecycleStatus.DRAFT and estimate is not None
         self.repo.update_task(account_id=self.account_id, obligation_id=task_id,
                               expected_version=current.obligation.version, actor=self.actor, activate=activate, **fields)
@@ -353,7 +385,8 @@ class Commands:
         if until <= self.now:
             return self._task_out(task_id, NOOP, "DEFER_EXPIRED", "the postponement time has already passed")
         self._update(task_id, actionable_from=until)
-        self._touch(task_id, snooze_until=until)
+        # "Not now": quiet until then, and come back with a prompt at that moment.
+        self._touch(task_id, snooze_until=until, remind_at=until)
         return self._task_out(task_id)
 
     def reminder_snooze(self, task_id: str, payload: dict[str, Any]) -> Outcome:
@@ -366,7 +399,8 @@ class Commands:
             return self._task_out(task_id, NOOP, "TASK_CLOSED")
         if until <= self.now:
             return self._task_out(task_id, NOOP, "SNOOZE_EXPIRED")
-        self._touch(task_id, snooze_until=until)
+        # Snooze means "remind me again then", not only "be quiet until then".
+        self._touch(task_id, snooze_until=until, remind_at=until)
         return self._task_out(task_id)
 
     # ---- events -----------------------------------------------------------------------
@@ -465,9 +499,17 @@ class SyncService:
                 result = json.loads(previous["result_json"])
                 result["replayed"] = True
                 return result
+            # A button pressed on a reminder (in the app or on a notification) names the
+            # reminder so it is recorded as answered; the hash above still covers it.
+            payload = dict(payload)
+            reminder_id = payload.pop("reminder_message_id", None)
             try:
                 with self.repo._tx():  # savepoint: a failing command leaves no partial writes
                     outcome = self.commands.run(op_type, entity_id, payload)
+                    if reminder_id and outcome.status in (APPLIED, NOOP) and op_type in _REMINDER_ACTIONS:
+                        from student_execution_os.reminders.store import ReminderStore
+                        ReminderStore(self.repo).mark_acted(self.account_id, str(reminder_id)[:64],
+                                                            _REMINDER_ACTIONS[op_type], self.now)
             except EntityNotFound as exc:
                 outcome = Outcome(REJECTED, None, "NOT_FOUND", str(exc))
             except (DomainError, ValueError, KeyError, TypeError) as exc:

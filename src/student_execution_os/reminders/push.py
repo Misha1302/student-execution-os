@@ -28,7 +28,8 @@ import httpx
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 
-from .store import ReminderStore
+from .messages import FOLLOW_UP
+from .store import REMINDER_ACTIONS_CAPABILITY, ReminderStore
 
 log = logging.getLogger("student_execution_os.push")
 
@@ -53,14 +54,14 @@ class PushProvider(Protocol):
     @property
     def configured(self) -> bool: ...
 
-    def send(self, token: str, message: dict[str, Any]) -> SendResult: ...
+    def send(self, token: str, message: dict[str, Any], *, data_only: bool = False) -> SendResult: ...
 
 
 class UnconfiguredProvider:
     name = "none"
     configured = False
 
-    def send(self, token: str, message: dict[str, Any]) -> SendResult:
+    def send(self, token: str, message: dict[str, Any], *, data_only: bool = False) -> SendResult:
         return SendResult(False, error="PUSH_UNCONFIGURED")
 
 
@@ -135,26 +136,12 @@ class FcmV1Provider:
             self._token_expires = time.time() + int(payload.get("expires_in", 3600))
             return self._token
 
-    def send(self, token: str, message: dict[str, Any]) -> SendResult:
+    def send(self, token: str, message: dict[str, Any], *, data_only: bool = False) -> SendResult:
         try:
             bearer = self.access_token()
         except (httpx.HTTPError, KeyError, ValueError) as exc:
             return SendResult(False, error=f"FCM_AUTH:{type(exc).__name__}", retryable=True)
-        collapse = str(message.get("collapse_key", "seos"))[:64]
-        body = {"message": {
-            "token": token,
-            # A notification block is required: the Capacitor push plugin does not
-            # render data-only messages, so without it nothing would be shown while the
-            # app is backgrounded or killed. Tapping it opens the app and hands `data`
-            # (deep_link, task_id, message_id) to pushNotificationActionPerformed.
-            "notification": {"title": str(message.get("title", "")), "body": str(message.get("body", ""))},
-            "data": {key: value if isinstance(value, str) else json.dumps(value)
-                     for key, value in message.items() if key != "collapse_key"},
-            "android": {"priority": "HIGH", "ttl": f"{int(STALE_AFTER.total_seconds())}s",
-                        "collapse_key": collapse,
-                        # Same tag => an at-least-once duplicate replaces the shown notification.
-                        "notification": {"tag": collapse}},
-        }}
+        body = fcm_message(token, message, data_only=data_only)
         try:
             response = self.http.post(
                 f"{self.fcm_base_url}/v1/projects/{self.project_id}/messages:send",
@@ -179,6 +166,29 @@ class FcmV1Provider:
             self._token = None
         retryable = response.status_code in (401, 429) or response.status_code >= 500
         return SendResult(False, error=f"FCM_HTTP_{response.status_code}:{status}"[:120], retryable=retryable)
+
+
+def fcm_message(token: str, message: dict[str, Any], *, data_only: bool = False) -> dict[str, Any]:
+    """The FCM v1 request body for one reminder.
+
+    Clients with native reminder actions get a *data-only* message: the app's own
+    messaging service renders the notification with working Start/Done/Snooze
+    buttons (a system-rendered notification cannot carry them) and uses the message
+    id as a stable notification tag. Older clients get a notification block, which
+    the system shows even while the app is killed; tapping it opens the app.
+    """
+    collapse = str(message.get("collapse_key", "seos"))[:64]
+    data = {key: value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            for key, value in message.items() if key != "collapse_key"}
+    android: dict[str, Any] = {"priority": "HIGH", "ttl": f"{int(STALE_AFTER.total_seconds())}s", "collapse_key": collapse}
+    body: dict[str, Any] = {"token": token, "data": data, "android": android}
+    if data_only:
+        data["render"] = "native"
+    else:
+        body["notification"] = {"title": str(message.get("title", "")), "body": str(message.get("body", ""))}
+        # Same tag => an at-least-once duplicate replaces the shown notification.
+        android["notification"] = {"tag": collapse}
+    return {"message": body}
 
 
 def provider_from_environment() -> PushProvider:
@@ -257,7 +267,9 @@ class PushDispatcher:
             return "cancelled" if reason != "STALE" else "dead"
         prefs = ReminderStore(repo).prefs(row["account_id"])
         quiet_end = prefs.quiet_until(now)
-        if quiet_end is not None:
+        # The engine only creates a message inside quiet hours when the user asked for
+        # that moment explicitly; such a message is delivered, not held.
+        if quiet_end is not None and prefs.quiet_until(_dt(row["created_at"])) is None:
             self._finish(repo, message_id, "PENDING", error="QUIET_HOURS", next_attempt=quiet_end)
             return "retry"
         if not self.provider.configured:
@@ -269,17 +281,28 @@ class PushDispatcher:
             self._finish(repo, message_id, "NO_DEVICE", error="NO_ACTIVE_DEVICE")
             return "no_device"
         task_ids = json.loads(row["task_ids_json"])
+        titles = {}
+        for task_id in task_ids:
+            title_row = repo.connection.execute(
+                "SELECT title FROM obligations WHERE account_id=? AND id=?", (row["account_id"], task_id)
+            ).fetchone()
+            titles[task_id] = title_row["title"] if title_row else ""
         payload = {
             "type": "reminder", "message_id": row["id"], "stage": row["stage"], "title": row["title"],
             "body": row["body"], "deep_link": row["deep_link"], "actions": json.loads(row["actions_json"]),
             "task_ids": task_ids, "task_id": task_ids[0] if len(task_ids) == 1 else "",
+            "task_title": titles.get(task_ids[0], "") if len(task_ids) == 1 else "",
             "collapse_key": task_ids[0] if len(task_ids) == 1 else "group",
-            "created_at": row["created_at"],
+            "created_at": row["created_at"], "locale": prefs.locale, "timezone": prefs.timezone_name,
+            "labels": FOLLOW_UP[prefs.locale],
         }
         attempts = int(row["attempts"]) + 1
         results = []
-        for device_id, token in devices:
-            result = self.provider.send(token, payload)
+        for device_id, token, capabilities in devices:
+            if REMINDER_ACTIONS_CAPABILITY in capabilities:
+                result = self.provider.send(token, payload, data_only=True)
+            else:
+                result = self.provider.send(token, payload)
             if result.token_invalid:
                 store.deactivate_device(device_id)
             results.append(result)

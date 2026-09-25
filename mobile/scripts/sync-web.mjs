@@ -3,7 +3,8 @@
 // /assets) so the very same files work in the browser and inside the APK.
 //
 // SEOS_SERVER_URL=https://plan.example.com npm run sync
-//   presets the API server on the first-run screen (still editable in the app).
+//   presets the API server (default: the hosted server; still changeable under
+//   Settings → Advanced). SEOS_SERVER_URL= (empty) asks for it on first launch.
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +27,11 @@ if (nativeHtml === html) {
 }
 writeFileSync(resolve(www, 'index.html'), nativeHtml);
 
-const server = (process.env.SEOS_SERVER_URL || '').trim().replace(/\/+$/, '');
+// The consumer build talks to the project's hosted server, so a new user starts with
+// the product instead of a server address. SEOS_SERVER_URL overrides it; setting it to
+// an empty string builds a self-hosting app that asks for the address on first launch.
+const HOSTED_SERVER = 'https://seos.185-102-139-43.sslip.io';
+const server = (process.env.SEOS_SERVER_URL ?? HOSTED_SERVER).trim().replace(/\/+$/, '');
 if (server && !/^https?:\/\//.test(server)) {
   console.error(`SEOS_SERVER_URL must start with http:// or https:// (got "${server}")`);
   process.exit(1);

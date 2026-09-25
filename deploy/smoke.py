@@ -95,6 +95,22 @@ def main() -> int:
         preview = call("POST", "/api/v1/assistant/interpret", json={"text": "task: Smoke assistant 25 min"})
         check(preview["actions"][0]["command"] == "CREATE_TASK" and preview["mutated_canonical_state"] is False,
               "assistant preview does not mutate", preview)
+        # Natural-language capture: what the preview shows is what gets stored.
+        phrase = "В пятницу к шести сдать лабораторную по физике, займёт часа два, это важно"
+        nl = call("POST", "/api/v1/assistant/interpret", json={"text": phrase, "context": {"timezone": "Europe/Moscow"}})
+        action = nl["actions"][0]
+        check(action["command"] == "CREATE_TASK" and action["payload"]["actual_cutoff"]["state"] == "KNOWN"
+              and action["payload"]["estimated_total_effort_minutes"] == 120 and not action["unresolved_fields"],
+              "natural-language preview", nl)
+        applied = call("POST", "/api/v1/assistant/apply", json={
+            "batch_id": nl["batch_id"], "action_ids": [action["id"]], "idempotency_key": f"smoke-nl-{suffix}"})
+        stored = call("GET", f"/api/v1/tasks/{applied['results'][0]['entity_id']}")
+        check(stored["actual_cutoff"]["state"] == "KNOWN" and stored["importance"] == "HIGH"
+              and stored["estimated_total_effort_minutes"] == 120, "applied proposal keeps every field", stored)
+        snooze = call("POST", "/api/v1/sync", json={"operations": [{
+            "op_id": f"op-snooze-{suffix}", "type": "reminder.snooze", "entity_id": stored["id"],
+            "payload": {"minutes": 30}}]})["results"][0]
+        check(snooze["status"] == "APPLIED" and snooze["entity"]["remind_at"], "snooze schedules a reminder", snooze)
         diagnostics = call("GET", "/api/v1/settings/diagnostics")
         report["diagnostics"] = {k: diagnostics.get(k) for k in ("schema_version", "reminder_worker", "external_capabilities")}
         if args.expect_worker:

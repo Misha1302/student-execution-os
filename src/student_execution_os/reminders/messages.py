@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from .policy import Stage, TaskFacts
 
 ACTIONS = {
-    "START": {"background": False},
+    "START": {"background": True},
     "SNOOZE_30": {"background": True, "minutes": 30},
     "SNOOZE_60": {"background": True, "minutes": 60},
     "DONE": {"background": True},
@@ -31,6 +31,7 @@ _STAGE_ACTIONS = {
     Stage.RISK_UP: ("START", "REPLAN", "RESCHEDULE"),
     Stage.OVERDUE: ("DONE", "RESCHEDULE", "OPEN"),
     Stage.GROUP: ("OPEN", "SNOOZE_60"),
+    Stage.REMINDER: ("START", "DONE", "SNOOZE_30"),
 }
 
 _LABELS = {
@@ -52,6 +53,7 @@ _TEXT = {
         Stage.RISK_UP: ("«{title}» под угрозой", "Времени до срока почти не осталось — начните или перепланируйте"),
         Stage.OVERDUE: ("Срок «{title}» прошёл", "Отметьте выполненной или назначьте новый срок"),
         Stage.GROUP: ("{count} задачи требуют внимания", "{titles}"),
+        Stage.REMINDER: ("Напоминаю: «{title}»", "{reminder_body}"),
     },
     "en": {
         Stage.START_SOON: ("Time to start soon", "“{title}”: needs {effort}, start by {lss}"),
@@ -64,7 +66,18 @@ _TEXT = {
         Stage.RISK_UP: ("“{title}” is at risk", "Little time is left before it's due — start or replan"),
         Stage.OVERDUE: ("“{title}” is past due", "Mark it done or set a new deadline"),
         Stage.GROUP: ("{count} tasks need attention", "{titles}"),
+        Stage.REMINDER: ("Reminder: “{title}”", "{reminder_body}"),
     },
+}
+
+# Texts the device shows after a notification button was handled in the background.
+FOLLOW_UP = {
+    "ru": {"started": "В работе: «{title}»", "started_body": "Отметьте, когда закончите",
+           "done": "Готово", "snoozed": "Напомню в {time}", "completed": "«{title}» выполнено",
+           "failed": "Не удалось отправить — откройте приложение", "queued": "Отправлю, когда появится сеть"},
+    "en": {"started": "In progress: “{title}”", "started_body": "Mark it done when you finish",
+           "done": "Done", "snoozed": "I'll remind you at {time}", "completed": "“{title}” is done",
+           "failed": "Couldn't send — open the app", "queued": "Will send when you're back online"},
 }
 
 
@@ -112,7 +125,10 @@ def compose(stage: Stage, facts: list[TaskFacts], *, repeat: bool, now: datetime
     due_clause = ""
     if due:
         due_clause = f", срок {due}" if locale == "ru" else f", due {due}"
+    reminder_body = f"Срок {due}" if locale == "ru" and due else f"Due {due}" if due else (
+        "Вы просили напомнить" if locale == "ru" else "You asked me to remind you")
     values = {
+        "reminder_body": reminder_body,
         "title": item.title if len(item.title) <= 60 else item.title[:57] + "…",
         "effort": _effort(item.remaining_minutes, locale),
         "lss": _when(item.latest_safe_start, now, zone, locale),

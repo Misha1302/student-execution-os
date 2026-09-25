@@ -3,6 +3,7 @@ import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, 
 import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead } from '../ui.js';
 import { logProgress, lifecycle, mutate } from '../actions.js';
 import { queueOperation } from '../sync.js';
+import { rescheduleSheet } from '../capture.js';
 
 export function parseWhyNow(value) {
   const out = {};
@@ -13,22 +14,35 @@ export function parseWhyNow(value) {
   return out;
 }
 
-export function statusCopy(status, reasons = []) {
-  const reason = reasons[0] ? code('reason', reasons[0]) : '';
-  if (status === 'FEASIBLE') return t('status.copy.FEASIBLE');
-  if (status === 'INFEASIBLE') return reason ? t('status.copy.INFEASIBLE.reason', { reason }) : t('status.copy.INFEASIBLE');
-  return reason ? t('status.copy.UNKNOWN.reason', { reason }) : t('status.copy.UNKNOWN');
+// Plan explanations such as "UNKNOWN_HARD_CUTOFF:task-1" become sentences about the task.
+export function explainReason(reason, tasks = []) {
+  const [codeName, taskId] = String(reason || '').split(':');
+  const task = taskId ? tasks.find((x) => x.id === taskId) : null;
+  if (task) {
+    const key = `reasonTask.${codeName}`;
+    const text = t(key, { title: task.title });
+    if (text !== key) return { text, task };
+  }
+  return { text: code('reason', codeName), task: null };
 }
 
-export function heroStatus(plan, extra = '') {
+export function statusCopy(status, reasons = [], tasks = []) {
+  if (status === 'FEASIBLE') return { text: t('status.copy.FEASIBLE'), task: null };
+  const first = reasons[0] ? explainReason(reasons[0], tasks) : null;
+  if (status === 'INFEASIBLE') return { text: first?.task ? first.text : t('status.copy.INFEASIBLE'), task: first?.task || null };
+  return first ? { text: first.task ? first.text : t('status.copy.UNKNOWN.reason', { reason: first.text }), task: first.task } : { text: t('status.copy.UNKNOWN'), task: null };
+}
+
+export function heroStatus(plan, tasks = [], extra = '') {
   const s = plan.feasibility_status;
+  const copy = statusCopy(s, plan.explanations, tasks);
+  const fix = copy.task ? `<button class="button small" data-action="open-task" data-id="${esc(copy.task.id)}">${esc(t('status.fix'))}</button>` : '';
   return `<section class="hero-status ${statusClass(s)}" data-status="${esc(s)}">
     <div class="hero-icon ${statusClass(s)}">${icon(statusIcon(s))}</div>
     <div class="hero-copy">
-      <p class="eyebrow">${esc(t('status.eyebrow'))} · <span class="mono">${esc(s)}</span></p>
       <h2 class="${statusClass(s)}">${esc(t(`status.title.${s}`))}</h2>
-      <p>${esc(statusCopy(s, plan.explanations))}</p>
-      ${extra}
+      <p>${esc(copy.text)}</p>
+      ${fix}${extra}
     </div>
   </section>`;
 }
@@ -87,7 +101,7 @@ function nowCard(action, task, plan) {
       <button class="button primary" data-action="progress" data-id="${esc(task.id)}" data-minutes="${esc(action.recommended_duration_minutes)}">${icon('check')}${esc(t('today.didBlock', { d: fmtDuration(action.recommended_duration_minutes) }))}</button>
       <button class="button ghost" data-action="complete-task" data-id="${esc(task.id)}">${esc(t('lifecycle.complete'))}</button>
       <button class="button ghost" data-action="defer-task" data-id="${esc(task.id)}">${esc(t('today.notNow'))}</button>
-      <button class="button ghost" data-action="open-task" data-id="${esc(task.id)}">${esc(t('common.open'))}</button>
+      <button class="button ghost" data-action="reschedule-task" data-id="${esc(task.id)}">${esc(t('task.reschedule'))}</button>
     </div>` : ''}
   </article>`;
 }
@@ -113,13 +127,17 @@ export default {
     const travel = travelCard(data.travel);
     const bounds = boundaries(data);
 
+    const nothingYet = !(data.tasks || []).length && !(data.needs_refinement || []).length;
+    const capture = `<button class="capture-cta" data-action="compose">
+        <span class="capture-cta-copy"><strong>${esc(t('capture.title'))}</strong><small>${esc(t('capture.ctaHint'))}</small></span>
+        <span class="capture-cta-icons">${icon('plus')}</span></button>`;
     return `
       ${unhealthy.length ? `<button class="banner warn" data-nav="evidence">${icon('alert')}<div><strong>${esc(t('today.sourcesStale', { n: unhealthy.length }))}</strong><p>${esc(t('today.sourcesStaleHint'))}</p></div>${icon('chevron')}</button>` : ''}
-      ${heroStatus(plan)}
+      ${nothingYet ? `<section class="section">${capture}<p class="help pad">${esc(t('today.firstHint'))}</p></section>` : heroStatus(plan, data.tasks || [])}
 
-      <section class="section">
+      <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}
-        ${first ? nowCard(first, tasks.get(first.task_id), plan) : empty(
+        ${first ? nowCard(first, tasks.get(first.task_id), plan) : nothingYet ? '' : empty(
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothing') : t('today.resolveFirst'),
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothingHint') : t('today.resolveFirstHint'),
           plan.feasibility_status === 'FEASIBLE' ? 'check' : 'question',
@@ -142,7 +160,7 @@ export default {
         ${sectionHead(t('today.needsRefinement'))}
         <div class="list">${data.needs_refinement.map((x) => `<button class="row" data-action="open-task" data-id="${esc(x.id)}">
           <span class="row-main"><strong>${esc(x.title)}</strong><small>${esc(t('today.needsEstimate'))}</small></span>
-          ${chip(code('status', 'DRAFT'), 'warn')}
+          ${icon('chevron')}
         </button>`).join('')}</div>
       </section>` : ''}
 
@@ -161,7 +179,6 @@ export default {
         ${events.length ? `<div class="list">${events.map((e) => `<button class="row" data-action="open-event" data-id="${esc(e.id)}">
           <span class="row-time"><strong>${esc(fmtTime(e.starts_at))}</strong><small>${esc(fmtTime(e.ends_at))}</small></span>
           <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(code('attendance', e.attendance_policy))}${e.location_effect.kind !== 'NONE' ? ` · ${esc(code('location', e.location_effect.kind))}` : ''}</small></span>
-          ${chip(code('own', 'CANONICAL'), 'canonical')}
         </button>`).join('')}</div>` : `<p class="muted pad">${esc(t('today.noEvents'))}</p>`}
       </section>
 
@@ -191,12 +208,16 @@ export default {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
       if (task) await lifecycle(task.id, task.version, 'complete');
     },
+    'reschedule-task'(el, ctx) {
+      const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
+      if (task) rescheduleSheet(task);
+    },
     async 'defer-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
       if (!task) return;
       const until = new Date(now().getTime() + 60 * 60000).toISOString();
       await mutate(async () => {
-        const result = await queueOperation('task.defer', task.id, { until }, { optimisticTask: { ...task, actionable_from: until } });
+        const result = await queueOperation('task.defer', task.id, { until }, { optimisticTask: { ...task, actionable_from: until, remind_at: until } });
         return result.entity || result;
       }, { success: t('today.deferred') });
     },

@@ -1,0 +1,655 @@
+{
+ "now": "2026-09-23T10:00:00+03:00",
+ "timezone": "Europe/Moscow",
+ "cases": [
+  {
+   "text": "В пятницу к шести сдать лабораторную по физике, займёт часа два, это важно",
+   "expect": {
+    "title": "Сдать лабораторную по физике",
+    "estimated_total_effort_minutes": 120,
+    "importance": "HIGH",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-09-25 18:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Завтра вечером сделать домашку по матану",
+   "expect": {
+    "title": "Сделать домашку по матану",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "ABSENT",
+    "target_at": "2026-09-24 22:00",
+    "actionable_from": "2026-09-24 18:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Через неделю экзамен, надо подготовиться часа три",
+   "expect": {
+    "title": "Подготовиться к экзамену",
+    "estimated_total_effort_minutes": 180,
+    "importance": "NORMAL",
+    "category": "EXAM",
+    "cutoff": "KNOWN 2026-09-30 09:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Напомни завтра вечером отправить отчёт",
+   "expect": {
+    "title": "Отправить отчёт",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "WORK",
+    "cutoff": "ABSENT",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": "2026-09-24 19:00",
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Submit physics lab by Friday 6pm, takes about 2 hours, important",
+   "expect": {
+    "title": "Submit physics lab",
+    "estimated_total_effort_minutes": 120,
+    "importance": "HIGH",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-09-25 18:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Remind me tomorrow morning to call the dentist",
+   "expect": {
+    "title": "Call the dentist",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "PERSONAL_APPOINTMENT",
+    "cutoff": "ABSENT",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": "2026-09-24 09:00",
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "купить молоко",
+   "expect": {
+    "title": "Купить молоко",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "ERRAND",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes",
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "прочитать главу 30 минут",
+   "expect": {
+    "title": "Прочитать главу",
+    "estimated_total_effort_minutes": 30,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "реферат по истории до 1 октября 23:59, 4 часа, по частям",
+   "expect": {
+    "title": "Реферат по истории",
+    "estimated_total_effort_minutes": 240,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-10-01 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "в 15:00 позвонить маме на полчаса",
+   "expect": {
+    "title": "Позвонить маме",
+    "estimated_total_effort_minutes": 30,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "ABSENT",
+    "target_at": "2026-09-23 15:30",
+    "actionable_from": "2026-09-23 15:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Эссе по английскому к понедельнику, полтора часа",
+   "expect": {
+    "title": "Эссе по английскому",
+    "estimated_total_effort_minutes": 90,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-09-28 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "через 2 часа выйти из дома",
+   "expect": {
+    "title": "Выйти из дома",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "ABSENT",
+    "target_at": null,
+    "actionable_from": "2026-09-23 12:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "дз по алгебре к 10.10",
+   "expect": {
+    "title": "Дз по алгебре",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-10-10 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "задача: Прочитать главу 30 min",
+   "expect": {
+    "title": "Прочитать главу",
+    "estimated_total_effort_minutes": 30,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "Finish essay in 3 days, 90 min",
+   "expect": {
+    "title": "Finish essay",
+    "estimated_total_effort_minutes": 90,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-09-26 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "сдать курсач 15 октября",
+   "expect": {
+    "title": "Сдать курсач",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-10-15 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "лаба по химии в среду к 12:00, 3ч",
+   "expect": {
+    "title": "Лаба по химии",
+    "estimated_total_effort_minutes": 180,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-09-23 12:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "английский завтра в 19:00 на 45 минут",
+   "expect": {
+    "title": "Английский",
+    "estimated_total_effort_minutes": 45,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "ABSENT",
+    "target_at": "2026-09-24 19:45",
+    "actionable_from": "2026-09-24 19:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Прочитать статью 20 мин не срочно",
+   "expect": {
+    "title": "Прочитать статью",
+    "estimated_total_effort_minutes": 20,
+    "importance": "LOW",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "позвонить в деканат сегодня до 17",
+   "expect": {
+    "title": "Позвонить в деканат",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "ADMIN",
+    "cutoff": "KNOWN 2026-09-23 17:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Remind me at 8pm to take out the trash",
+   "expect": {
+    "title": "Take out the trash",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "ABSENT",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": "2026-09-23 20:00",
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Read chapter 5 tonight 45min",
+   "expect": {
+    "title": "Read chapter 5",
+    "estimated_total_effort_minutes": 45,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "ABSENT",
+    "target_at": "2026-09-23 22:00",
+    "actionable_from": "2026-09-23 18:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "exam on October 3, prepare 6 hours",
+   "expect": {
+    "title": "Prepare for exam",
+    "estimated_total_effort_minutes": 360,
+    "importance": "NORMAL",
+    "category": "EXAM",
+    "cutoff": "KNOWN 2026-10-03 09:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Weekly report due tomorrow at noon",
+   "expect": {
+    "title": "Weekly report",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "WORK",
+    "cutoff": "KNOWN 2026-09-24 12:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "решить 10 задач по матану",
+   "expect": {
+    "title": "Решить 10 задач по матану",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes",
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "Сделать презентацию к 9:00",
+   "expect": {
+    "title": "Сделать презентацию",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-09-24 09:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "через 3 дня экзамен по матанализу, подготовиться 4 часа",
+   "expect": {
+    "title": "Подготовиться к экзамену по матанализу",
+    "estimated_total_effort_minutes": 240,
+    "importance": "NORMAL",
+    "category": "EXAM",
+    "cutoff": "KNOWN 2026-09-26 09:00",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "в пятницу сделать проект",
+   "expect": {
+    "title": "Сделать проект",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "WORK",
+    "cutoff": "ABSENT",
+    "target_at": "2026-09-25 23:59",
+    "actionable_from": "2026-09-25 00:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "до конца недели оплатить общежитие",
+   "expect": {
+    "title": "Оплатить общежитие",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "ADMIN",
+    "cutoff": "KNOWN 2026-09-27 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "подготовить доклад к семинару на следующей неделе, 2 часа",
+   "expect": {
+    "title": "Подготовить доклад к семинару",
+    "estimated_total_effort_minutes": 120,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "ABSENT",
+    "target_at": "2026-10-04 23:59",
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Очень срочно! отправить заявление в деканат до 16:30",
+   "expect": {
+    "title": "Отправить заявление в деканат",
+    "estimated_total_effort_minutes": null,
+    "importance": "CRITICAL",
+    "category": "ADMIN",
+    "cutoff": "KNOWN 2026-09-23 16:30",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Написать эссе без дедлайна, 1 ч 30 мин",
+   "expect": {
+    "title": "Написать эссе",
+    "estimated_total_effort_minutes": 90,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "ABSENT",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Посмотреть лекцию по линалу 1.5h",
+   "expect": {
+    "title": "Посмотреть лекцию по линалу",
+    "estimated_total_effort_minutes": 90,
+    "importance": "NORMAL",
+    "category": "LESSON",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "Сделать курсовую к 5 октября, займёт 10 часов",
+   "expect": {
+    "title": "Сделать курсовую",
+    "estimated_total_effort_minutes": 600,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "KNOWN 2026-10-05 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Прибраться в комнате за один раз 2 часа",
+   "expect": {
+    "title": "Прибраться в комнате",
+    "estimated_total_effort_minutes": 120,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "Подготовить слайды к защите в следующий вторник, 3 часа",
+   "expect": {
+    "title": "Подготовить слайды к защите",
+    "estimated_total_effort_minutes": 180,
+    "importance": "NORMAL",
+    "category": "HOMEWORK",
+    "cutoff": "ABSENT",
+    "target_at": "2026-10-06 23:59",
+    "actionable_from": "2026-10-06 00:00",
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Take out the trash",
+   "expect": {
+    "title": "Take out the trash",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes",
+     "actual_cutoff"
+    ]
+   }
+  },
+  {
+   "text": "Call mom at 7",
+   "expect": {
+    "title": "Call mom",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "MEETING",
+    "cutoff": "ABSENT",
+    "target_at": null,
+    "actionable_from": "2026-09-23 19:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Buy groceries tomorrow",
+   "expect": {
+    "title": "Buy groceries",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "ERRAND",
+    "cutoff": "ABSENT",
+    "target_at": "2026-09-24 23:59",
+    "actionable_from": "2026-09-24 00:00",
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes"
+    ]
+   }
+  },
+  {
+   "text": "Project report due Oct 12, about 5 hours, not urgent",
+   "expect": {
+    "title": "Project report",
+    "estimated_total_effort_minutes": 300,
+    "importance": "LOW",
+    "category": "WORK",
+    "cutoff": "KNOWN 2026-10-12 23:59",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": true,
+    "unresolved": []
+   }
+  }
+ ]
+}

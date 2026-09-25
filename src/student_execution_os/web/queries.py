@@ -282,7 +282,7 @@ class UiService:
             }
 
     @staticmethod
-    def _task(task, *, risk=None, effective=None) -> dict[str, Any]:
+    def _task(task, *, risk=None, effective=None, remind_at: datetime | None = None) -> dict[str, Any]:
         cutoff = task.actual_cutoff
         return {
             "id": task.obligation.id,
@@ -306,6 +306,8 @@ class UiService:
             "started_at": _jsonify(task.started_at),
             "last_progress_at": _jsonify(task.last_progress_at),
             "completed_at": _jsonify(task.obligation.completed_at),
+            "created_at": _jsonify(task.obligation.created_at),
+            "remind_at": _jsonify(remind_at),
             "actual_cutoff": {
                 "state": cutoff.state.value,
                 "at": _jsonify(cutoff.at),
@@ -388,12 +390,14 @@ class UiService:
             )
             risks = {r.task_id: r for r in outcome.risks}
             reconciliation = SQLiteReconciliationRepository(repo)
+            reminders = ReminderStore(repo).pending_reminders(self.account_id)
             tasks = []
             for task in snapshot.tasks:
                 tasks.append(self._task(
                     task,
                     risk=risks.get(task.obligation.id),
                     effective=reconciliation.get_effective_cutoff(self.account_id, task.obligation.id),
+                    remind_at=reminders.get(task.obligation.id),
                 ))
             events = [self._event(e) for e in snapshot.events]
             transitions = []
@@ -422,7 +426,8 @@ class UiService:
                     "expires_at": None if estimate_rows is None else estimate_rows[3],
                     "source": None if estimate_rows is None else estimate_rows[4],
                 })
-            all_tasks = [self._task(task) for task in SQLitePlanningStateSource(repo).list_tasks(self.account_id)]
+            all_tasks = [self._task(task, remind_at=reminders.get(task.obligation.id))
+                         for task in SQLitePlanningStateSource(repo).list_tasks(self.account_id)]
             needs_refinement = [task for task in all_tasks if task["status"] == "DRAFT"]
             active_tasks = {task["id"]: task for task in tasks}
             now = self._now()
@@ -539,11 +544,13 @@ class UiService:
                 risks = {r.task_id: r for r in PlanningService().build(snapshot, now=self._now()).risks}
             except Exception:
                 risks = {}
+            reminders = ReminderStore(repo).pending_reminders(self.account_id)
             return [
                 self._task(
                     task,
                     risk=risks.get(task.obligation.id),
                     effective=reconciliation.get_effective_cutoff(self.account_id, task.obligation.id),
+                    remind_at=reminders.get(task.obligation.id),
                 )
                 for task in source.list_tasks(self.account_id)
             ]
@@ -637,7 +644,7 @@ class UiService:
     def register_device(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
             return ReminderStore(repo).register_device(
-                self.account_id, str(payload.get("token", "")), payload.get("label")
+                self.account_id, str(payload.get("token", "")), payload.get("label"), payload.get("capabilities"),
             )
 
     def revoke_device(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -909,7 +916,7 @@ class UiService:
             store = ReminderStore(repo)
             item = store.message(self.account_id, notification_id)
             for task_id in item["task_ids"]:
-                store.touch(self.account_id, task_id, self._now(), snooze_until=until)
+                store.touch(self.account_id, task_id, self._now(), snooze_until=until, remind_at=until)
             store.mark_acted(self.account_id, notification_id, "SNOOZE", self._now())
             return store.message(self.account_id, notification_id)
 

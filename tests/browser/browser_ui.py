@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime, timedelta
 import mimetypes
 import os
 import tempfile
@@ -64,6 +65,8 @@ class BrowserUiTest(unittest.TestCase):
         }
         self.posts: list[tuple[str, dict]] = []
         self.overrides: dict[tuple[str, str], tuple[int, dict]] = {}
+        self.offline: set[tuple[str, str]] = set()
+        self.config_js: str | None = None
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -80,6 +83,9 @@ class BrowserUiTest(unittest.TestCase):
         if path == "/" or not path.startswith(("/api/", "/assets/")):
             route.fulfill(status=200, content_type="text/html", body=(STATIC / "index.html").read_text())
             return
+        if path == "/assets/config.js" and self.config_js is not None:
+            route.fulfill(status=200, content_type="text/javascript", body=self.config_js)
+            return
         if path.startswith("/assets/"):
             file = STATIC / path.removeprefix("/assets/")
             if not file.is_file():
@@ -89,6 +95,9 @@ class BrowserUiTest(unittest.TestCase):
             route.fulfill(status=200, content_type=ctype, body=file.read_text())
             return
         payload = json.loads(request.post_data or "{}") if request.method != "GET" else {}
+        if (request.method, path) in self.offline:
+            route.abort("internetdisconnected")
+            return
         if request.method != "GET":
             self.posts.append((path, payload))
         override = self.overrides.get((request.method, path))
@@ -114,6 +123,10 @@ class BrowserUiTest(unittest.TestCase):
                 if operation["type"] == "task.create":
                     entity = {"kind": "TASK", "id": operation["entity_id"], **operation["payload"],
                               "status": "DRAFT" if operation["payload"].get("estimated_total_effort_minutes") is None else "ACTIVE", "version": 1}
+                else:
+                    known = next((t for t in self.responses["/api/v1/tasks"] if t["id"] == operation["entity_id"]), None)
+                    if known is not None:
+                        entity = {**known, "kind": "TASK", **{k: v for k, v in operation["payload"].items() if k != "reminder_message_id"}}
                 results.append({**operation, "status": "APPLIED", "entity": entity, "replayed": False})
             reply(200, {"results": results, "server_revision": 1})
         elif path in self.responses and request.method == "GET":
@@ -122,7 +135,8 @@ class BrowserUiTest(unittest.TestCase):
             reply(404, {"error": {"code": "NOT_FOUND", "message": "not mocked"}})
 
     def _open(self, *, width=390, height=844, locale="en", theme="system", hash_="") -> object:
-        page = self.browser.new_page(viewport={"width": width, "height": height}, reduced_motion="reduce")
+        page = self.browser.new_page(viewport={"width": width, "height": height}, reduced_motion="reduce",
+                                     timezone_id="Europe/Moscow")
         self.page_errors: list[str] = []
         page.on("pageerror", lambda e: self.page_errors.append(str(e)))
         page.add_init_script(
@@ -156,27 +170,37 @@ class BrowserUiTest(unittest.TestCase):
 
     # ---- tests ---------------------------------------------------------------------
 
+    # Words that belong to the architecture, not to a student's screen.
+    INTERNAL = ("CANONICAL", "Canonical", "DERIVED", "Derived", "FEASIBLE", "policy_version", "expected_version",
+                "evidence_ids", "CREATE_TASK", "entity_ref", "field_path", "estimated_total_effort", "actual_cutoff",
+                "Schema", "schema", "worker", "provider", "Revision", "revision", "PENDING", "deterministic")
+
+    def _assert_human(self, text: str, where: str) -> None:
+        for word in self.INTERNAL:
+            self.assertNotIn(word, text, f"{word!r} leaked into {where}")
+        self.assertNotRegex(text, r"[{}]\s*\"", f"JSON leaked into {where}")
+
     def test_phone_today_plan_and_tab_navigation(self):
         page = self._open()
         self._ready(page, "today")
         self.assertTrue(page.locator(".tabbar").is_visible())
         self.assertTrue(page.locator(".fab").is_visible())
         today = self._text(page)
-        status = self.responses["/api/v1/today"]["plan"]["feasibility_status"]
-        self.assertIn(status, today)
+        self.assertIn("Everything fits", today)
+        self.assertIn("status-feasible", page.locator(".hero-status").get_attribute("class"))
         self.assertIn("leave by", today.lower())
         self.assertIn("HOME", today)
         self.assertIn("HSE", today)
+        self._assert_human(today, "Today")
         self._assert_no_horizontal_scroll(page, 390)
         self._screenshot(page, "mobile-today.png")
 
         page.locator('.tabbar [data-nav="plan"]').click()
         self._ready(page, "plan")
         plan = self._text(page)
-        self.assertIn("Canonical", plan)
-        self.assertIn("Derived", plan)
+        self._assert_human(plan, "Plan")
         self.assertTrue(page.locator(".mobile-agenda").is_visible())
-        # Canonical facts and derived projections keep separate visual classes.
+        # Events, travel and buffers keep separate visual classes (no ownership jargon).
         self.assertGreater(page.locator(".agenda-item.canonical").count(), 0)
         self.assertGreater(page.locator(".agenda-item.travel").count(), 0)
         self.assertGreater(page.locator(".agenda-item.buffer").count(), 0)
@@ -185,8 +209,8 @@ class BrowserUiTest(unittest.TestCase):
         page.locator(".agenda-item.travel").first.click()
         sheet = page.locator("dialog.sheet[open]")
         sheet.wait_for()
-        self.assertIn("travel transition", sheet.inner_text().lower())
-        self.assertIn("cannot be edited directly", sheet.inner_text())
+        self.assertIn("I picked this time myself", sheet.inner_text())
+        self._assert_human(sheet.inner_text(), "plan item sheet")
         page.keyboard.press("Escape")
         self._assert_no_horizontal_scroll(page, 390)
         self._screenshot(page, "mobile-plan.png")
@@ -198,37 +222,47 @@ class BrowserUiTest(unittest.TestCase):
 
         page.locator('.tabbar [data-nav="more"]').click()
         self._ready(page, "more")
+        more = self._text(page)
+        self.assertNotIn("Assistant", more)
+        self.assertNotIn("Sources", more)
         page.locator('.menu-row[data-nav="calendar"]').click()
         self._ready(page, "calendar")
         calendar = self._text(page)
         self.assertIn("Daily planning review", calendar)
-        self.assertIn("Canonical rule", calendar)
-        self.assertIn("Derived occurrence", calendar)
+        self.assertIn("Every day", calendar)
+        self.assertNotIn("FREQ=", calendar)
+        self._assert_human(calendar, "Calendar")
         self.assertTrue(page.locator("#back-button").is_visible())
         self.assertEqual(self.page_errors, [])
         page.close()
 
-    def test_feasibility_states_are_distinct(self):
-        for status, css_class, expected in (
-            ("FEASIBLE", "status-feasible", "concrete legal witness"),
-            ("UNKNOWN", "status-unknown", "cannot prove feasibility"),
-            ("INFEASIBLE", "status-infeasible", "hard contradiction"),
+    def test_plan_states_are_explained_in_plain_words(self):
+        tasks = self.responses["/api/v1/today"]["tasks"]
+        for status, css_class, reasons, expected in (
+            ("FEASIBLE", "status-feasible", [], "fits into your schedule"),
+            ("UNKNOWN", "status-unknown", [f"UNKNOWN_HARD_CUTOFF:{tasks[0]['id']}"], f"when “{tasks[0]['title']}” is due"),
+            ("INFEASIBLE", "status-infeasible", ["HARD_CUTOFF_PASSED"], "doesn't fit your free time"),
         ):
             original = self.responses["/api/v1/today"]
             scenario = copy.deepcopy(original)
             scenario["plan"]["feasibility_status"] = status
-            scenario["plan"]["explanations"] = [] if status == "FEASIBLE" else ["HARD_CUTOFF_PASSED"]
+            scenario["plan"]["explanations"] = reasons
             self.responses["/api/v1/today"] = scenario
             page = self._open(width=1024, height=800)
             self._ready(page, "today")
             hero = page.locator(".hero-status").first
-            self.assertIn(status, hero.inner_text())
             self.assertIn(css_class, hero.get_attribute("class"))
-            self.assertIn(expected, hero.inner_text().lower())
+            self.assertIn(expected, hero.inner_text())
+            self.assertNotIn(status, hero.inner_text())
+            self.assertNotIn("UNKNOWN_HARD_CUTOFF", hero.inner_text())
+            if status == "UNKNOWN":
+                hero.locator('[data-action="open-task"]').click()
+                self._ready(page, "task")
+                self.assertIn(tasks[0]["title"], self._text(page))
             page.close()
             self.responses["/api/v1/today"] = original
 
-    def test_task_detail_provenance_progress_and_version_conflict(self):
+    def test_task_detail_is_human_and_progress_conflict_is_visible(self):
         page = self._open()
         self._ready(page, "today")
         page.locator('.tabbar [data-nav="tasks"]').click()
@@ -237,13 +271,15 @@ class BrowserUiTest(unittest.TestCase):
         page.locator('.task-card', has_text="Algorithms worksheet").click()
         self._ready(page, "task")
         detail = self._text(page)
-        self.assertIn("Overridden", detail)
+        self.assertIn("Deadline", detail)
+        self.assertNotIn("Version", detail)
+        self._assert_human(detail, "task detail")
         page.locator("#back-button").click()
         self._ready(page, "tasks")
 
         page.locator('.task-card', has_text="Compiler report").click()
         self._ready(page, "task")
-        self.assertIn("Conflict", self._text(page))
+        self.assertIn("sources disagree", self._text(page))
         task = next(t for t in self.responses["/api/v1/tasks"] if t["id"] == "conflict-task")
         self.overrides[("POST", "/api/v1/sync")] = (
             409, {"error": {"code": "VERSION_CONFLICT", "message": "stale", "retryable": False}},
@@ -259,41 +295,98 @@ class BrowserUiTest(unittest.TestCase):
         self._ready(page, "task")
         page.close()
 
-    def test_settings_notifications_evidence_places_and_assistant(self):
+    def test_edit_and_reschedule_send_real_changes(self):
+        task = next(t for t in self.responses["/api/v1/tasks"] if t["title"].startswith("Discrete"))
+        page = self._open()
+        self._ready(page, "today")  # aligns the client clock with the fixture's "now"
+        page.evaluate(f"location.hash = '#/task/{task['id']}'")
+        self._ready(page, "task")
+        page.locator('[data-action="detail-edit"]').click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.wait_for()
+        sheet.locator('[data-f="title"]').fill("Discrete homework — set 4")
+        importance = "CRITICAL" if task["importance"] == "HIGH" else "HIGH"
+        sheet.locator(f'[data-chip-group="f-importance"] [data-value="{importance}"]').click()
+        sheet.locator('[data-f="category"]').select_option("EXAM")
+        sheet.locator("[data-save]").click()
+        page.locator(".toast").first.wait_for()
+        path, payload = self.posts[-1]
+        operation = payload["operations"][0]
+        self.assertEqual((path, operation["type"]), ("/api/v1/sync", "task.update"))
+        self.assertEqual(operation["payload"], {"title": "Discrete homework — set 4", "importance": importance, "category": "EXAM"})
+
+        # "Reschedule" moves the deadline by a day with one tap …
+        self._ready(page, "task")
+        page.locator('[data-action="detail-reschedule"]').click()
+        page.locator('dialog.sheet[open] [data-deadline="d1"]').click()
+        page.locator(".toast").first.wait_for()
+        operation = self.posts[-1][1]["operations"][0]
+        self.assertEqual(operation["type"], "task.update")
+        old = datetime.fromisoformat(task["actual_cutoff"]["at"])
+        new = datetime.fromisoformat(operation["payload"]["actual_cutoff"]["at"].replace("Z", "+00:00"))
+        self.assertEqual(new - old, timedelta(days=1))
+        # … and "later" puts the task off with a reminder at that moment.
+        self._ready(page, "task")
+        page.locator('[data-action="detail-reschedule"]').click()
+        page.locator('dialog.sheet[open] [data-later="morning"]').click()
+        page.locator(".toast").first.wait_for()
+        operation = self.posts[-1][1]["operations"][0]
+        self.assertEqual(operation["type"], "task.defer")
+        self.assertTrue(operation["payload"]["until"].endswith("06:00:00.000Z"))  # 09:00 Moscow
+        # A notification's "Reschedule" button deep-links straight into this sheet.
+        self._go(page, "today")
+        page.evaluate(f"location.hash = '#/task/{task['id']}?step=reschedule'")
+        page.locator('dialog.sheet[open] [data-deadline="d3"]').wait_for()
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_settings_notifications_and_places(self):
         page = self._open(width=1280, height=900)
         self._ready(page, "today")
         # Wide screens show every section in the side rail.
         self.assertTrue(page.locator('.tabbar .tab[data-nav="settings"]').is_visible())
         self.assertFalse(page.locator('.tabbar .tab[data-nav="more"]').is_visible())
+        self.assertEqual(page.locator('.tabbar .tab[data-nav="evidence"]').count(), 0)
 
         page.locator('.tabbar [data-nav="settings"]').click()
         self._ready(page, "settings")
         settings = self._text(page)
         self.assertIn("includes private account data", settings)
-        self.assertIn("30 days", settings)
+        self._assert_human(settings, "Settings")
         self.assertTrue(page.get_by_role("button", name="Download account export").is_visible())
+        # Diagnostics stay available under Advanced.
+        page.locator("[data-advanced] summary").click()
+        self.assertIn("Schema", self._text(page))
+        page.locator('[data-advanced] [data-nav="evidence"]').click()
+        self._ready(page, "evidence")
+        self.assertIn("Conflict", self._text(page))
+        self._go(page, "settings")
         page.locator('[data-action="account-delete-preview"]').click()
         sheet = page.locator("dialog.sheet[open]")
         sheet.wait_for()
         text = sheet.inner_text()
         self.assertIn("Delete account permanently", text)
-        self.assertIn("Type the exact account id", text)
         self.assertIn("not a recoverable copy", text)
+        self.assertNotIn("policy", text.lower())
         page.get_by_role("button", name="Keep account", exact=True).click()
 
         page.locator('.tabbar [data-nav="notifications"]').click()
         self._ready(page, "notifications")
-        self.assertIn("PENDING", self._text(page))
+        inbox = self._text(page)
+        self._assert_human(inbox, "Notifications")
+        reminder = self.responses["/api/v1/notifications"][0]
         page.locator('[data-action="snooze-notification"]').first.click()
-        self.assertIn("Only the reminder time changes", page.locator("dialog.sheet[open]").inner_text())
-        page.keyboard.press("Escape")
-
-        page.locator('.tabbar [data-nav="evidence"]').click()
-        self._ready(page, "evidence")
-        evidence = self._text(page)
-        self.assertIn("Stale", evidence)
-        self.assertIn("Conflict", evidence)
-        self.assertIn("Overridden", evidence)
+        sheet = page.locator("dialog.sheet[open]")
+        self.assertIn("comes back at the chosen time", sheet.inner_text())
+        sheet.locator('[data-value="30"]').click()
+        sheet.locator("[data-save]").click()
+        page.locator(".toast").first.wait_for()
+        path, payload = self.posts[-1]
+        operation = payload["operations"][0]
+        # Snooze goes through the offline queue and names the reminder it answers.
+        self.assertEqual((path, operation["type"]), ("/api/v1/sync", "reminder.snooze"))
+        self.assertEqual(operation["entity_id"], reminder["task_ids"][0])
+        self.assertEqual(operation["payload"]["reminder_message_id"], reminder["id"])
 
         page.locator('.tabbar [data-nav="places"]').click()
         self._ready(page, "places")
@@ -302,17 +395,26 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("HSE", places)
         self.assertNotIn("Secret exact address", page.content())
         self.assertNotIn("55.75", page.content())
+        # The old technical Assistant screen is gone; its link lands on Today.
+        page.evaluate("location.hash = '#/assistant'")
+        self._ready(page, "today")
+        self.assertEqual(self.page_errors, [])
+        page.close()
 
-        page.locator('.tabbar [data-nav="assistant"]').click()
-        self._ready(page, "assistant")
-        page.locator('[data-action="agent-preview"]').click()
-        sheet = page.locator("dialog.sheet[open]")
-        sheet.wait_for()
-        modal = sheet.inner_text()
-        self.assertIn("Confirm destructive action", modal)
-        self.assertIn("Scope: one obligation", modal)
-        self.assertIn("Source/imported text is not authorization", modal)
-        self._screenshot(page, "desktop-agent-confirm.png")
+    def test_navigating_with_an_open_sheet_closes_it_instead_of_freezing(self):
+        # Regression: <dialog> closes asynchronously and closeAllSheets() spun forever.
+        page = self._open()
+        self._ready(page, "today")
+        self._go(page, "plan")
+        page.locator(".agenda-item.work").first.click()
+        page.locator("dialog.sheet[open] [data-close-sheet]").click()
+        self._ready(page, "task")
+        self.assertEqual(page.locator("dialog[open]").count(), 0)
+        page.locator(".fab").click()
+        page.locator("dialog.sheet[open] #capture-text").wait_for()
+        page.evaluate("location.hash = '#/tasks'")
+        self._ready(page, "tasks")
+        self.assertEqual(page.locator("dialog[open]").count(), 0)
         self.assertEqual(self.page_errors, [])
         page.close()
 
@@ -345,25 +447,78 @@ class BrowserUiTest(unittest.TestCase):
             self.assertEqual(self.page_errors, [])
             page.close()
 
-    def test_title_only_quick_capture_keeps_effort_unknown_and_non_splittable(self):
+    def test_spoken_style_sentence_becomes_a_task_card_and_create_sends_every_field(self):
+        from student_execution_os.agent.nlparse import parse_task
+
+        phrase = "В пятницу к шести сдать лабораторную по физике, займёт часа два, это важно"
         page = self._open(width=360, height=800, locale="ru")
         self._ready(page, "today")
         page.locator(".fab").click()
-        page.locator('[data-choice="task"]').click()
-        title = page.locator('[data-f="title"]')
-        title.fill("Уточнить тему")
-        self.assertTrue(title.evaluate("el => el === document.activeElement"))
-        page.locator("dialog.sheet[open] [data-save]").click()
+        sheet = page.locator("dialog.sheet[open]")
+        self.assertIn("Что нужно сделать?", sheet.inner_text())
+        sheet.locator("#capture-text").fill(phrase)
+        card = sheet.locator(".capture-card")
+        card.wait_for()
+        text = card.inner_text()
+        self.assertIn("Сдать лабораторную по физике", text)
+        self.assertIn("~2 ч", text)
+        self.assertIn("Важно", text)
+        self.assertIn("18:00", text)
+        self.assertEqual(card.locator(".question").count(), 0)
+        self._assert_human(sheet.inner_text(), "capture sheet")
+        self._screenshot(page, "mobile-capture.png")
+        sheet.locator("[data-create]").click()
         page.locator(".toast").first.wait_for()
         path, payload = self.posts[-1]
-        self.assertEqual(path, "/api/v1/sync")
         operation = payload["operations"][0]
-        self.assertEqual(operation["type"], "task.create")
-        self.assertIsNone(operation["payload"]["estimated_total_effort_minutes"])
-        self.assertIsNone(operation["payload"]["remaining_effort_minutes"])
-        self.assertFalse(operation["payload"]["splittable"])
-        self.assertEqual(operation["payload"]["actual_cutoff"], {"state": "UNKNOWN"})
+        self.assertEqual((path, operation["type"]), ("/api/v1/sync", "task.create"))
+        expected = parse_task(phrase, now=NOW, timezone_name="Europe/Moscow")
+        sent = operation["payload"]
+        self.assertEqual(sent["title"], expected["title"])
+        self.assertEqual(sent["estimated_total_effort_minutes"], 120)
+        self.assertEqual((sent["importance"], sent["category"], sent["splittable"]), ("HIGH", "HOMEWORK", True))
+        self.assertEqual(datetime.fromisoformat(sent["actual_cutoff"]["at"].replace("Z", "+00:00")),
+                         datetime.fromisoformat(expected["actual_cutoff"]["at"]))
+        self.assertEqual(sent["actual_cutoff"]["at"], "2026-09-25T15:00:00.000Z")
         self._assert_no_horizontal_scroll(page, 360)
+        page.close()
+
+    def test_missing_values_are_asked_as_questions_and_dont_know_is_allowed(self):
+        page = self._open(locale="en")
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("buy groceries")
+        sheet.locator(".question").first.wait_for()
+        self.assertIn("Roughly how long will it take?", sheet.inner_text())
+        self.assertIn("When is it due?", sheet.inner_text())
+        sheet.locator('[data-answer="effort"][data-value="30"]').click()
+        sheet.locator('[data-answer="deadline"][data-value="none"]').click()
+        self.assertEqual(sheet.locator(".question").count(), 0)
+        self.assertIn("~30m", sheet.locator(".capture-card").inner_text())
+        # Manual details stay available and win over the text.
+        sheet.locator("[data-more] summary").click()
+        sheet.locator('[data-f="description"]').fill("milk, bread")
+        sheet.locator('[data-f="description"]').dispatch_event("change")
+        sheet.locator("[data-create]").click()
+        page.locator(".toast").first.wait_for()
+        sent = self.posts[-1][1]["operations"][0]["payload"]
+        self.assertEqual(sent["title"], "Buy groceries")
+        self.assertEqual((sent["estimated_total_effort_minutes"], sent["actual_cutoff"]), (30, {"state": "ABSENT"}))
+        self.assertEqual((sent["category"], sent["description"]), ("ERRAND", "milk, bread"))
+
+        # "Don't know" for both: the task is still created (as a draft without a deadline).
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("tidy the room")
+        sheet.locator('[data-answer="effort"][data-value="unknown"]').click()
+        sheet.locator('[data-answer="deadline"][data-value="unknown"]').click()
+        sheet.locator("[data-create]").click()
+        page.locator(".toast").first.wait_for()
+        sent = self.posts[-1][1]["operations"][0]["payload"]
+        self.assertIsNone(sent["estimated_total_effort_minutes"])
+        self.assertEqual(sent["actual_cutoff"], {"state": "UNKNOWN"})
+        self.assertFalse(sent["splittable"])
         page.close()
 
         self.responses["/api/v1/tasks"] = []
@@ -372,24 +527,32 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("No obligations yet", self._text(page))
         page.close()
 
-    def test_compose_task_sheet_posts_canonical_payload(self):
-        page = self._open()
+    def test_capture_offline_is_saved_and_replayed_once_after_reconnect(self):
+        page = self._open(locale="en")
         self._ready(page, "today")
-        self.overrides.pop(("POST", "/api/v1/sync"), None)
+        self.offline.add(("POST", "/api/v1/sync"))
         page.locator(".fab").click()
-        page.locator('[data-choice="task"]').click()
-        page.fill('[data-f="title"]', "Essay")
-        page.locator('[data-chip-group="effort"] [data-value="90"]').click()
-        page.locator('[data-chip-group="deadline"] [data-value="ABSENT"]').click()
-        page.locator("dialog.sheet[open] [data-save]").click()
-        page.locator(".toast").first.wait_for()
-        path, payload = self.posts[-1]
-        self.assertEqual(path, "/api/v1/sync")
-        operation = payload["operations"][0]
-        self.assertEqual(operation["payload"]["title"], "Essay")
-        self.assertEqual(operation["payload"]["estimated_total_effort_minutes"], 90)
-        self.assertEqual(operation["payload"]["actual_cutoff"], {"state": "ABSENT"})
-        self.assertNotIn("account_id", operation)
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("Read chapter 5 tomorrow evening, 45 min")
+        sheet.locator(".capture-card").wait_for()
+        sheet.locator("[data-create]").click()
+        toast = page.locator(".toast").first
+        toast.wait_for()
+        self.assertIn("Saved on this phone", toast.inner_text())
+        queued = page.evaluate("Object.entries(localStorage).filter(([k]) => k.startsWith('seos.ops.')).map(([, v]) => JSON.parse(v)).flat()")
+        self.assertEqual(len(queued), 1)
+        operation = queued[0]["operation"]
+        self.assertEqual((operation["type"], operation["payload"]["estimated_total_effort_minutes"]), ("task.create", 45))
+        self.assertIsNotNone(operation["payload"]["actionable_from"])
+        # Back online: the same operation id is replayed exactly once.
+        self.offline.clear()
+        page.evaluate("window.dispatchEvent(new Event('online'))")
+        for _ in range(50):  # the page CSP forbids wait_for_function's string eval
+            if page.evaluate("Object.entries(localStorage).filter(([k]) => k.startsWith('seos.ops.')).every(([, v]) => JSON.parse(v).length === 0)"):
+                break
+            page.wait_for_timeout(100)
+        synced = [p for path, p in self.posts if path == "/api/v1/sync"]
+        self.assertEqual([op["op_id"] for p in synced for op in p["operations"]], [operation["op_id"]])
         page.close()
 
     def test_session_mode_login_flow_and_russian_locale(self):
@@ -403,7 +566,11 @@ class BrowserUiTest(unittest.TestCase):
         page.on("request", lambda r: seen_auth.append(r.headers.get("authorization")) if "/api/v1/today" in r.url else None)
         self._ready(page, "welcome")
         self.assertFalse(page.locator(".tabbar").is_visible())
-        self.assertIn("Войти", page.locator("#workspace").inner_text())
+        welcome = self._text(page)
+        self.assertIn("Напишите или скажите", welcome)
+        self.assertNotIn("сервер", welcome.lower())
+        page.locator('[data-chip-group="auth-mode"] [data-value="login"]').click()
+        self.assertIn("Войти", self._text(page))
         page.fill("input[name=login]", "student")
         page.fill("input[name=password]", "correct horse")
         page.locator("button[type=submit]").click()
@@ -419,16 +586,10 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("Today", page.locator(".tabbar").inner_text())
         page.close()
 
-    def test_native_first_launch_reaches_sign_in_after_server_probe(self):
-        # A fresh Android install has no stored server: the probed server stays a
-        # candidate until sign-in, and the welcome flow must still advance to sign-in.
-        self.health = {"status": "ok", "service": "student-execution-os", "auth_mode": "session",
-                       "registration_open": True, "api_version": 1, "sync_protocol": 1}
-        self.overrides[("POST", "/api/v1/auth/login")] = (200, {
-            "token": "fixture-token", "expires_at": "2026-10-21T09:00:00+00:00",
-            "user": {"login": "student", "account_id": ACCOUNT},
-        })
-        page = self.browser.new_page(viewport={"width": 390, "height": 844}, reduced_motion="reduce")
+    def _native_page(self):
+        page = self.browser.new_page(viewport={"width": 390, "height": 844}, reduced_motion="reduce", timezone_id="Europe/Moscow")
+        self.page_errors = []
+        page.on("pageerror", lambda e: self.page_errors.append(str(e)))
         page.add_init_script(
             "try { localStorage.setItem('seos.locale', 'en') } catch (e) {}\n"
             "const prefs = new Map();\n"
@@ -439,16 +600,57 @@ class BrowserUiTest(unittest.TestCase):
         )
         page.route(ORIGIN + "/**", self._handler)
         page.goto(f"{ORIGIN}/")
+        return page
+
+    def test_self_hosted_build_asks_for_the_server_then_signs_in(self):
+        # A build without a preset server: the probed server stays a candidate until
+        # sign-in, and the welcome flow must still advance to sign-in.
+        self.health = {"status": "ok", "service": "student-execution-os", "auth_mode": "session",
+                       "registration_open": True, "api_version": 1, "sync_protocol": 1}
+        self.overrides[("POST", "/api/v1/auth/login")] = (200, {
+            "token": "fixture-token", "expires_at": "2026-10-21T09:00:00+00:00",
+            "user": {"login": "student", "account_id": ACCOUNT},
+        })
+        page = self._native_page()
         self._ready(page, "welcome")
         page.fill("input[name=server]", ORIGIN)
         page.locator('[data-form="server"] button[type=submit]').click()
         page.wait_for_selector('[data-form="auth"]')
-        self.assertIn(ORIGIN, self._text(page))
+        self.assertIn("Another server", self._text(page))
+        page.locator('[data-chip-group="auth-mode"] [data-value="login"]').click()
         page.fill("input[name=login]", "student")
         page.fill("input[name=password]", "correct horse")
         page.locator('[data-form="auth"] button[type=submit]').click()
         self._ready(page, "today")
         self.assertEqual(page.evaluate("window.Capacitor.Plugins.Preferences.get({ key: 'seos.server' })"), {"value": ORIGIN})
+        page.close()
+
+    def test_consumer_build_starts_with_the_product_and_the_first_task(self):
+        # The build knows its server: no address step; sign-up leads straight to capture.
+        self.config_js = f"window.SEOS_CONFIG = {{ defaultServerUrl: '{ORIGIN}', pushEnabled: false }};"
+        self.health = {"status": "ok", "service": "student-execution-os", "auth_mode": "session",
+                       "registration_open": True, "api_version": 1, "sync_protocol": 1}
+        self.overrides[("POST", "/api/v1/auth/register")] = (201, {
+            "token": "fixture-token", "expires_at": "2026-10-21T09:00:00+00:00",
+            "user": {"login": "newbie", "account_id": ACCOUNT},
+        })
+        self.responses["/api/v1/today"] = {**self.responses["/api/v1/today"], "tasks": [], "needs_refinement": [], "next_actions": []}
+        page = self._native_page()
+        self._ready(page, "welcome")
+        welcome = self._text(page)
+        self.assertNotIn("Server address", welcome)
+        self.assertEqual(page.locator("input[name=server]").count(), 0)
+        self.assertIn("Type or say what you need to do", welcome)
+        self.assertEqual(page.locator('[data-chip-group="auth-mode"] .on').get_attribute("data-value"), "register")
+        page.fill("input[name=login]", "newbie")
+        page.fill("input[name=password]", "correct horse")
+        page.fill("input[name=password2]", "correct horse")
+        page.locator('[data-form="auth"] button[type=submit]').click()
+        self._ready(page, "today")
+        page.locator("dialog.sheet[open] #capture-text").wait_for()
+        self.assertEqual(page.evaluate("window.Capacitor.Plugins.Preferences.get({ key: 'seos.server' })"), {"value": ORIGIN})
+        self.assertIn(("/api/v1/auth/register", {"login": "newbie", "password": "correct horse", "device_label": "android"}), self.posts)
+        self.assertEqual(self.page_errors, [])
         page.close()
 
 

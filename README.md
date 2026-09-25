@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v12**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v13**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -56,6 +56,26 @@ The current MVP uses schema **v12**. Earlier passes established the canonical ta
 - the mobile client persists cached reads and pending task operations across restart, then reconnects with the same operation ids;
 - Assistant providers (OpenAI, Anthropic, and OpenAI-compatible) run server-side and can only return validated proposals that the user applies through the controlled action boundary;
 - Capacitor push and speech recognition are native dependencies, with degraded behavior when Firebase/LLM configuration is absent.
+
+Schema v13 makes the student flow the primary path: **"+" → "Что нужно сделать?" → text or
+voice → task card → Create**.
+
+- A deterministic RU/EN parser (`agent/nlparse.py`, mirrored on the device in
+  `web/static/js/nlparse.js` and held to the same fixtures) turns phrases like
+  "В пятницу к шести сдать лабораторную по физике, займёт часа два, это важно" into
+  deadline, effort, importance, category, work window, reminder and chunking — offline and
+  without an LLM. A configured LLM refines the card; its proposal is validated field by
+  field and applied through the same mapping as `task.create`, so nothing is dropped.
+- Missing values become questions on the card ("Сколько примерно займёт?" · 30 мин · 1 час ·
+  2 часа · Не знаю); "don't know" keeps the draft/unknown-deadline lifecycle.
+- Tasks can be fully edited and rescheduled; `remind_at` is an explicit reminder request.
+  Snooze (from the app or a notification) schedules the next reminder at that moment.
+- The Android app renders reminder pushes itself (data-only FCM for devices declaring
+  `reminder-actions-v1`) with working Start / Done / Snooze buttons that run as offline-safe
+  `/api/v1/sync` operations in WorkManager.
+- Expired Assistant previews (typed/dictated text) are deleted; operation logs and the
+  reminder inbox have retention windows (`reliability/retention.py`).
+- Technical details (schema, revisions, providers, sources) live under Settings → Advanced.
 
 The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 

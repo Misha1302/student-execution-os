@@ -1,16 +1,23 @@
 import { load } from '../store.js';
 import { api } from '../api.js';
 import { t, code, fmtTime, fmtDay, fmtDuration, fmtDateTime, dayKey, now } from '../i18n.js';
-import { esc, icon, chip, ownershipChip, kv, empty, openSheet, localInputValue, isoFromLocalInput, setBusy } from '../ui.js';
+import { esc, icon, chip, kv, empty, openSheet, localInputValue, isoFromLocalInput, setBusy } from '../ui.js';
 import { lifecycle, mutate } from '../actions.js';
 import { composers } from '../compose.js';
+
+// "FREQ=WEEKLY;INTERVAL=2;COUNT=16" → "раз в две недели, 16 раз".
+function ruleText(rule) {
+  const parts = Object.fromEntries(String(rule || '').split(';').map((p) => p.split('=')));
+  const every = parts.FREQ === 'DAILY' ? t('form.repeat.daily') : parts.INTERVAL === '2' ? t('form.repeat.biweekly') : t('form.repeat.weekly');
+  return parts.COUNT ? t('cal.ruleCount', { every, n: parts.COUNT }) : every;
+}
 
 function eventSheet(e) {
   const active = e.status === 'ACTIVE';
   const dialog = openSheet({
     eyebrow: e.location_effect.kind === 'MOVE' ? t('cal.bookedMove') : t('cal.fixedEvent'),
     title: e.title,
-    body: `<p>${ownershipChip('CANONICAL')} ${chip(code('status', e.status), active ? 'ok' : 'muted')}</p>
+    body: `<p>${chip(code('status', e.status), active ? 'ok' : 'muted')}</p>
       <dl class="kv-list">
         ${kv(t('plan.starts'), fmtDateTime(e.starts_at))}
         ${kv(t('plan.ends'), fmtDateTime(e.ends_at))}
@@ -45,12 +52,11 @@ function occurrenceSheet(o, template) {
   const dialog = openSheet({
     eyebrow: t('cal.occurrence'),
     title: template?.title || o.template_id,
-    body: `<p>${ownershipChip('DERIVED_OCCURRENCE')} ${o.override_id ? chip(t('cal.overridden'), 'warn') : ''}</p>
+    body: `${o.override_id ? `<p>${chip(t('cal.overridden'), 'warn')}</p>` : ''}
       <dl class="kv-list">
         ${kv(t('plan.starts'), fmtDateTime(o.starts_at))}
         ${kv(t('plan.ends'), fmtDateTime(o.ends_at))}
-        ${template ? kv(t('cal.rule'), `${template.recurrence_rule} · ${template.timezone_name}`) : ''}
-        ${kv(t('cal.identity'), o.original_recurrence_id)}
+        ${template ? kv(t('cal.rule'), ruleText(template.recurrence_rule)) : ''}
       </dl>
       <p class="help">${esc(t('cal.occurrenceHelp'))}</p>`,
     actions: `<button type="button" class="button danger ghost" data-skip>${esc(t('cal.skip'))}</button>`,
@@ -92,13 +98,10 @@ export default {
         <div class="list">${list.map(([it, i]) => `<button class="row" data-action="cal-item" data-index="${i}">
           <span class="row-time"><strong>${esc(fmtTime(it.at))}</strong><small>${esc(fmtTime(it.end))}</small></span>
           <span class="row-main"><strong>${esc(it.title)}</strong><small>${esc(it.kind === 'event' ? code('attendance', it.ref.attendance_policy) : t('cal.fromSeries'))}</small></span>
-          ${it.kind === 'event' ? ownershipChip('CANONICAL') : ownershipChip('DERIVED_OCCURRENCE')}
         </button>`).join('')}</div>
       </div>`).join('');
     const series = (data.recurring_templates || []).map((x) => `<div class="card series-card">
-      <div class="row-main"><strong>${esc(x.title)}</strong><small>${esc(x.dtstart_local)} · ${esc(fmtDuration(x.duration_minutes))}</small></div>
-      <p class="mono small">${esc(x.recurrence_rule)} · ${esc(x.timezone_name)}</p>
-      ${ownershipChip('CANONICAL_RULE')}
+      <div class="row-main"><strong>${esc(x.title)}</strong><small>${esc(ruleText(x.recurrence_rule))} · ${esc(fmtDateTime(x.dtstart_local))} · ${esc(fmtDuration(x.duration_minutes))}</small></div>
     </div>`).join('');
     return `
       <div class="quick-actions">

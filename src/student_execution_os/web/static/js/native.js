@@ -67,11 +67,38 @@ export class NativeError extends Error {
   constructor(code, message) { super(message || code); this.code = code; }
 }
 
-// Speech is text input only: the caller puts the transcript into an editable field
-// and nothing is interpreted or applied until the user submits it.
+const browserSpeech = () => (isNative() ? null : window.SpeechRecognition || window.webkitSpeechRecognition || null);
+
+export const voiceSupported = () => Boolean(plugin('SpeechRecognition') || browserSpeech());
+
+// Browsers with the Web Speech API (Chrome, Edge, Safari) dictate without the app.
+function browserSpeechToText(Recognition) {
+  return new Promise((resolve, reject) => {
+    const recognition = new Recognition();
+    recognition.lang = SPEECH_LOCALES[String(document.documentElement.lang || 'ru').slice(0, 2)] || 'ru-RU';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    let text = '';
+    recognition.onresult = (event) => { text = String(event.results?.[0]?.[0]?.transcript || ''); };
+    recognition.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') reject(new NativeError('VOICE_DENIED'));
+      else if (event.error === 'no-speech' || event.error === 'aborted') resolve('');
+      else reject(new NativeError('VOICE_FAILED', event.error));
+    };
+    recognition.onend = () => resolve(text.trim());
+    recognition.start();
+  });
+}
+
+// Speech is text input only: the transcript goes through the same capture parse and
+// card as typed text, and nothing is created until the user presses Create.
 export async function speechToText() {
   const speech = plugin('SpeechRecognition');
-  if (!speech) throw new NativeError('VOICE_UNAVAILABLE');
+  if (!speech) {
+    const Recognition = browserSpeech();
+    if (Recognition) return browserSpeechToText(Recognition);
+    throw new NativeError('VOICE_UNAVAILABLE');
+  }
   const available = await speech.available().catch(() => ({ available: false }));
   if (!available?.available) throw new NativeError('VOICE_UNAVAILABLE');
   let permission = await speech.checkPermissions().catch(() => null);
@@ -87,6 +114,21 @@ export async function speechToText() {
     throw new NativeError('VOICE_FAILED', String(err?.message || ''));
   }
   return String(result?.matches?.[0] || '').trim();
+}
+
+// Taps on notifications the app rendered itself (and their "Reschedule" button)
+// arrive as seos://open/<route> links: at cold start via getLaunchUrl, later as
+// appUrlOpen events. The route is handed to the router unchanged.
+export async function onAppLink(handler) {
+  const app = plugin('App');
+  if (!app) return;
+  const route = (url) => {
+    const match = /^seos:\/\/open\/(.+)$/.exec(String(url || ''));
+    if (match) handler(match[1]);
+  };
+  await app.addListener?.('appUrlOpen', ({ url }) => route(url));
+  const launch = await app.getLaunchUrl?.().catch(() => null);
+  if (launch?.url) route(launch.url);
 }
 
 export function pushEnabled() {

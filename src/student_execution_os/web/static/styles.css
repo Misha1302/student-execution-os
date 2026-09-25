@@ -420,6 +420,46 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="search"]), select, t
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
+/* ---- capture ---------------------------------------------------------------- */
+
+.capture { display: flex; flex-direction: column; gap: 12px; }
+.capture-input { position: relative; display: flex; align-items: flex-start; gap: 8px; }
+.capture-input textarea { font-size: 18px; min-height: 76px; line-height: 1.35; flex: 1; }
+.capture-input .mic { flex: none; width: 52px; height: 52px; border-radius: 16px; background: var(--accent-soft); color: var(--accent); }
+.capture-input .mic .icon { width: 26px; height: 26px; }
+.capture-input .mic.busy { background: var(--danger-soft); color: var(--danger); animation: pulse 1s ease-in-out infinite; }
+.capture-input .mic.busy::after { display: none; }
+@keyframes pulse { 50% { transform: scale(1.06); } }
+.capture-status { color: var(--text-3); font-size: 13px; }
+.capture-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: var(--radius); background: var(--surface-2); }
+.capture-title { font-size: 20px; font-weight: 750; overflow-wrap: anywhere; }
+.capture-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.fact { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px; border-radius: 12px; border: 0; background: var(--surface); text-align: left; }
+.fact-icon { flex: none; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; }
+.fact-icon .icon { width: 18px; height: 18px; }
+.fact-copy { display: flex; flex-direction: column; min-width: 0; }
+.fact-copy small { color: var(--text-3); font-size: 12px; }
+.fact-copy strong { font-size: 14px; overflow-wrap: anywhere; }
+.question { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--accent-soft); }
+.question strong { font-size: 15px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-row .chip-toggle { min-height: 40px; }
+.capture-other { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.capture-other .link { font-weight: 550; color: var(--text-2); }
+.capture-cta {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 18px; border: 0; text-align: left;
+  border-radius: var(--radius); background: linear-gradient(150deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #000));
+  color: var(--on-accent); box-shadow: var(--shadow);
+}
+.capture-cta-copy { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.capture-cta-copy strong { font-size: 19px; }
+.capture-cta-copy small { opacity: .85; font-size: 13.5px; }
+.capture-cta-icons { flex: none; width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: rgb(255 255 255 / 18%); }
+.question-card { box-shadow: inset 0 0 0 1.5px var(--warn-soft), var(--shadow); }
+.advice { display: flex; align-items: center; gap: 6px; color: var(--warn); font-weight: 650; font-size: 14px; }
+.advice .icon { width: 18px; height: 18px; }
+.pre { white-space: pre-line; }
+
 /* ---- sheets ---------------------------------------------------------------- */
 
 dialog.sheet {
@@ -456,6 +496,10 @@ dialog.sheet-full .sheet-frame { height: calc(100dvh - var(--safe-top) - 24px); 
 .welcome-card h1 { font-size: 28px; font-weight: 800; letter-spacing: -.01em; }
 .brand-mark.big { width: 64px; height: 64px; border-radius: 20px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); }
 .brand-mark.big .icon { width: 34px; height: 34px; }
+.welcome-lead { color: var(--text-2); font-size: 16px; }
+.welcome-points { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.welcome-points li { display: flex; gap: 10px; align-items: flex-start; color: var(--text-2); font-size: 14px; }
+.welcome-points .icon { flex: none; width: 20px; height: 20px; color: var(--accent); margin-top: 1px; }
 .welcome-locale { display: flex; justify-content: center; margin-top: 8px; }
 .welcome .link { align-self: center; font-weight: 500; font-size: 13px; color: var(--text-3); overflow-wrap: anywhere; }
 

@@ -18,6 +18,10 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _
 
 from .policy import ReminderPrefs, ReminderState, parse_clock
 
+# Client capabilities the server acts on (see migration 013).
+REMINDER_ACTIONS_CAPABILITY = "reminder-actions-v1"
+DEVICE_CAPABILITIES = frozenset({REMINDER_ACTIONS_CAPABILITY})
+
 MESSAGE_COLUMNS = (
     "id,stage,task_ids_json,title,body,deep_link,actions_json,created_at,delivery_state,attempts,"
     "last_error,sent_at,seen_at,acted_at,acted_action"
@@ -95,14 +99,15 @@ class ReminderStore:
             stages_sent=frozenset(json.loads(row["stages_sent_json"])),
             last_interaction_at=_dt(row["last_interaction_at"]), snoozed_until=_dt(row["snoozed_until"]),
             closed_reason=row["closed_reason"], next_check_at=_dt(row["next_check_at"]),
+            remind_at=_dt(row["remind_at"]),
         )
 
     def save_state(self, account_id: str, task_id: str, state: ReminderState) -> None:
         with self.canonical._tx() as conn:
             conn.execute(
                 "INSERT INTO reminder_states(account_id,task_id,episode_key,sent_count,ignored_count,last_sent_at,last_stage,"
-                "last_risk,stages_sent_json,last_interaction_at,snoozed_until,closed_reason,next_check_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,task_id) DO UPDATE SET "
+                "last_risk,stages_sent_json,last_interaction_at,snoozed_until,closed_reason,next_check_at,updated_at,remind_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,task_id) DO UPDATE SET "
                 "episode_key=excluded.episode_key,sent_count=excluded.sent_count,ignored_count=excluded.ignored_count,"
                 "last_sent_at=excluded.last_sent_at,last_stage=excluded.last_stage,last_risk=excluded.last_risk,"
                 "stages_sent_json=excluded.stages_sent_json,"
@@ -111,19 +116,28 @@ class ReminderStore:
                 "last_interaction_at=max(coalesce(reminder_states.last_interaction_at,''),coalesce(excluded.last_interaction_at,'')),"
                 "snoozed_until=CASE WHEN coalesce(reminder_states.snoozed_until,'') > coalesce(excluded.snoozed_until,'') "
                 "THEN reminder_states.snoozed_until ELSE excluded.snoozed_until END,"
-                "closed_reason=excluded.closed_reason,next_check_at=excluded.next_check_at,updated_at=excluded.updated_at",
+                "closed_reason=excluded.closed_reason,next_check_at=excluded.next_check_at,updated_at=excluded.updated_at,"
+                # A request still ahead of this tick survives; a past one follows the engine
+                # (kept while it is due, dropped when the episode was reset).
+                "remind_at=CASE WHEN coalesce(reminder_states.remind_at,'') > excluded.updated_at "
+                "THEN reminder_states.remind_at ELSE excluded.remind_at END",
                 (account_id, task_id, state.episode_key, state.sent_count, state.ignored_count, _iso(state.last_sent_at),
                  state.last_stage, state.last_risk, json.dumps(sorted(state.stages_sent)), _iso(state.last_interaction_at),
                  _iso(state.snoozed_until), state.closed_reason, _iso(state.next_check_at),
-                 _iso(self.canonical.clock.now())),
+                 _iso(self.canonical.clock.now()), _iso(state.remind_at)),
             )
             conn.execute(
                 "UPDATE reminder_states SET last_interaction_at=NULLIF(last_interaction_at,''),snoozed_until=NULLIF(snoozed_until,'') "
                 "WHERE account_id=? AND task_id=?", (account_id, task_id),
             )
 
-    def touch(self, account_id: str, task_id: str, at: datetime, *, snooze_until: datetime | None = None) -> None:
-        """Record that the user interacted with a task (any mutation, snooze or push action)."""
+    def touch(self, account_id: str, task_id: str, at: datetime, *, snooze_until: datetime | None = None,
+              remind_at: datetime | None = None) -> None:
+        """Record that the user interacted with a task (any mutation, snooze or push action).
+
+        ``snooze_until`` silences prompts until then; ``remind_at`` additionally asks for
+        a prompt at that moment (Snooze from a notification, "not now", "напомни …").
+        """
         with self.canonical._tx() as conn:
             conn.execute(
                 "INSERT INTO reminder_states(account_id,task_id,episode_key,last_interaction_at,snoozed_until,updated_at) "
@@ -132,6 +146,9 @@ class ReminderStore:
                 "snoozed_until=coalesce(excluded.snoozed_until,reminder_states.snoozed_until),updated_at=excluded.updated_at",
                 (account_id, task_id, _iso(at), _iso(snooze_until), _iso(at)),
             )
+            if remind_at is not None:
+                conn.execute("UPDATE reminder_states SET remind_at=? WHERE account_id=? AND task_id=?",
+                             (_iso(remind_at), account_id, task_id))
             if snooze_until is not None:
                 # A snoozed task's undelivered prompts are no longer wanted.
                 conn.execute(
@@ -140,6 +157,35 @@ class ReminderStore:
                     "SELECT 1 FROM json_each(reminder_messages.task_ids_json) WHERE value=?)",
                     (account_id, task_id),
                 )
+
+    def set_remind_at(self, account_id: str, task_id: str, remind_at: datetime | None, at: datetime) -> None:
+        """Set or clear the requested reminder moment of a task (task edit)."""
+        self.touch(account_id, task_id, at)
+        with self.canonical._tx() as conn:
+            conn.execute("UPDATE reminder_states SET remind_at=? WHERE account_id=? AND task_id=?",
+                         (_iso(remind_at), account_id, task_id))
+
+    def remind_at(self, account_id: str, task_id: str) -> datetime | None:
+        row = self.connection.execute(
+            "SELECT remind_at,last_sent_at FROM reminder_states WHERE account_id=? AND task_id=?", (account_id, task_id)
+        ).fetchone()
+        if row is None or not row["remind_at"]:
+            return None
+        remind, sent = _dt(row["remind_at"]), _dt(row["last_sent_at"])
+        # Only a reminder that is still ahead of us (not yet answered by a prompt) is shown.
+        return remind if sent is None or sent < remind else None
+
+    def pending_reminders(self, account_id: str) -> dict[str, datetime]:
+        rows = self.connection.execute(
+            "SELECT task_id,remind_at,last_sent_at FROM reminder_states WHERE account_id=? AND remind_at IS NOT NULL",
+            (account_id,),
+        ).fetchall()
+        pending = {}
+        for row in rows:
+            remind, sent = _dt(row["remind_at"]), _dt(row["last_sent_at"])
+            if sent is None or sent < remind:
+                pending[row["task_id"]] = remind
+        return pending
 
     # ---- messages ---------------------------------------------------------------------
 
@@ -214,11 +260,16 @@ class ReminderStore:
 
     # ---- devices ----------------------------------------------------------------------
 
-    def register_device(self, account_id: str, token: str, label: str | None) -> dict[str, Any]:
+    def register_device(self, account_id: str, token: str, label: str | None,
+                        capabilities: list[str] | None = None) -> dict[str, Any]:
         self.canonical._require_account(account_id)
         token = str(token or "").strip()
         if not token or len(token) > 4096:
             raise ValidationError("a valid push token is required")
+        if capabilities is not None and (not isinstance(capabilities, list)
+                                         or not all(isinstance(item, str) for item in capabilities)):
+            raise ValidationError("capabilities must be a list of strings")
+        declared = json.dumps(sorted(set(capabilities or []) & DEVICE_CAPABILITIES))
         digest = hashlib.sha256(token.encode()).hexdigest()
         now = _iso(self.canonical.clock.now())
         with self.canonical._tx() as conn:
@@ -233,32 +284,35 @@ class ReminderStore:
             if existing is None:
                 device_id = str(uuid4())
                 conn.execute(
-                    "INSERT INTO mobile_devices(id,account_id,platform,token_hash,token,label,created_at,updated_at) "
-                    "VALUES (?,?,'ANDROID',?,?,?,?,?)", (device_id, account_id, digest, token, label, now, now),
+                    "INSERT INTO mobile_devices(id,account_id,platform,token_hash,token,label,created_at,updated_at,capabilities_json) "
+                    "VALUES (?,?,'ANDROID',?,?,?,?,?,?)", (device_id, account_id, digest, token, label, now, now, declared),
                 )
             else:
                 device_id = existing["id"]
                 conn.execute(
-                    "UPDATE mobile_devices SET token=?,label=?,active=1,version=version+1,updated_at=? WHERE id=?",
-                    (token, label, now, device_id),
+                    "UPDATE mobile_devices SET token=?,label=?,active=1,version=version+1,updated_at=?,capabilities_json=? WHERE id=?",
+                    (token, label, now, declared, device_id),
                 )
         return self.device(account_id, device_id)
 
     def device(self, account_id: str, device_id: str) -> dict[str, Any]:
         row = self.connection.execute(
-            "SELECT id,platform,label,active,version,created_at,updated_at FROM mobile_devices WHERE account_id=? AND id=?",
-            (account_id, device_id),
+            "SELECT id,platform,label,active,version,created_at,updated_at,capabilities_json FROM mobile_devices "
+            "WHERE account_id=? AND id=?", (account_id, device_id),
         ).fetchone()
         if row is None:
             raise EntityNotFound("device not found")
-        return dict(row)
+        item = dict(row)
+        item["capabilities"] = json.loads(item.pop("capabilities_json") or "[]")
+        return item
 
     def devices(self, account_id: str) -> list[dict[str, Any]]:
         rows = self.connection.execute(
-            "SELECT id,platform,label,active,version,created_at,updated_at FROM mobile_devices "
+            "SELECT id,platform,label,active,version,created_at,updated_at,capabilities_json FROM mobile_devices "
             "WHERE account_id=? ORDER BY updated_at DESC", (account_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**{k: row[k] for k in row.keys() if k != "capabilities_json"},
+                 "capabilities": json.loads(row["capabilities_json"] or "[]")} for row in rows]
 
     def revoke_device(self, account_id: str, device_id: str) -> dict[str, Any]:
         with self.canonical._tx() as conn:
@@ -268,11 +322,12 @@ class ReminderStore:
             )
         return self.device(account_id, device_id)
 
-    def active_tokens(self, account_id: str) -> list[tuple[str, str]]:
+    def active_tokens(self, account_id: str) -> list[tuple[str, str, frozenset[str]]]:
         rows = self.connection.execute(
-            "SELECT id,token FROM mobile_devices WHERE account_id=? AND active=1 AND token!='' ORDER BY id", (account_id,)
+            "SELECT id,token,capabilities_json FROM mobile_devices WHERE account_id=? AND active=1 AND token!='' ORDER BY id",
+            (account_id,),
         ).fetchall()
-        return [(row["id"], row["token"]) for row in rows]
+        return [(row["id"], row["token"], frozenset(json.loads(row["capabilities_json"] or "[]"))) for row in rows]
 
     def deactivate_device(self, device_id: str) -> None:
         with self.canonical._tx() as conn:

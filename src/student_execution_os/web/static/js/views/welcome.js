@@ -5,13 +5,13 @@ import { isNative } from '../native.js';
 import { clearAll } from '../store.js';
 import { shell } from '../actions.js';
 
-let mode = 'login';
+let mode = null; // 'login' | 'register'; a first launch defaults to creating an account
 // A server that passed the probe but has no signed-in account yet. The current
 // server, token, user, cache and offline queue stay untouched until sign-in on the
 // candidate succeeds, so a failed switch never leaves the app half-switched.
 let candidate = null;
 
-const targetServer = () => candidate?.url ?? session.server;
+const targetServer = () => candidate?.url ?? (session.server || defaultServer());
 
 // Server validation messages are English; map the known auth ones to the UI language.
 function authError(err) {
@@ -42,13 +42,20 @@ function serverStep() {
 }
 
 function authStep() {
+  const registrationOpen = candidate ? candidate.registrationOpen : (session.registrationOpen || (isNative() && !session.server));
+  if (!mode) mode = registrationOpen && !session.user ? 'register' : 'login';
   const register = mode === 'register';
   return `
     <div class="welcome-card">
       <div class="brand-mark big">${icon('today')}</div>
       <h1>${esc(t('app.name'))}</h1>
-      <p class="muted">${esc(t('welcome.tagline'))}</p>
-      ${(candidate ? candidate.registrationOpen : session.registrationOpen) ? chipGroup('auth-mode', [['login', t('welcome.login')], ['register', t('welcome.register')]], mode) : ''}
+      <p class="welcome-lead">${esc(t('welcome.tagline'))}</p>
+      <ul class="welcome-points">
+        <li>${icon('mic')}<span>${esc(t('welcome.point1'))}</span></li>
+        <li>${icon('plan')}<span>${esc(t('welcome.point2'))}</span></li>
+        <li>${icon('bell')}<span>${esc(t('welcome.point3'))}</span></li>
+      </ul>
+      ${registrationOpen ? chipGroup('auth-mode', [['register', t('welcome.register')], ['login', t('welcome.login')]], mode) : ''}
       <form class="form" data-form="auth">
         <label class="field"><span>${esc(t('welcome.loginLabel'))}</span>
           <input name="login" autocomplete="username" autocapitalize="off" spellcheck="false" required minlength="3" maxlength="64"
@@ -60,7 +67,7 @@ function authStep() {
           <p class="help">${esc(t('welcome.registerHelp'))}</p>` : ''}
         <button class="button primary wide" type="submit">${esc(register ? t('welcome.createAccount') : t('welcome.signIn'))}</button>
       </form>
-      ${isNative() ? `<button class="link" data-action="welcome-server">${icon('server')} ${esc(targetServer())}</button>` : ''}
+      ${isNative() ? `<button class="link" data-action="welcome-server">${icon('server')} ${esc(t('welcome.otherServer'))}</button>` : ''}
       ${candidate && session.token ? `<button class="link" data-action="welcome-keep-server">${esc(t('welcome.keepServer', { server: session.server }))}</button>` : ''}
       <div class="welcome-locale">${chipGroup('welcome-locale', LOCALES, getLocale())}</div>
     </div>`;
@@ -73,7 +80,8 @@ export default {
   load: async () => ({ data: null, stale: false }),
   render(_data, params) {
     // On a fresh install the probed server is only a candidate until sign-in succeeds.
-    const needServer = isNative() && (params.step === 'server' || (!session.server && !candidate));
+    // A consumer build knows its server, so people start with the product, not a URL.
+    const needServer = isNative() && (params.step === 'server' || (!session.server && !candidate && !defaultServer()));
     return `<div class="welcome">${needServer ? serverStep() : authStep()}</div>`;
   },
   mount(root, _data, ctx) {
@@ -117,6 +125,13 @@ export default {
       }
       setBusy(button, true);
       try {
+        if (isNative() && !session.server && !candidate) {
+          // First launch of a build with a preset server: check it now, quietly.
+          const url = defaultServer();
+          const health = await probeServer(url);
+          if (health.auth_mode !== 'session') throw Object.assign(new Error(t('welcome.boundServer')), { code: 'BOUND' });
+          candidate = { url, registrationOpen: Boolean(health.registration_open) };
+        }
         if (!candidate) await refreshHealth().catch(() => {});
         const issued = await api(`/api/v1/auth/${mode === 'register' ? 'register' : 'login'}`, {
           method: 'POST',
@@ -132,10 +147,11 @@ export default {
         }
         await setAuth(issued.token, issued.user);
         clearAll();
-        window.dispatchEvent(new CustomEvent('seos-signed-in'));
+        const firstRun = mode === 'register';
         shell.go('today');
+        window.dispatchEvent(new CustomEvent('seos-signed-in', { detail: { firstRun } }));
       } catch (err) {
-        toast(authError(err), { error: true });
+        toast(err.code === 'NETWORK' ? t('welcome.unreachable') : authError(err), { error: true });
         setBusy(button, false);
       }
     });

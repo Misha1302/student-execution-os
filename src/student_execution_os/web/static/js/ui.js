@@ -41,6 +41,7 @@ const PATHS = {
   repeat: '<path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/>',
   event: '<rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 2v4M16 2v4"/><rect x="7" y="12" width="4" height="4" rx="1"/>',
   task: '<rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
   server: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
 };
 
@@ -63,14 +64,11 @@ export function chip(text, tone = '', extra = '') {
   return `<span class="chip ${tone ? `chip-${tone}` : ''}" ${extra}>${esc(text)}</span>`;
 }
 
+// "Risk unknown"/"not applicable" says nothing useful to a person; show risk only when it means something.
 export function riskChip(risk) {
   const state = risk?.state || 'UNKNOWN';
+  if (state === 'UNKNOWN' || state === 'NOT_APPLICABLE') return '';
   return chip(code('risk', state), riskTone(state), `data-risk="${esc(state)}"`);
-}
-
-export function ownershipChip(ownership) {
-  const canonical = String(ownership).startsWith('CANONICAL');
-  return chip(code('own', ownership), canonical ? 'canonical' : 'derived');
 }
 
 export function kv(label, value, { raw = false } = {}) {
@@ -144,9 +142,12 @@ export function openSheet({ title = '', eyebrow = '', body = '', actions = '', f
 }
 
 export function closeTopSheet() {
-  const top = sheetStack[sheetStack.length - 1];
+  // Leave the stack now: <dialog> fires "close" asynchronously, so waiting for the
+  // event here would make closeAllSheets() spin forever.
+  const top = sheetStack.pop();
   if (!top) return false;
-  top.close('cancel');
+  if (top.open) top.close('cancel');
+  else top.remove();
   return true;
 }
 
@@ -230,6 +231,7 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('.chip-toggle');
   if (!btn) return;
   const group = btn.closest('[data-chip-group]');
+  if (!group) return; // a plain answer chip: its own handler reacts
   group.querySelectorAll('.chip-toggle').forEach((b) => { b.classList.toggle('on', b === btn); b.setAttribute('aria-checked', String(b === btn)); });
   group.dispatchEvent(new CustomEvent('chipchange', { bubbles: true, detail: { name: group.dataset.chipGroup, value: btn.dataset.value } }));
   haptic('LIGHT');

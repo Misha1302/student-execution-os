@@ -21,6 +21,11 @@ supplied from the deployment secret store and the Android app contains a matchin
 `google-services.json`. Never commit either credential. The worker evaluates execution
 state separately from its leased technical delivery retries.
 
+Reminder pushes to current Android builds are data-only and rendered by the app with
+working Start / Done / Snooze buttons; older installs still get system-rendered pushes.
+The worker also deletes expired Assistant previews (the text people typed or dictated)
+every hour and trims operation logs / the reminder inbox after 90 days.
+
 ## Data and backups
 
 SQLite lives in the `seos-data` volume (`/data/student-execution-os.db`). Take a
@@ -101,8 +106,9 @@ PYTHONPATH=src python -m student_execution_os.reminders.worker \
 python deploy/smoke.py https://<domain> --expect-revision "$(git rev-parse HEAD)" --expect-worker
 ```
 
-registers a throwaway account, drives create → start → progress → complete → open
-completed → reopen → reuse through `/api/v1/sync` (including an exactly-once replay and a
+registers a throwaway account, checks that a natural-language phrase is previewed and stored
+with every field and that snooze schedules a reminder, drives create → start → progress →
+complete → open completed → reopen → reuse through `/api/v1/sync` (including an exactly-once replay and a
 visible lifecycle conflict), checks reminders, Assistant capabilities/preview and the
 reminder-worker heartbeat, then deletes the account.
 
