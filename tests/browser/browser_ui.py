@@ -419,6 +419,38 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("Today", page.locator(".tabbar").inner_text())
         page.close()
 
+    def test_native_first_launch_reaches_sign_in_after_server_probe(self):
+        # A fresh Android install has no stored server: the probed server stays a
+        # candidate until sign-in, and the welcome flow must still advance to sign-in.
+        self.health = {"status": "ok", "service": "student-execution-os", "auth_mode": "session",
+                       "registration_open": True, "api_version": 1, "sync_protocol": 1}
+        self.overrides[("POST", "/api/v1/auth/login")] = (200, {
+            "token": "fixture-token", "expires_at": "2026-10-21T09:00:00+00:00",
+            "user": {"login": "student", "account_id": ACCOUNT},
+        })
+        page = self.browser.new_page(viewport={"width": 390, "height": 844}, reduced_motion="reduce")
+        page.add_init_script(
+            "try { localStorage.setItem('seos.locale', 'en') } catch (e) {}\n"
+            "const prefs = new Map();\n"
+            "window.Capacitor = { isNativePlatform: () => true, Plugins: { Preferences: {\n"
+            "  get: async ({ key }) => ({ value: prefs.has(key) ? prefs.get(key) : null }),\n"
+            "  set: async ({ key, value }) => { prefs.set(key, value) },\n"
+            "  remove: async ({ key }) => { prefs.delete(key) } } } };"
+        )
+        page.route(ORIGIN + "/**", self._handler)
+        page.goto(f"{ORIGIN}/")
+        self._ready(page, "welcome")
+        page.fill("input[name=server]", ORIGIN)
+        page.locator('[data-form="server"] button[type=submit]').click()
+        page.wait_for_selector('[data-form="auth"]')
+        self.assertIn(ORIGIN, self._text(page))
+        page.fill("input[name=login]", "student")
+        page.fill("input[name=password]", "correct horse")
+        page.locator('[data-form="auth"] button[type=submit]').click()
+        self._ready(page, "today")
+        self.assertEqual(page.evaluate("window.Capacitor.Plugins.Preferences.get({ key: 'seos.server' })"), {"value": ORIGIN})
+        page.close()
+
 
 if __name__ == "__main__":
     unittest.main()

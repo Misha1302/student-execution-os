@@ -72,7 +72,8 @@ export default {
   title: () => t('app.name'),
   load: async () => ({ data: null, stale: false }),
   render(_data, params) {
-    const needServer = isNative() && (params.step === 'server' || !session.server);
+    // On a fresh install the probed server is only a candidate until sign-in succeeds.
+    const needServer = isNative() && (params.step === 'server' || (!session.server && !candidate));
     return `<div class="welcome">${needServer ? serverStep() : authStep()}</div>`;
   },
   mount(root, _data, ctx) {
