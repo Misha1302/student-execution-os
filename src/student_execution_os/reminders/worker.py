@@ -59,6 +59,22 @@ def heartbeat_is_fresh(database: str, max_age_seconds: float = 180.0) -> bool:
     return (_now() - datetime.fromisoformat(row[0])).total_seconds() < max_age_seconds
 
 
+def check_push(database: str, *, devices: bool = False) -> int:
+    provider = provider_from_environment()
+    if not provider.configured:
+        print(json.dumps({"ok": False, "configured": False}), flush=True)
+        return 1
+    tokens: list[str] = []
+    if devices:
+        with SQLiteCanonicalRepository(database) as repo:
+            repo.initialize()
+            tokens = [row[0] for row in repo.connection.execute(
+                "SELECT token FROM mobile_devices WHERE active=1 AND token!=''").fetchall()]
+    report = provider.verify(tokens)
+    print(json.dumps({"configured": True, **report}, sort_keys=True), flush=True)
+    return 0 if report["ok"] else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Student Execution OS reminder worker")
     parser.add_argument("--database", required=True)
@@ -67,9 +83,15 @@ def main() -> int:
     parser.add_argument("--dispatch-seconds", type=float, default=5.0)
     parser.add_argument("--once", action="store_true", help="one engine tick and one dispatch, then exit")
     parser.add_argument("--check-heartbeat", action="store_true", help="exit 0 if the worker heartbeat is fresh")
+    parser.add_argument("--check-push", action="store_true",
+                        help="verify the FCM credential (OAuth + validate-only send, nothing is shown on phones)")
+    parser.add_argument("--check-push-devices", action="store_true",
+                        help="with --check-push: also validate every active registered device token")
     args = parser.parse_args()
     if args.check_heartbeat:
         return 0 if heartbeat_is_fresh(args.database) else 1
+    if args.check_push:
+        return check_push(args.database, devices=args.check_push_devices)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     provider = provider_from_environment()
     engine = ReminderEngine(args.database)

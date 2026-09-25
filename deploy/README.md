@@ -16,10 +16,61 @@ After you and the people you invite have registered, close registration:
 set `SEOS_REGISTRATION=closed` in `deploy/.env` and run the `up -d` command again.
 
 The compose deployment also starts the durable reminder worker. Push remains disabled
-unless `SEOS_FCM_SERVICE_ACCOUNT_JSON` (or a mounted `SEOS_FCM_SERVICE_ACCOUNT_FILE`) is
-supplied from the deployment secret store and the Android app contains a matching
-`google-services.json`. Never commit either credential. The worker evaluates execution
-state separately from its leased technical delivery retries.
+until the FCM service account is installed (see **Secrets**) and the Android app contains
+a matching `google-services.json`. Never commit either credential. The worker evaluates
+execution state separately from its leased technical delivery retries.
+
+## Secrets
+
+Two secrets exist, each as a file in a directory mounted read-only into exactly the one
+container that needs it (files, not environment variables: variables show up in
+`docker inspect`, `/proc/*/environ` and `docker compose config`).
+
+| File | Container | Purpose |
+|---|---|---|
+| `secrets/worker/fcm-service-account.json` | reminder-worker | Firebase Admin SDK service account for FCM push |
+| `secrets/api/credential.key` | api | master key that encrypts every account's own AI key (ADR 0017) |
+
+For the Docker + Caddy variant the directory is `deploy/secrets/` (git-ignored); for the
+nginx variant it is `/etc/student-execution-os/secrets/`. The container user is uid 10001:
+
+```bash
+S=/etc/student-execution-os/secrets            # or deploy/secrets
+install -d -m 0755 "$S"
+install -d -o 10001 -g 10001 -m 0700 "$S/api" "$S/worker"
+install -o 10001 -g 10001 -m 0400 /path/to/firebase-adminsdk.json "$S/worker/fcm-service-account.json"
+# The key never appears on a terminal: the command writes the file (mode 0600).
+docker run --rm -u 10001 -v "$S/api:/k" student-execution-os:release \
+  python -m student_execution_os credential-key-generate --output /k/credential.key
+chmod 0400 "$S/api/credential.key" && chmod 0500 "$S/api" "$S/worker"
+```
+
+Back up `credential.key` separately from database backups (a database backup alone must
+not be enough to read users' AI keys). Losing it only means users re-enter their keys.
+Rotate with `credential-key-generate --rotate`, restart, then
+`python -m student_execution_os credentials-rekey --database /data/student-execution-os.db`
+in the api container, and finally delete the old (second) line.
+
+Verify push credentials end to end without showing anything on a phone:
+
+```bash
+docker compose ... exec reminder-worker python -m student_execution_os.reminders.worker \
+  --database /data/student-execution-os.db --check-push --check-push-devices
+```
+
+(OAuth token exchange, FCM `validate_only` send for project permission, and a
+validate-only check of every registered device token.)
+
+## AI (LLM) access
+
+AI is **bring your own key**: each user adds an OpenAI, Anthropic or OpenAI-compatible
+key in Settings → AI; it is stored encrypted per account and never shown again. Without a
+key the app uses its built-in parser. The operator pays for nobody's inference.
+
+`SEOS_PLATFORM_LLM_PROVIDER/MODEL/API_KEY/BASE_URL` configure operator credentials for a
+future paid tier; they are used **only** for accounts granted an entitlement
+(`python -m student_execution_os llm-entitlement --database … --login <user> --grant <plan>`).
+The old `SEOS_LLM_*` variables are ignored (the server warns at startup).
 
 Reminder pushes to current Android builds are data-only and rendered by the app with
 working Start / Done / Snooze buttons; older installs still get system-rendered pushes.
@@ -56,13 +107,13 @@ SEOS_PROXY_HEADERS=1
 SEOS_FORWARDED_ALLOW_IPS=127.0.0.1
 SEOS_CORS_ORIGINS=
 SEOS_IMAGE_TAG=release
-SEOS_FCM_SERVICE_ACCOUNT_JSON=
-SEOS_LLM_PROVIDER=
-SEOS_LLM_MODEL=
-SEOS_LLM_BASE_URL=
-SEOS_LLM_API_KEY=
+SEOS_PLATFORM_LLM_PROVIDER=
+SEOS_PLATFORM_LLM_MODEL=
+SEOS_PLATFORM_LLM_BASE_URL=
+SEOS_PLATFORM_LLM_API_KEY=
 EOF
 chmod 0600 /etc/student-execution-os/student-execution-os.env
+# then install the FCM service account and the credential master key (see "Secrets")
 
 docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml \
   --env-file /etc/student-execution-os/student-execution-os.env up -d --build
@@ -103,19 +154,22 @@ PYTHONPATH=src python -m student_execution_os.reminders.worker \
 ## Post-deploy smoke
 
 ```bash
-python deploy/smoke.py https://<domain> --expect-revision "$(git rev-parse HEAD)" --expect-worker
+python deploy/smoke.py https://<domain> --expect-revision "$(git rev-parse HEAD)" \
+  --expect-worker --expect-push --expect-byok
 ```
 
 registers a throwaway account, checks that a natural-language phrase is previewed and stored
 with every field and that snooze schedules a reminder, drives create → start → progress →
 complete → open completed → reopen → reuse through `/api/v1/sync` (including an exactly-once replay and a
 visible lifecycle conflict), checks reminders, Assistant capabilities/preview and the
-reminder-worker heartbeat, then deletes the account.
+reminder-worker heartbeat (and, with `--expect-push`, that the worker has FCM configured).
+`--expect-byok` saves a deliberately invalid AI key, checks that it is masked and absent
+from every response, that the real provider rejects it (`INVALID_KEY`) and that capture
+falls back to the local parser, then removes it. The account is deleted at the end.
 
 ## Not yet covered
 
-Password reset/change, email verification, per-account rate limits across several server
-processes (the limiter is in-process), routing, OAuth, and automated FCM credential rotation.
-OpenAI, Anthropic, and OpenAI-compatible Assistant providers are supported when configured;
-diagnostics report missing providers as `UNCONFIGURED`. Local simulation is not presented as
-production delivery.
+See [docs/ROADMAP.md](../docs/ROADMAP.md): password reset/change, email verification,
+per-account rate limits across several server processes (the limiter is in-process),
+routing, OAuth, automated FCM credential rotation, and paid/managed AI. Local simulation
+is not presented as production delivery.

@@ -193,7 +193,7 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(policy["account_id"], ACCOUNT)
         self.assertEqual(policy["tombstone_retention_days"], 30)
         self.assertFalse(policy["retained_audit_or_provenance"])
-        self.assertEqual(policy["secret_revocation"], "NOT_APPLICABLE_NO_SECRET_STORE")
+        self.assertEqual(policy["secret_revocation"], "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER")
 
         wrong = self.client.post(
             "/api/v1/account/delete",
@@ -216,7 +216,7 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["account_id"], ACCOUNT)
-        self.assertEqual(body["secret_revocation_status"], "NOT_APPLICABLE_NO_SECRET_STORE")
+        self.assertEqual(body["secret_revocation_status"], "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER")
 
         connection = sqlite3.connect(self.db)
         try:

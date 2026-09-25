@@ -292,10 +292,13 @@ class SQLiteAssistantService:
         server_context = self._context(context if isinstance(context, dict) else {})
         provider_name = self.provider.name
         fallback = False
+        self.provider_failure: ProviderUnavailable | None = None
         try:
             interpretation = self.provider.interpret(text, server_context)
-        except ProviderUnavailable:
-            # Provider outage degrades to the local parser instead of failing the user.
+        except ProviderUnavailable as exc:
+            # Provider outage (or a rejected key) degrades to the local parser instead
+            # of failing the user; the reason code tells the client why.
+            self.provider_failure = exc
             local = DeterministicAssistantParser()
             try:
                 interpretation = local.interpret(text, server_context)
@@ -340,7 +343,9 @@ class SQLiteAssistantService:
                 (batch_id, self.principal.account_id, self.principal.principal_id, digest, provider_name,
                  redacted, json.dumps(actions, sort_keys=True), _iso(now), _iso(now + timedelta(minutes=30))),
             )
-        return {"batch_id": batch_id, "provider": provider_name, "fallback": fallback, "message": assistant_message, "actions": actions,
+        return {"batch_id": batch_id, "provider": provider_name, "fallback": fallback,
+                "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
+                "message": assistant_message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 
     def apply(self, payload: dict[str, object]) -> dict[str, object]:

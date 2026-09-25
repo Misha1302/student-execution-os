@@ -62,6 +62,7 @@ class BrowserUiTest(unittest.TestCase):
                 "destructive_action_preview": True,
                 "message": "No live LLM provider is configured in this release.",
             },
+            "/api/v1/settings/llm": self.llm_settings(None),
         }
         self.posts: list[tuple[str, dict]] = []
         self.overrides: dict[tuple[str, str], tuple[int, dict]] = {}
@@ -70,6 +71,16 @@ class BrowserUiTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    @staticmethod
+    def llm_settings(credential):
+        return {
+            "source": "USER_BYOK" if credential else "NONE", "active": bool(credential), "credential": credential,
+            "storage_available": True, "platform_managed": {"entitled": False, "available": False},
+            "providers": [{"id": "openai", "label": "OpenAI", "requires_base_url": False},
+                          {"id": "anthropic", "label": "Anthropic", "requires_base_url": False},
+                          {"id": "openai-compatible", "label": "OpenAI-compatible", "requires_base_url": True}],
+        }
 
     # ---- harness --------------------------------------------------------------------
 
@@ -398,6 +409,72 @@ class BrowserUiTest(unittest.TestCase):
         # The old technical Assistant screen is gone; its link lands on Today.
         page.evaluate("location.hash = '#/assistant'")
         self._ready(page, "today")
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_ai_settings_connect_test_change_and_remove_own_key(self):
+        secret = "sk-ant-browser-test-key-7777"
+        page = self._open()
+        self._ready(page, "today")
+        self._go(page, "settings")
+        section = page.locator("[data-ai]")
+        self.assertIn("Everything works without a key", section.inner_text())
+        self._assert_human(self._text(page), "Settings")
+        self.assertNotIn("SEOS_", page.content())
+        credential = {"provider": "anthropic", "model": "claude-haiku-4-5", "base_url": None, "key_hint": "sk-••••7777",
+                      "status": "OK", "last_checked_at": None, "updated_at": None, "version": 1}
+        saved = self.llm_settings(credential)
+        self.overrides[("PUT", "/api/v1/settings/llm")] = (200, saved)
+        self.overrides[("POST", "/api/v1/settings/llm/test")] = (200, {"ok": True, "status": "OK", "settings": saved})
+        self.responses["/api/v1/settings/llm"] = saved
+
+        page.locator('[data-action="ai-edit"]').click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.wait_for()
+        self.assertTrue(sheet.locator("[data-base-url]").is_hidden())
+        sheet.locator('[data-chip-group="ai-provider"] [data-value="openai-compatible"]').click()
+        self.assertTrue(sheet.locator("[data-base-url]").is_visible())
+        sheet.locator('[data-chip-group="ai-provider"] [data-value="anthropic"]').click()
+        self.assertTrue(sheet.locator("[data-base-url]").is_hidden())
+        self.assertEqual(sheet.locator("#ai-key").get_attribute("type"), "password")
+        sheet.locator("#ai-model").fill("claude-haiku-4-5")
+        sheet.locator("#ai-key").fill(secret)
+        self._screenshot(page, "settings-ai-connect.png")
+        sheet.locator("[data-save]").click()
+        page.get_by_text("Connection works").wait_for()
+        put = next(payload for path, payload in self.posts if path == "/api/v1/settings/llm")
+        self.assertEqual(put, {"provider": "anthropic", "model": "claude-haiku-4-5", "api_key": secret})
+        self.assertEqual(self.posts[-1][0], "/api/v1/settings/llm/test")
+        page.wait_for_selector("[data-ai] [data-action='ai-delete']")
+        text = page.locator("[data-ai]").inner_text()
+        self.assertIn("sk-••••7777", text)
+        self.assertIn("Working", text)
+        self._screenshot(page, "settings-ai-configured.png")
+        self.assertNotIn(secret, page.content())
+        stored = page.evaluate("JSON.stringify(Object.assign({}, localStorage))")
+        self.assertNotIn(secret, stored)
+
+        # Changing only the model keeps the saved key (nothing is re-sent).
+        self.posts.clear()
+        page.locator('[data-action="ai-edit"]').click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.wait_for()
+        self.assertIn("Keep saved key (sk-••••7777)", sheet.locator("#ai-key").get_attribute("placeholder"))
+        sheet.locator("#ai-model").fill("claude-sonnet-5")
+        sheet.locator("[data-save]").click()
+        page.locator(".toast").first.wait_for()
+        self.assertEqual(self.posts[0], ("/api/v1/settings/llm", {"provider": "anthropic", "model": "claude-sonnet-5", "expected_version": 1}))
+
+        page.wait_for_selector("dialog.sheet[open]", state="detached")
+        page.wait_for_load_state("networkidle")
+        self._ready(page, "settings")
+        self.overrides[("DELETE", "/api/v1/settings/llm")] = (200, self.llm_settings(None))
+        self.responses["/api/v1/settings/llm"] = self.llm_settings(None)
+        page.locator('[data-action="ai-delete"]').click()
+        page.locator("dialog.sheet[open]").get_by_role("button", name="Remove").click()
+        page.get_by_text("Key removed").wait_for()
+        page.wait_for_selector("[data-ai] [data-action='ai-edit']")
+        self.assertIn("Everything works without a key", page.locator("[data-ai]").inner_text())
         self.assertEqual(self.page_errors, [])
         page.close()
 

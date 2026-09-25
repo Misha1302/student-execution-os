@@ -13,12 +13,15 @@ services:
       SEOS_PROXY_HEADERS: "1"
       SEOS_FORWARDED_ALLOW_IPS: "*"
       SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
-      SEOS_LLM_PROVIDER: ${SEOS_LLM_PROVIDER:-}
-      SEOS_LLM_MODEL: ${SEOS_LLM_MODEL:-}
-      SEOS_LLM_BASE_URL: ${SEOS_LLM_BASE_URL:-}
-      SEOS_LLM_API_KEY: ${SEOS_LLM_API_KEY:-}
+      SEOS_CREDENTIAL_KEY_FILE: /run/secrets/seos/credential.key
+      SEOS_PLATFORM_LLM_PROVIDER: ${SEOS_PLATFORM_LLM_PROVIDER:-}
+      SEOS_PLATFORM_LLM_MODEL: ${SEOS_PLATFORM_LLM_MODEL:-}
+      SEOS_PLATFORM_LLM_BASE_URL: ${SEOS_PLATFORM_LLM_BASE_URL:-}
+      SEOS_PLATFORM_LLM_API_KEY: ${SEOS_PLATFORM_LLM_API_KEY:-}
     volumes:
       - seos-data:/data
+      # deploy/secrets/ is git-ignored; see deploy/README.md "Secrets".
+      - ./secrets/api:/run/secrets/seos:ro
     expose:
       - "8765"
 
@@ -40,9 +43,10 @@ services:
     environment:
       SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_FCM_SERVICE_ACCOUNT_JSON: ${SEOS_FCM_SERVICE_ACCOUNT_JSON:-}
-      SEOS_FCM_SERVICE_ACCOUNT_FILE: ${SEOS_FCM_SERVICE_ACCOUNT_FILE:-}
+      SEOS_FCM_SERVICE_ACCOUNT_FILE: /run/secrets/seos/fcm-service-account.json
     volumes:
       - seos-data:/data
+      - ./secrets/worker:/run/secrets/seos:ro
 
   caddy:
     image: caddy:2

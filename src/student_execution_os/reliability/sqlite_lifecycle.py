@@ -208,6 +208,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "attachment_links",
     "saved_task_views",
     "operational_metrics",
+    "llm_entitlements",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
@@ -238,13 +239,16 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
 }
 
 
-# Login credentials and session token hashes are account-scoped and purged with the
-# account, but they are never part of the user data export contract.
+# Login credentials, session token hashes and encrypted AI provider keys are
+# account-scoped and purged with the account, but they are never part of the user
+# data export contract.
 _ACCOUNT_CREDENTIAL_TABLES = (
     "auth_sessions",
     "auth_users",
     "mobile_devices",
+    "llm_credentials",
 )
+SECRET_REVOCATION_STATUS = "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER"
 
 _GLOBAL_LIFECYCLE_TABLES = {
     "schema_migrations",
@@ -461,8 +465,10 @@ class SQLiteDataLifecycle:
             ],
             "retained_audit_or_provenance": False,
             "raw_source_store": "NONE_CONFIGURED",
-            "secret_store": "NONE_CONFIGURED",
-            "secret_revocation": "NOT_APPLICABLE_NO_SECRET_STORE",
+            "secret_store": "LLM_CREDENTIALS_AES_GCM_MASTER_KEY_OUTSIDE_DATABASE",
+            # The stored ciphertext is deleted immediately; only the provider can
+            # revoke the key itself, which the user does in their provider account.
+            "secret_revocation": SECRET_REVOCATION_STATUS,
             "login_credentials": "PURGED_IMMEDIATELY_ALL_SESSIONS_INVALIDATED",
             "retention": dict(RETENTION_POLICY),
         }
@@ -573,7 +579,7 @@ class SQLiteDataLifecycle:
                 "retained_reason",
             ),
             deleted_rows=deleted_rows,
-            secret_revocation_status="NOT_APPLICABLE_NO_SECRET_STORE",
+            secret_revocation_status=SECRET_REVOCATION_STATUS,
         )
 
     def purge_expired_deletion_tombstones(self, *, now: datetime | None = None) -> int:
@@ -629,9 +635,10 @@ class SQLiteDataLifecycle:
                     "includes_database_global_metadata": False,
                     "includes_connector_or_oauth_secrets": False,
                     "includes_login_credentials_or_sessions": False,
+                    "includes_llm_api_keys": False,
                     "note": (
-                        "This release has no connector/OAuth secret store. The explicit table allowlist fails closed: "
-                        "future secret tables are not exported unless the contract is deliberately revised."
+                        "AI provider keys are never exported, not even encrypted. The explicit table allowlist fails "
+                        "closed: future secret tables are not exported unless the contract is deliberately revised."
                     ),
                 },
                 tables=tables,

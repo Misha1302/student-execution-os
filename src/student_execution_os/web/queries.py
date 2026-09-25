@@ -15,9 +15,8 @@ from student_execution_os.agent import (
     AuthenticatedPrincipal,
     IntentStrength,
     SQLiteActionGateway,
+    LlmCredentialStore,
     SQLiteAssistantService,
-    assistant_capabilities,
-    assistant_provider_from_environment,
 )
 from student_execution_os.connectors.model import ConnectorHealth
 from student_execution_os.domain.clock import FrozenClock
@@ -830,7 +829,8 @@ class UiService:
                     # Push credentials live with the worker process, so its heartbeat
                     # is the source of truth; the API's own env is only a fallback.
                     "fcm": fcm,
-                    "llm": "CONFIGURED" if assistant_capabilities()["live_llm_provider"] else "UNCONFIGURED",
+                    # Which source serves this account's Assistant; never the key itself.
+                    "llm": LlmCredentialStore(repo).resolve(self.account_id).source.value,
                     "routing": "UNCONFIGURED",
                     "oauth": "UNCONFIGURED",
                 },
@@ -1178,14 +1178,45 @@ class UiService:
             }
 
     def assistant_interpret(self, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            provider = assistant_provider_from_environment()
-        except ValidationError:
-            provider = None  # misconfigured provider: degraded local mode (capabilities reports why)
         with self._repo() as repo:
-            return SQLiteAssistantService(repo, self.principal, provider=provider).interpret(
-                str(payload.get("text", "")), payload.get("context")
-            )
+            credentials = LlmCredentialStore(repo)
+            resolved = credentials.resolve(self.account_id)
+            service = SQLiteAssistantService(repo, self.principal, provider=resolved.provider)
+            result = service.interpret(str(payload.get("text", "")), payload.get("context"))
+            if resolved.source.value == "USER_BYOK":
+                credentials.record_use(self.account_id, service.provider_failure)
+            return result
+
+    def assistant_capabilities(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            resolved = LlmCredentialStore(repo).resolve(self.account_id)
+        live = resolved.live
+        return {
+            "live_llm_provider": live,
+            "credential_source": resolved.source.value,
+            "provider": resolved.provider.name if live else None,
+            "model": resolved.provider.model if live else None,
+            "credential_status": resolved.status,
+            "structured_actions": True,
+            "confirmation_required": True,
+            "degraded_mode": not live,
+        }
+
+    def llm_settings(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            return LlmCredentialStore(repo).public(self.account_id)
+
+    def save_llm_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return LlmCredentialStore(repo).save(self.account_id, payload)
+
+    def delete_llm_settings(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            return LlmCredentialStore(repo).delete(self.account_id)
+
+    def test_llm_settings(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            return LlmCredentialStore(repo).test(self.account_id)
 
     def assistant_apply(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:

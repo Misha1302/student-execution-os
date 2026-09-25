@@ -168,6 +168,49 @@ class FcmV1Provider:
         return SendResult(False, error=f"FCM_HTTP_{response.status_code}:{status}"[:120], retryable=retryable)
 
 
+    def verify(self, tokens: list[str] | None = None) -> dict[str, Any]:
+        """Prove the credential end to end without showing anything on a phone.
+
+        1. The service-account key signs a JWT that Google exchanges for an access token.
+        2. A ``validate_only`` send checks project permission; against a placeholder
+           token FCM must answer "invalid token", not 401/403/404.
+        3. With real registered tokens, ``validate_only`` tells whether each is live.
+        Never returns or logs the key or the access token.
+        """
+        report: dict[str, Any] = {"project_id": self.project_id, "client_email": self.account["client_email"]}
+        try:
+            self.access_token()
+        except Exception as exc:  # noqa: BLE001 - report the class only, never the response
+            report.update(oauth="FAILED", error=type(exc).__name__, ok=False)
+            return report
+        report["oauth"] = "OK"
+
+        def validate(token: str) -> tuple[int, str]:
+            body = fcm_message(token, {"type": "check", "title": "check", "body": "check", "collapse_key": "check"},
+                               data_only=True)
+            body["validate_only"] = True
+            response = self.http.post(
+                f"{self.fcm_base_url}/v1/projects/{self.project_id}/messages:send",
+                headers={"Authorization": f"Bearer {self.access_token()}"}, json=body,
+            )
+            try:
+                error = response.json().get("error", {})
+                code = ",".join([error.get("status", "")] + [d.get("errorCode", "") for d in error.get("details", [])
+                                                             if isinstance(d, dict)]).strip(",")
+            except ValueError:
+                code = ""
+            return response.status_code, code
+
+        status, code = validate("seos-placeholder-token")
+        report["project_permission"] = "OK" if status in (400, 404) and ("INVALID_ARGUMENT" in code or "UNREGISTERED" in code) else f"HTTP_{status}:{code}"
+        report["devices"] = []
+        for token in tokens or []:
+            status, code = validate(token)
+            report["devices"].append("VALID" if status == 200 else f"HTTP_{status}:{code}")
+        report["ok"] = report["project_permission"] == "OK"
+        return report
+
+
 def fcm_message(token: str, message: dict[str, Any], *, data_only: bool = False) -> dict[str, Any]:
     """The FCM v1 request body for one reminder.
 

@@ -4,7 +4,8 @@
 
 ## Current architecture
 
-- Schema: v13 (explicit `remind_at` reminder requests, device capabilities, retention indexes).
+- Schema: v14 (v13: explicit `remind_at` reminder requests, device capabilities, retention
+  indexes; v14: per-account encrypted LLM credentials and the platform-managed entitlement seam).
 - API/UI: FastAPI plus the shared browser/Capacitor client.
 - Execution state: canonical `started_at` and `last_progress_at` on tasks.
 - Offline mutations: `/api/v1/sync`, client-generated operation ids, atomic
@@ -14,8 +15,9 @@
   `reminder_messages` is both the in-app inbox and leased push outbox. A new user
   reminder is not a technical retry. The v7–v11 runtime notification package was
   removed by v12.
-- Assistant: deterministic degraded parser by default; optional server-side OpenAI,
-  Anthropic, or OpenAI-compatible provider. Model output is a typed proposal only;
+- Assistant: deterministic degraded parser by default; per account, the user's own
+  OpenAI, Anthropic, or OpenAI-compatible key (Settings → AI, `agent/credentials.py`,
+  ADR 0017) or, for accounts with a `PLATFORM_MANAGED` entitlement, operator credentials. Model output is a typed proposal only;
   preview, explicit confirmation, server validation, atomic apply, and idempotency
   remain application-owned.
 - Capture: `agent/nlparse.py` (server) and `web/static/js/nlparse.js` (device) parse RU/EN
@@ -46,7 +48,8 @@ The application runs without external credentials and reports degraded capabilit
 Actual external delivery/inference still requires:
 
 - FCM service-account credentials plus Android `google-services.json`;
-- an OpenAI, Anthropic, or OpenAI-compatible API credential/model;
+- per user: their own OpenAI, Anthropic, or OpenAI-compatible key (the server needs the
+  `credential.key` master key file to store them);
 - routing and OAuth provider configuration for those optional integrations.
 
 Local mocks or compile-time wiring must not be reported as live provider delivery.

@@ -6,6 +6,11 @@
 *.key
 secrets/
 .credentials/
+# Service-account / platform credentials (FCM Admin SDK, credential master keys)
+*firebase-adminsdk*.json
+*service-account*.json
+*.serviceaccount.json
+*credential-key*
 
 # IDE/editor
 .idea/

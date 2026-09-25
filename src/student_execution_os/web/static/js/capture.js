@@ -345,7 +345,9 @@ export function openCapture({ text = '', listen = false } = {}) {
       return; // the local card stays; creating still works offline
     }
     if (seq !== serverSeq || input.value.trim() !== raw) return;
-    showStatus('');
+    // The account's own AI key was refused: the card still comes from the local
+    // parser, but the user should know why the AI did not help.
+    showStatus(result.fallback && ['AUTH', 'NOT_FOUND'].includes(result.fallback_reason) ? t('capture.aiKeyProblem') : '');
     const actions = result.actions || [];
     const create = actions.length === 1 && actions[0].command === 'CREATE_TASK' ? actions[0] : null;
     if (create) {

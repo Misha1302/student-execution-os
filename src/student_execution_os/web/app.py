@@ -10,6 +10,7 @@ import mimetypes
 from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +27,6 @@ from student_execution_os.domain.errors import (
 )
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
-from student_execution_os.agent import assistant_capabilities
 
 from .auth import AuthConfig, RateLimited, Session, SQLiteAuthStore, Unauthenticated
 from .queries import UiService
@@ -136,7 +136,7 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(auth.cors_origins),
-            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type"],
             max_age=600,
         )
@@ -175,6 +175,14 @@ def create_app(
     @app.exception_handler(ValueError)
     async def handle_value_error(_: Request, exc: ValueError):
         return _error(exc)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation(_: Request, exc: RequestValidationError):
+        # FastAPI's default body echoes the submitted input back, which for the AI
+        # settings form would include an API key. Report only where it failed.
+        where = ", ".join(".".join(str(part) for part in error.get("loc", ())) for error in exc.errors())
+        return JSONResponse(status_code=422, content={"error": {
+            "code": "VALIDATION_ERROR", "message": f"invalid request: {where}"[:300], "retryable": False}})
 
     @app.exception_handler(KeyError)
     async def handle_key_error(_: Request, exc: KeyError):
@@ -441,16 +449,33 @@ def create_app(
         return service.delete_account(payload)
 
     @app.get("/api/v1/ask/capabilities")
-    async def ask_capabilities() -> dict[str, Any]:
-        result = assistant_capabilities()
+    async def ask_capabilities(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        result = service.assistant_capabilities()
         return {
             **result,
             "explanations": True,
             "destructive_action_preview": True,
             "message": "Live structured Assistant is available." if result["live_llm_provider"] else (
-                "No LLM credential is configured. Deterministic task/event capture remains available."
+                "No AI key is set up for this account. Deterministic task/event capture remains available."
             ),
         }
+
+    # Per-account AI (LLM) credentials. Responses carry only a masked key hint.
+    @app.get("/api/v1/settings/llm")
+    async def llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.llm_settings()
+
+    @app.put("/api/v1/settings/llm")
+    async def save_llm_settings(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.save_llm_settings(payload)
+
+    @app.delete("/api/v1/settings/llm")
+    async def delete_llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.delete_llm_settings()
+
+    @app.post("/api/v1/settings/llm/test")
+    async def test_llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.test_llm_settings()
 
     @app.post("/api/v1/assistant/interpret")
     async def assistant_interpret(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:

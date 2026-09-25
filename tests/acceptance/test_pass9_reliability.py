@@ -191,7 +191,7 @@ class Pass9ReliabilityTests(unittest.TestCase):
             )
             self.assertEqual(result.account_id, ACCOUNT)
             self.assertEqual(result.policy_version, "account-deletion-v1")
-            self.assertEqual(result.secret_revocation_status, "NOT_APPLICABLE_NO_SECRET_STORE")
+            self.assertEqual(result.secret_revocation_status, "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER")
             self.assertEqual(
                 set(result.retained_tombstone_fields),
                 {"account_id", "deletion_id", "deleted_at", "purge_after", "policy_version", "retained_reason"},

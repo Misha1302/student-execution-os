@@ -56,7 +56,7 @@ It excludes:
 
 - rows belonging to any other account;
 - database-global migration metadata;
-- connector/OAuth secrets. This release has no connector/OAuth secret store; a future secret table is *not* automatically exported because the allowlist must be revised explicitly.
+- connector/OAuth secrets and AI provider keys. Encrypted per-account AI keys (`llm_credentials`, ADR 0017) are classified as credentials and never exported, not even as ciphertext; any future secret table is *not* automatically exported because the allowlist must be revised explicitly.
 
 Because the user-data export intentionally includes private account data, the normal Places API redaction rule does not apply to the export artifact. The Settings UI states this difference before offering the export link.
 

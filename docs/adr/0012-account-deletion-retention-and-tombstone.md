@@ -40,7 +40,7 @@ Before `purge_after`, `create_account()` rejects reuse of the same account id. A
 
 ### Evidence, audit, and secrets
 
-This local policy retains **no** account audit/provenance rows after deletion. The current release has no raw-source payload store and no OAuth/token secret store, so secret revocation is reported as `NOT_APPLICABLE_NO_SECRET_STORE` rather than fabricated.
+This local policy retains **no** account audit/provenance rows after deletion. The release has no raw-source payload store and no OAuth/token secret store. Since schema v14 the only account secret is the user's own encrypted AI provider key (`llm_credentials`, ADR 0017); it is deleted in the same transaction as the account. The server cannot revoke a key at the provider, so revocation is reported as `LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER` (the UI tells the user to revoke it in their provider account if they no longer need it) rather than claiming a revocation that did not happen.
 
 Future raw-payload, secret, legal-retention, or remote-replica tables are fail-closed: account deletion refuses to run until the data-lifecycle table classification and this policy are deliberately extended. Production OAuth/token revocation and external replica deletion remain separate deployment/integration obligations.
 

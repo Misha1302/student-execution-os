@@ -47,14 +47,14 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v13**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v14**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
 - `started_at` and `last_progress_at` are canonical execution facts;
 - `/api/v1/sync` stores client operation results atomically for exactly-once replay and explicit conflicts;
 - the mobile client persists cached reads and pending task operations across restart, then reconnects with the same operation ids;
-- Assistant providers (OpenAI, Anthropic, and OpenAI-compatible) run server-side and can only return validated proposals that the user applies through the controlled action boundary;
+- Assistant providers (OpenAI, Anthropic, and OpenAI-compatible) run server-side with the account's own key and can only return validated proposals that the user applies through the controlled action boundary;
 - Capacitor push and speech recognition are native dependencies, with degraded behavior when Firebase/LLM configuration is absent.
 
 Schema v13 makes the student flow the primary path: **"+" → "Что нужно сделать?" → text or
@@ -76,6 +76,14 @@ voice → task card → Create**.
 - Expired Assistant previews (typed/dictated text) are deleted; operation logs and the
   reminder inbox have retention windows (`reliability/retention.py`).
 - Technical details (schema, revisions, providers, sources) live under Settings → Advanced.
+
+Schema v14 makes AI **bring your own key** (ADR 0017): each account can add its own
+OpenAI, Anthropic or OpenAI-compatible key in Settings → AI. The key is encrypted with a
+master key kept outside the database, bound to its account, shown only as `sk-••••abcd`,
+and deleted with the account. Without a key everything works with the local parser. The
+server-wide `SEOS_LLM_*` key is gone; operator credentials (`SEOS_PLATFORM_LLM_*`) serve
+only accounts with a platform-managed entitlement — the seam for a future paid plan
+([roadmap](docs/ROADMAP.md)).
 
 The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
@@ -164,6 +172,8 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Cancellation/reopen projection ADR](docs/adr/0014-cancel-reopen-projection-invalidation.md)
 - [Hosted auth and mobile client ADR](docs/adr/0015-hosted-auth-and-mobile-client.md)
 - [Daily product surfaces and schema v11 ADR](docs/adr/0016-daily-product-surfaces.md)
+- [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
+- [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
 - [Pass 9/10 conformance gap ledger](docs/implementation/PASS9_GAP_LEDGER.md)
@@ -182,6 +192,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 6. Recurrence/notifications as demanded by usage. **Implemented in Pass 8.**
 7. Reliability/security/conformance hardening. **Implemented through schema v12.**
 8. Offline task-operation replication and execution reminders. **Implemented for the MVP; external FCM/LLM/routing/OAuth providers remain configuration-dependent.**
+9. Per-account AI keys (BYOK). **Implemented in schema v14.** Paid/managed AI: see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 

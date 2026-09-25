@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -59,6 +60,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _report_ai_configuration() -> None:
+    """Say at startup how AI keys are handled; never print a key."""
+    from student_execution_os.agent.credentials import CredentialCipher
+
+    cipher = CredentialCipher.from_environment()
+    state = "enabled" if cipher else "DISABLED (no SEOS_CREDENTIAL_KEY_FILE): users cannot save AI keys"
+    print(f"student-execution-os: per-account AI keys {state}", file=sys.stderr, flush=True)
+    legacy = [name for name in ("SEOS_LLM_PROVIDER", "SEOS_LLM_API_KEY", "SEOS_LLM_MODEL", "SEOS_LLM_BASE_URL")
+              if os.environ.get(name)]
+    if legacy:
+        print("student-execution-os: ignoring " + ", ".join(legacy) + "; AI is per-account (Settings -> AI). "
+              "Operator credentials for entitled accounts use SEOS_PLATFORM_LLM_*.", file=sys.stderr, flush=True)
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     database = Path(args.database)
@@ -80,6 +95,7 @@ def main(argv=None) -> int:
                 cors_origins=tuple(dict.fromkeys([*DEFAULT_CORS_ORIGINS, *(o.strip() for o in args.cors_origin)])),
             ),
         )
+    _report_ai_configuration()
     uvicorn.run(
         app,
         host=args.host,

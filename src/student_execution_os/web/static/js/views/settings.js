@@ -5,6 +5,7 @@ import { esc, icon, chip, kv, openSheet, chipGroup, toast, errorMessage, setBusy
 import { isNative, saveJson, prefGet, prefSet } from '../native.js';
 import { getTheme, setTheme } from '../theme.js';
 import { shell } from '../actions.js';
+import { aiSection, aiActions, loadAiSettings } from '../ai.js';
 
 export async function logout() {
   if (session.authMode === 'session') {
@@ -73,16 +74,18 @@ export default {
   detail: true,
   title: () => t('nav.settings'),
   async load({ fresh }) {
-    const [diag, deletion, prefs] = await Promise.all([
+    const [diag, deletion, prefs, llm] = await Promise.all([
       load('/api/v1/settings/diagnostics', { fresh }),
       load('/api/v1/account/deletion-policy', { fresh }),
       load('/api/v1/notification-preferences', { fresh }).catch(() => ({ data: null })),
+      loadAiSettings(), // not cached on the device
     ]);
-    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data }, stale: diag.stale, fetchedAt: diag.fetchedAt };
+    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm }, stale: diag.stale, fetchedAt: diag.fetchedAt };
   },
-  render({ diag, deletion, prefs }) {
+  render({ diag, deletion, prefs, llm }) {
     this._deletion = deletion;
     this._prefs = prefs;
+    this._llm = llm;
     const sessionMode = session.authMode === 'session';
     const connectors = (diag.connector_health || []).map((c) => `<div class="row static">
       <span class="row-main"><strong>${esc(c.provider)}</strong><small>${esc(t('ev.lastSync'))}: ${esc(fmtDateTime(c.last_successful_complete_sync_at))}</small></span>
@@ -109,6 +112,8 @@ export default {
           <p class="help">${esc(t('settings.quiet', { from: prefs.quiet_hours.starts_local, to: prefs.quiet_hours.ends_local }))}</p>
         </div>
       </section>` : ''}
+
+      ${aiSection(llm)}
 
       <section class="section">
         <div class="section-head"><h2>${esc(t('settings.appearance'))}</h2></div>
@@ -179,5 +184,6 @@ export default {
     },
     'account-export': (el) => exportAccount(el),
     'account-delete-preview': (_el, ctx) => deleteSheet(ctx.view._deletion),
+    ...aiActions,
   },
 };

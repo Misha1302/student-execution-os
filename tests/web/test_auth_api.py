@@ -200,6 +200,13 @@ class AuthApiTest(unittest.TestCase):
             headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"},
         )
         self.assertNotIn("access-control-allow-origin", evil.headers)
+        # The app's own AI settings use PUT/DELETE; the WebView must be allowed to send them.
+        for method in ("PUT", "DELETE"):
+            preflight = self.client.options("/api/v1/settings/llm", headers={
+                "Origin": "https://localhost", "Access-Control-Request-Method": method,
+                "Access-Control-Request-Headers": "authorization,content-type"})
+            self.assertEqual(preflight.status_code, 200, method)
+            self.assertIn(method, preflight.headers["access-control-allow-methods"])
 
     def test_bound_mode_still_rejects_session_endpoints(self):
         from tests.ui_fixture import ACCOUNT, seed_ui_database

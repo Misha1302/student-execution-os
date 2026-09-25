@@ -15,15 +15,21 @@ services:
       SEOS_PROXY_HEADERS: ${SEOS_PROXY_HEADERS:-1}
       SEOS_FORWARDED_ALLOW_IPS: ${SEOS_FORWARDED_ALLOW_IPS:-127.0.0.1}
       SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
-      SEOS_LLM_PROVIDER: ${SEOS_LLM_PROVIDER:-}
-      SEOS_LLM_MODEL: ${SEOS_LLM_MODEL:-}
-      SEOS_LLM_BASE_URL: ${SEOS_LLM_BASE_URL:-}
-      SEOS_LLM_API_KEY: ${SEOS_LLM_API_KEY:-}
+      # Master key that encrypts every account's own AI key (BYOK). Read from a file
+      # in the API-only secret directory; never an image layer or the repository.
+      SEOS_CREDENTIAL_KEY_FILE: ${SEOS_CREDENTIAL_KEY_FILE:-/run/secrets/seos/credential.key}
+      # Optional operator credentials for the future paid tier; used only for
+      # accounts with a PLATFORM_MANAGED entitlement, never as everybody's default.
+      SEOS_PLATFORM_LLM_PROVIDER: ${SEOS_PLATFORM_LLM_PROVIDER:-}
+      SEOS_PLATFORM_LLM_MODEL: ${SEOS_PLATFORM_LLM_MODEL:-}
+      SEOS_PLATFORM_LLM_BASE_URL: ${SEOS_PLATFORM_LLM_BASE_URL:-}
+      SEOS_PLATFORM_LLM_API_KEY: ${SEOS_PLATFORM_LLM_API_KEY:-}
     ports:
       - "127.0.0.1:8765:8765"
     volumes:
       - /var/lib/student-execution-os:/data
       - /var/backups/student-execution-os:/backups
+      - /etc/student-execution-os/secrets/api:/run/secrets/seos:ro
 
   reminder-worker:
     image: student-execution-os:${SEOS_IMAGE_TAG:-latest}
@@ -41,6 +47,8 @@ services:
     environment:
       SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_FCM_SERVICE_ACCOUNT_JSON: ${SEOS_FCM_SERVICE_ACCOUNT_JSON:-}
-      SEOS_FCM_SERVICE_ACCOUNT_FILE: ${SEOS_FCM_SERVICE_ACCOUNT_FILE:-}
+      # The FCM service account lives in the worker-only secret directory.
+      SEOS_FCM_SERVICE_ACCOUNT_FILE: ${SEOS_FCM_SERVICE_ACCOUNT_FILE:-/run/secrets/seos/fcm-service-account.json}
     volumes:
       - /var/lib/student-execution-os:/data
+      - /etc/student-execution-os/secrets/worker:/run/secrets/seos:ro

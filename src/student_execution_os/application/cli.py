@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
@@ -666,6 +667,26 @@ def _cutoff(value: str) -> HardCutoff:
     return HardCutoff.known(_dt(value))
 
 
+def _credential_key_generate(path: Path, *, rotate: bool) -> int:
+    """Write the key file without ever printing the key (terminal scrollback, CI logs)."""
+    from student_execution_os.agent.credentials import CredentialCipher
+
+    if path.exists() and not rotate:
+        raise SystemExit(f"{path} exists; use --rotate to add a new active key")
+    if rotate and not path.exists():
+        raise SystemExit(f"{path} does not exist")
+    previous = path.read_text(encoding="utf-8") if rotate else ""
+    content = CredentialCipher.generate_key() + "\n" + previous
+    temp = path.with_name(f".{path.name}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    os.replace(temp, path)
+    keys = [line for line in content.splitlines() if line.strip() and not line.startswith("#")]
+    print(json.dumps({"output": str(path), "keys": len(keys), "rotated": rotate}, sort_keys=True))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="student-execution-os",
@@ -712,6 +733,28 @@ def build_parser() -> argparse.ArgumentParser:
     purge = subparsers.add_parser("deletion-tombstones-purge")
     purge.add_argument("--database", required=True)
     purge.add_argument("--at")
+
+    keygen = subparsers.add_parser(
+        "credential-key-generate",
+        help="create (or rotate) the master key file that encrypts per-account AI keys",
+    )
+    keygen.add_argument("--output", required=True)
+    keygen.add_argument("--rotate", action="store_true", help="prepend a new active key to an existing file")
+
+    rekey = subparsers.add_parser("credentials-rekey", help="re-encrypt stored AI keys under the active master key")
+    rekey.add_argument("--database", required=True)
+
+    entitlement = subparsers.add_parser(
+        "llm-entitlement", help="grant or revoke platform-managed AI for one account (operator/billing action)"
+    )
+    entitlement.add_argument("--database", required=True)
+    who = entitlement.add_mutually_exclusive_group(required=True)
+    who.add_argument("--account")
+    who.add_argument("--login")
+    action = entitlement.add_mutually_exclusive_group(required=True)
+    action.add_argument("--grant", metavar="PLAN")
+    action.add_argument("--revoke", action="store_true")
+    entitlement.add_argument("--expires", help="ISO offset datetime; omit for no expiry")
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -826,6 +869,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         at = _dt(args.at) if args.at else None
         purged = SQLiteDataLifecycle(args.database).purge_expired_deletion_tombstones(now=at)
         print(json.dumps({"purged": purged}, sort_keys=True))
+        return 0
+
+    if args.command == "credential-key-generate":
+        return _credential_key_generate(Path(args.output), rotate=args.rotate)
+    if args.command == "credentials-rekey":
+        from student_execution_os.agent.credentials import LlmCredentialStore
+
+        with SQLiteCanonicalRepository(args.database) as repo:
+            repo.initialize()
+            print(json.dumps({"reencrypted": LlmCredentialStore(repo).rekey()}, sort_keys=True))
+        return 0
+    if args.command == "llm-entitlement":
+        from student_execution_os.agent.credentials import LlmCredentialStore
+
+        with SQLiteCanonicalRepository(args.database) as repo:
+            repo.initialize()
+            account_id = args.account
+            if args.login:
+                row = repo.connection.execute(
+                    "SELECT account_id FROM auth_users WHERE login=?", (args.login.strip().lower(),)
+                ).fetchone()
+                if row is None:
+                    raise SystemExit("no such login")
+                account_id = row[0]
+            store = LlmCredentialStore(repo, use_environment=False)
+            if args.revoke:
+                store.revoke_entitlement(account_id)
+            else:
+                store.grant_entitlement(account_id, args.grant, _dt(args.expires) if args.expires else None)
+            print(json.dumps({"account_id": account_id, "entitlement": store.entitlement(account_id)}, sort_keys=True))
         return 0
 
     if args.command == "account-init":
