@@ -195,9 +195,11 @@ function applyExecutionTaskOp(task, item) {
 }
 
 function segmentElapsed(session, at) {
-  if (!session?.current_segment_started_at) return Number(session?.actual_work_seconds || 0);
-  const extra = Math.max(0, Math.floor((new Date(at) - new Date(session.current_segment_started_at)) / 1000));
-  return Number(session.actual_work_seconds || 0) + extra;
+  const base = Number(session?.actual_work_seconds || 0);
+  if (!session?.current_segment_started_at) return base;
+  const measuredAt = session.measured_at || session.current_segment_started_at;
+  const extra = Math.max(0, Math.floor((new Date(at) - new Date(measuredAt)) / 1000));
+  return base + extra;
 }
 
 export function projectExecution(session, ops) {
@@ -212,16 +214,17 @@ export function projectExecution(session, ops) {
         id: op.entity_id, task_id: op.payload?.task_id, task_title: null, state: 'ACTIVE',
         started_at: at, finished_at: null, planning_snapshot_id: op.payload?.planning_snapshot_id || null,
         source_plan_block_id: op.payload?.source_plan_block_id || null, actual_work_seconds: 0,
-        actual_work_minutes: 0, current_segment_started_at: at, created_at: at, updated_at: at, version: 1, _pending: true,
+        actual_work_minutes: 0, measured_at: at, current_segment_started_at: at,
+        created_at: at, updated_at: at, version: 1, _pending: true,
       };
       continue;
     }
     if (!current || current.id !== op.entity_id) continue;
     if (op.type === 'execution.pause' && current.state === 'ACTIVE') {
       const seconds = segmentElapsed(current, at);
-      current = { ...current, state: 'PAUSED', actual_work_seconds: seconds, actual_work_minutes: Math.floor(seconds / 60), current_segment_started_at: null, updated_at: at, _pending: true };
+      current = { ...current, state: 'PAUSED', actual_work_seconds: seconds, actual_work_minutes: Math.floor(seconds / 60), measured_at: at, current_segment_started_at: null, updated_at: at, _pending: true };
     } else if (op.type === 'execution.resume' && current.state === 'PAUSED') {
-      current = { ...current, state: 'ACTIVE', current_segment_started_at: at, updated_at: at, _pending: true };
+      current = { ...current, state: 'ACTIVE', measured_at: at, current_segment_started_at: at, updated_at: at, _pending: true };
     } else if (op.type === 'execution.finish' || op.type === 'execution.cancel') {
       current = null;
     }
