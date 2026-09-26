@@ -51,6 +51,9 @@ public final class ReminderActions {
 
     /** JSON array of sync operations, one per task the reminder is about. */
     public static String operations(String action, String messageId, List<String> taskIds, long pressedAtMillis) {
+        if (START.equals(action) && taskIds.size() != 1) {
+            throw new IllegalArgumentException("execution Start requires exactly one Task");
+        }
         List<String> ops = new ArrayList<>();
         for (int i = 0; i < taskIds.size(); i++) {
             String taskId = taskIds.get(i);
