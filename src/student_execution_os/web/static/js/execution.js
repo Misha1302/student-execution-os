@@ -8,7 +8,8 @@ export function executionSeconds(session, at = Date.now()) {
   if (!session) return 0;
   let seconds = Number(session.actual_work_seconds || 0);
   if (session.state === 'ACTIVE' && session.current_segment_started_at) {
-    seconds += Math.max(0, Math.floor((at - new Date(session.current_segment_started_at).getTime()) / 1000));
+    const measuredAt = session.measured_at || session.current_segment_started_at;
+    seconds += Math.max(0, Math.floor((at - new Date(measuredAt).getTime()) / 1000));
   }
   return Math.max(0, seconds);
 }
@@ -73,7 +74,7 @@ export async function startExecution(task, plan) {
   }, { success: t('execution.started') });
   if (result) showExecutionNotification({
     id, task_id: task.id, task_title: task.title, state: 'ACTIVE',
-    started_at: occurredAt, current_segment_started_at: occurredAt, actual_work_seconds: 0,
+    started_at: occurredAt, measured_at: occurredAt, current_segment_started_at: occurredAt, actual_work_seconds: 0,
   }, task.title).catch(() => {});
   return result;
 }
@@ -82,7 +83,7 @@ export async function pauseExecution(session) {
   const occurredAt = new Date().toISOString();
   const result = await change('execution.pause', session.id, { occurred_at: occurredAt }, { success: t('execution.pausedToast') });
   if (result) showExecutionNotification({
-    ...session, state: 'PAUSED', current_segment_started_at: null,
+    ...session, state: 'PAUSED', measured_at: occurredAt, current_segment_started_at: null,
     actual_work_seconds: executionSeconds(session), updated_at: occurredAt,
   }, session.task_title).catch(() => {});
   return result;
@@ -92,7 +93,7 @@ export async function resumeExecution(session) {
   const occurredAt = new Date().toISOString();
   const result = await change('execution.resume', session.id, { occurred_at: occurredAt }, { success: t('execution.resumedToast') });
   if (result) showExecutionNotification({
-    ...session, state: 'ACTIVE', current_segment_started_at: occurredAt, updated_at: occurredAt,
+    ...session, state: 'ACTIVE', measured_at: occurredAt, current_segment_started_at: occurredAt, updated_at: occurredAt,
   }, session.task_title).catch(() => {});
   return result;
 }
