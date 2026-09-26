@@ -101,7 +101,7 @@ export async function resumeExecution(session) {
   return result;
 }
 
-export function finishExecution(session, task, { complete = false, occurredAt = null } = {}) {
+export async function finishExecution(session, task, { complete = false, occurredAt = null } = {}) {
   if (!session || !task) return Promise.resolve(null);
   const finishAt = occurredAt || new Date().toISOString();
   if (complete) {
