@@ -80,6 +80,8 @@ class AssistantProviderTests(unittest.TestCase):
                              "code": "invalid_api_key"}}, "AUTH"),
             (403, {"error": {"message": "Invalid API key in request"}}, "AUTH"),
             (403, {"error": {"message": "You have insufficient permissions for this operation."}}, "AUTH"),
+            (403, {"error": {"type": "permissions_error", "code": "model_permission_blocked_project",
+                             "message": "The model openai/gpt-oss-20b is blocked at the project level."}}, "NOT_FOUND"),
         )
         for status, body, reason in cases:
             response = self.response(body, status)

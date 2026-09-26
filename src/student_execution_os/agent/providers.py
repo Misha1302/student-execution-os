@@ -180,7 +180,12 @@ def _reason(status: int, response: httpx.Response | None = None, *, custom_addre
     mentions_model = "model" in text
     quota = any(word in text for word in ("insufficient_quota", "quota", "billing", "credit balance", "credits"))
     if status in (401, 403):
-        if mentions_model and ("not_found" in text or "access" in text):
+        # Providers such as Groq use 403 for organization/project model
+        # permissions. That says the credential was understood but this model is
+        # unavailable to it; do not mislabel it as a bad key.
+        if mentions_model and any(word in text for word in (
+            "not_found", "access", "permission", "blocked", "not allowed",
+        )):
             return "NOT_FOUND"
         if status == 403 and not any(word in text for word in _KEY_WORDS):
             return "SERVER_BLOCKED"
