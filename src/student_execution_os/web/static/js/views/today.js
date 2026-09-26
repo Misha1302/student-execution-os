@@ -4,6 +4,7 @@ import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead 
 import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../capture.js';
 import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
+import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution } from '../execution.js';
 
 export function parseWhyNow(value) {
   const out = {};
@@ -204,6 +205,8 @@ export default {
     const tasks = new Map((data.tasks || []).map((x) => [x.id, x]));
     const actions = data.next_actions || [];
     const [first, ...rest] = actions;
+    const activeExecution = data.active_execution || null;
+    const activeExecutionTask = activeExecution ? tasks.get(activeExecution.task_id) : null;
     const unhealthy = (data.source_health || []).filter((s) => s.health_status !== 'CURRENT');
     const cur = now();
     const events = (plan.canonical_events || []).filter((e) => new Date(e.ends_at) >= cur && sameDay(new Date(e.starts_at), cur))
@@ -225,7 +228,7 @@ export default {
 
       <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}
-        ${first ? nowCard(first, tasks.get(first.task_id), plan) : suggestion ? fallbackNowCard(suggestion) : nothingYet ? '' : empty(
+        ${activeExecution ? executionCard(activeExecution, activeExecutionTask) : first ? nowCard(first, tasks.get(first.task_id), plan) : suggestion ? fallbackNowCard(suggestion) : nothingYet ? '' : empty(
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothing') : t('today.resolveFirst'),
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothingHint') : t('today.resolveFirstHint'),
           plan.feasibility_status === 'FEASIBLE' ? 'check' : 'question',
@@ -298,6 +301,9 @@ export default {
         </button>`).join('')}</div>` : `<p class="muted pad">${esc(t('today.noBoundaries'))}</p>`}
       </section>`;
   },
+  mount(root, data) {
+    mountExecutionTimers(root, data?.active_execution || null);
+  },
   actions: {
     progress(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
@@ -305,7 +311,23 @@ export default {
     },
     async 'start-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
-      if (task) await change('task.start', task.id, {}, { success: t('today.started') });
+      if (task) await startExecution(task, ctx.data?.plan);
+    },
+    async 'execution-pause'(_el, ctx) {
+      if (ctx.data?.active_execution) await pauseExecution(ctx.data.active_execution);
+    },
+    async 'execution-resume'(_el, ctx) {
+      if (ctx.data?.active_execution) await resumeExecution(ctx.data.active_execution);
+    },
+    async 'execution-finish'(_el, ctx) {
+      const session = ctx.data?.active_execution;
+      const task = session ? (ctx.data?.tasks || []).find((x) => x.id === session.task_id) : null;
+      if (session && task) await finishExecution(session, task);
+    },
+    async 'execution-complete'(_el, ctx) {
+      const session = ctx.data?.active_execution;
+      const task = session ? (ctx.data?.tasks || []).find((x) => x.id === session.task_id) : null;
+      if (session && task) await finishExecution(session, task, { complete: true });
     },
     async 'complete-task'(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
