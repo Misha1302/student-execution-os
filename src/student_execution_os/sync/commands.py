@@ -445,6 +445,12 @@ class Commands:
         unknown = set(payload) - allowed
         if unknown:
             raise ValidationError("execution start fields are not supported: " + ", ".join(sorted(unknown)))
+        active = self._execution().active(self.account_id, self.now)
+        if active is not None and active["id"] != session_id:
+            return Outcome(
+                CONFLICT, active, "EXECUTION_ACTIVE",
+                f"already working on {active.get('task_title') or active['task_id']}",
+            )
         occurred_at = self._execution_moment(payload)
         entity, changed = self._execution().start(
             self.account_id, session_id, task_id, occurred_at, self.actor,
