@@ -492,6 +492,23 @@ class BrowserUiTest(unittest.TestCase):
         self.assertEqual(self.page_errors, [])
         page.close()
 
+    def test_ai_status_is_described_even_when_this_client_does_not_know_it(self):
+        for status, expected in (("SERVER_BLOCKED", "without blaming the key"),
+                                 ("STATUS_FROM_A_NEWER_SERVER", "The check failed (STATUS_FROM_A_NEWER_SERVER)")):
+            credential = {"provider": "openai-compatible", "model": "openai/gpt-oss-20b",
+                          "base_url": "https://api.groq.com/openai/v1", "key_hint": "••••USr9", "status": status,
+                          "last_checked_at": None, "updated_at": None, "version": 1}
+            self.responses["/api/v1/settings/llm"] = self.llm_settings(credential)
+            page = self._open()
+            self._ready(page, "today")
+            self._go(page, "settings")
+            page.wait_for_selector("[data-ai] [data-action='ai-test']")
+            text = page.locator("[data-ai]").inner_text()
+            self.assertIn(expected, text)
+            self.assertNotIn("ai.status", text)
+            self.assertEqual(self.page_errors, [])
+            page.close()
+
     def test_navigating_with_an_open_sheet_closes_it_instead_of_freezing(self):
         # Regression: <dialog> closes asynchronously and closeAllSheets() spun forever.
         page = self._open()
@@ -906,6 +923,120 @@ class BrowserUiTest(unittest.TestCase):
         page.locator('[data-action="connector-sync"]').click()
         page.locator(".toast.error").wait_for()
         self.assertIn(("/api/v1/connectors/gcal/sync", {}), self.posts)
+        page.close()
+
+    # ---- regressions: one gesture, explicit alarm intent, localized sync problems ----
+
+    LONG_PRESS_JS = """async ([id, contextAt]) => {
+      const el = document.querySelector(`.task-card[data-id="${id}"]`);
+      const r = el.getBoundingClientRect();
+      const touch = new Touch({ identifier: 7, target: el, clientX: r.left + 20, clientY: r.top + 10 });
+      const send = (type) => el.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true,
+        touches: type === 'touchend' ? [] : [touch], changedTouches: [touch] }));
+      const menu = () => el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true,
+        clientX: r.left + 20, clientY: r.top + 10 }));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      send('touchstart');
+      await wait(contextAt);
+      menu();                       // Android/WebView: the system long press
+      await wait(Math.max(0, 650 - contextAt));
+      send('touchend');
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await wait(250);
+      return { sheets: document.querySelectorAll('dialog.sheet[open]').length, hash: location.hash };
+    }"""
+
+    def test_android_long_press_opens_one_quick_action_sheet_and_one_operation(self):
+        task = next(t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE")
+        # The system long-press timeout may be shorter (contextmenu first) or longer
+        # (our timer first) than ours: either order is one gesture, one sheet.
+        for context_at in (600, 450):
+            with self.subTest(contextmenu_after_ms=context_at):
+                page = self._open(width=390, height=844, hash_="#/tasks")
+                self._ready(page, "tasks")
+                out = page.evaluate(self.LONG_PRESS_JS, [task["id"], context_at])
+                self.assertEqual(out["sheets"], 1)
+                self.assertEqual(out["hash"], "#/tasks")  # the synthetic click did not open the task
+                sheet = page.locator("dialog.sheet[open]")
+                sheet.locator('[data-choice="complete"]').click()
+                self._wait_sync(page)
+                completes = [o for o in self._queued(page) if o["type"] == "task.complete"]
+                self.assertEqual(len(completes), 1)
+                self.assertEqual(page.locator("dialog.sheet[open]").count(), 0)
+                # The lock was released: the next long press opens the sheet again.
+                self.assertEqual(page.evaluate(self.LONG_PRESS_JS, [task["id"], 600])["sheets"], 1)
+                self.assertEqual(self.page_errors, [])
+                page.close()
+
+    def test_short_tap_still_opens_the_task_once(self):
+        task = next(t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE")
+        page = self._open(width=390, height=844, hash_="#/tasks")
+        self._ready(page, "tasks")
+        page.evaluate("""(id) => {
+          const el = document.querySelector(`.task-card[data-id="${id}"]`);
+          const touch = new Touch({ identifier: 3, target: el, clientX: 30, clientY: 30 });
+          el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, touches: [touch], changedTouches: [touch] }));
+          el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, touches: [], changedTouches: [touch] }));
+          el.click();
+        }""", task["id"])
+        page.wait_for_timeout(700)
+        self.assertEqual(page.locator("dialog.sheet[open]").count(), 0)
+        self.assertIn(task["id"], page.evaluate("location.hash"))
+        page.close()
+
+    def _ai_reminder(self, payload):
+        self.responses["/api/v1/ask/capabilities"] = {**self.responses["/api/v1/ask/capabilities"], "live_llm_provider": True}
+        self.overrides[("POST", "/api/v1/assistant/interpret")] = (200, {
+            "batch_id": "batch-ai-alarm", "provider": "fake", "engine": "AI", "model": "fake-model", "fallback": False,
+            "fallback_reason": None, "message": "", "actions": [{
+                "id": "action-ai-alarm", "command": "CREATE_REMINDER", "payload": payload, "confidence": 0.9,
+                "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]})
+
+    def test_explicit_alarm_survives_model_omission_and_conflict_up_to_the_queued_create(self):
+        at = "2026-09-24T08:00:00+00:00"
+        cases = {"omitted": {"title": "Будильник", "remind_at": at},
+                 "conflicting": {"title": "Будильник", "remind_at": at, "delivery": "PUSH", "wake_check": False}}
+        for label, payload in cases.items():
+            with self.subTest(label):
+                self.posts.clear()
+                self._ai_reminder(payload)
+                page = self._open(locale="ru")
+                self._ready(page, "today")
+                page.locator(".fab").click()
+                sheet = page.locator("dialog.sheet[open]")
+                sheet.locator("#capture-text").fill("разбуди меня в 11:00")
+                sheet.locator("[data-engine]", has_text="fake-model").wait_for()
+                sheet.locator(".reminder-card").wait_for()
+                sheet.locator("[data-create]").click()
+                self._wait_sync(page)
+                created = [o for o in self._queued(page) if o["type"] == "reminder.create"]
+                self.assertEqual(len(created), 1)
+                sent = created[0]["payload"]
+                self.assertEqual((sent["delivery"], sent["wake_check"], sent["raise_volume"]), ("ALARM", True, True))
+                self.assertEqual((sent["title"], sent["remind_at"]), ("Будильник", at))
+                self.assertEqual(sent["assistant_batch_id"], "batch-ai-alarm")
+                self.assertEqual(self.page_errors, [])
+                page.close()
+
+    def test_sync_problem_shows_localized_reason_not_the_server_exception(self):
+        task = next(t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE")
+        raw = "only DRAFT tasks may have unknown effort"
+        page = self._open(locale="ru", hash_="#/tasks")
+        self._ready(page, "tasks")
+
+        def refuse(route):
+            ops = json.loads(route.request.post_data or "{}").get("operations", [])
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"server_revision": 1, "results": [
+                {**op, "status": "REJECTED", "code": "VALIDATION_ERROR", "message": raw, "entity": None} for op in ops]}))
+        page.route(ORIGIN + "/api/v1/sync", refuse)
+        page.locator(f'.task-card[data-id="{task["id"]}"]').click(button="right")
+        page.locator('dialog.sheet[open] [data-choice="complete"]').click()
+        page.locator(".toast", has_text="Сервер не принял").locator(".toast-action", has_text="Подробнее").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.wait_for()
+        text = sheet.inner_text()
+        self.assertNotIn(raw, text)
+        self.assertIn("Изменение не прошло проверку", text)
         page.close()
 
 

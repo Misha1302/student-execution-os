@@ -52,7 +52,7 @@ from .providers import (
 
 def _passed_before(reason: str) -> list[str]:
     """Steps a failed test still proved (a refused model means the key was accepted)."""
-    reached = {"AUTH": 0, "ENDPOINT": 0, "BLOCKED_URL": 0, "NETWORK": 0, "UPSTREAM": 0, "MALFORMED": 1,
+    reached = {"AUTH": 0, "SERVER_BLOCKED": 0, "REQUEST": 0, "ENDPOINT": 0, "BLOCKED_URL": 0, "NETWORK": 0, "UPSTREAM": 0, "MALFORMED": 1,
                "NOT_FOUND": 2, "QUOTA": 1, "RATE_LIMITED": 1, "REJECTED": 2, "FORMAT": 3}.get(reason, 0)
     return list(CHECKED[:reached])
 
@@ -70,6 +70,8 @@ class CredentialUnreadable(Exception):
 # Provider failure reason → persisted credential status (shown in Settings).
 STATUS_BY_REASON = {
     "AUTH": "INVALID_KEY",
+    "SERVER_BLOCKED": "SERVER_BLOCKED",
+    "REQUEST": "REJECTED",
     "NOT_FOUND": "MODEL_NOT_FOUND",
     "ENDPOINT": "ENDPOINT_NOT_FOUND",
     "RATE_LIMITED": "RATE_LIMITED",
@@ -206,6 +208,7 @@ class ResolvedLlm:
     source: CredentialSource
     provider: Any | None
     status: str | None = None  # stored credential status for USER_BYOK
+    version: int | None = None  # the credential version this provider was built from
 
     @property
     def live(self) -> bool:
@@ -256,11 +259,11 @@ class LlmCredentialStore:
                 api_key = self.cipher.decrypt(row["key_nonce"], row["key_ciphertext"], row["key_id"],
                                               _aad(account_id, row["provider"], row["base_url"]))
             except CredentialUnreadable:
-                self.record_status(account_id, "UNREADABLE")
+                self.record_status(account_id, "UNREADABLE", int(row["version"]))
             else:
                 provider = build_provider(row["provider"], api_key=api_key, model=row["model"],
                                           base_url=row["base_url"], user_supplied=True)
-                return ResolvedLlm(CredentialSource.USER_BYOK, provider, row["status"])
+                return ResolvedLlm(CredentialSource.USER_BYOK, provider, row["status"], int(row["version"]))
         if self.entitlement(account_id) is not None:
             platform = self.platform_provider()
             if platform is not None:
@@ -348,19 +351,24 @@ class LlmCredentialStore:
             conn.execute("DELETE FROM llm_credentials WHERE account_id=?", (account_id,))
         return self.public(account_id)
 
-    def record_status(self, account_id: str, status: str) -> None:
+    def record_status(self, account_id: str, status: str, version: int) -> None:
+        """Record what a request made with credential ``version`` found out.
+
+        Bound to the version: a slow answer about a key the user has meanwhile
+        replaced must not be written onto the new key.
+        """
         with self.repo._tx() as conn:
             conn.execute(
-                "UPDATE llm_credentials SET status=?,last_checked_at=? WHERE account_id=? AND status IS NOT ?",
-                (status, _iso(self.repo.clock.now()), account_id, status),
+                "UPDATE llm_credentials SET status=?,last_checked_at=? WHERE account_id=? AND version=? AND status IS NOT ?",
+                (status, _iso(self.repo.clock.now()), account_id, version, status),
             )
 
-    def record_use(self, account_id: str, failure: ProviderUnavailable | None) -> None:
+    def record_use(self, account_id: str, version: int, failure: ProviderUnavailable | None) -> None:
         """Remember what a live request said about the stored key (only lasting facts)."""
         if failure is None:
-            self.record_status(account_id, "OK")
+            self.record_status(account_id, "OK", version)
         elif failure.reason in _STICKY_REASONS:
-            self.record_status(account_id, STATUS_BY_REASON[failure.reason])
+            self.record_status(account_id, STATUS_BY_REASON[failure.reason], version)
 
     def test(self, account_id: str) -> dict[str, Any]:
         """Smoke-test the saved credential with a real interpret() round trip.
@@ -386,10 +394,10 @@ class LlmCredentialStore:
             failure = exc
         latency = round((time.monotonic() - started) * 1000)
         status = "OK" if failure is None else STATUS_BY_REASON.get(failure.reason, "UNREACHABLE")
-        self.record_status(account_id, status)
+        self.record_status(account_id, status, resolved.version)
         with self.repo._tx() as conn:  # a repeated test refreshes the time even if unchanged
-            conn.execute("UPDATE llm_credentials SET last_checked_at=? WHERE account_id=?",
-                         (_iso(self.repo.clock.now()), account_id))
+            conn.execute("UPDATE llm_credentials SET last_checked_at=? WHERE account_id=? AND version=?",
+                         (_iso(self.repo.clock.now()), account_id, resolved.version))
         return {"ok": failure is None, "status": status,
                 "reason": None if failure is None else failure.reason,
                 "http_status": None if failure is None else failure.http_status,

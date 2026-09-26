@@ -5,6 +5,7 @@ import androidx.annotation.NonNull;
 import com.capacitorjs.plugins.pushnotifications.MessagingService;
 import com.google.firebase.messaging.RemoteMessage;
 import io.github.misha1302.seos.alarm.AlarmPush;
+import io.github.misha1302.seos.alarm.AlarmSyncWorker;
 import java.util.Map;
 import org.json.JSONException;
 
@@ -22,6 +23,10 @@ public class ReminderMessagingService extends MessagingService {
     @Override
     public void onMessageReceived(@NonNull RemoteMessage message) {
         Map<String, String> data = message.getData();
+        boolean ours = "alarm-sync".equals(data.get("type")) || "reminder".equals(data.get("type"));
+        if (ours && !AlarmSyncWorker.belongsToSession(this, data.get("account_id"))) {
+            return;  // for an account this phone is no longer signed in to
+        }
         if ("alarm-sync".equals(data.get("type"))) {
             AlarmPush.sync(this);
             return;  // a silent signal, nothing for the web layer

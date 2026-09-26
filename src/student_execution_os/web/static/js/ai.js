@@ -21,8 +21,15 @@ function providerLabel(llm, id) {
   return (llm.providers || []).find((p) => p.id === id)?.label || id;
 }
 
+// A status this client has no words for (an app built before the server added it)
+// is still described, never shown as a raw translation key.
+function statusText(kind, status) {
+  const key = `ai.${kind}.${status}`;
+  return t(key) === key ? t(`ai.${kind}.other`, { status }) : t(key);
+}
+
 function statusChip(status) {
-  return chip(t(`ai.status.${status}`), STATUS_TONE[status] || 'danger');
+  return chip(statusText('status', status), STATUS_TONE[status] || 'danger');
 }
 
 export function aiSection(llm) {
@@ -37,7 +44,7 @@ export function aiSection(llm) {
         ${c.base_url ? kv(t('ai.baseUrl'), c.base_url) : ''}
         ${kv(t('ai.key'), c.key_hint)}
       </dl>
-      <div class="row static"><span class="row-main"><small>${esc(t(`ai.statusHelp.${c.status}`))}</small>
+      <div class="row static"><span class="row-main"><small>${esc(statusText('statusHelp', c.status))}</small>
         ${c.last_checked_at ? `<small>${esc(t('ai.checkedAt', { when: fmtDateTime(c.last_checked_at) }))}</small>` : ''}</span>${statusChip(c.status)}</div>
       ${lastTest && lastTest.status === c.status ? testSteps(lastTest) : ''}
       <div class="button-row">
@@ -131,7 +138,7 @@ async function runTest() {
   try {
     const result = await api('/api/v1/settings/llm/test', { method: 'POST', timeoutMs: 60000 });
     lastTest = result;
-    toast(result.ok ? t('ai.testOk') : t(`ai.statusHelp.${result.status}`), { error: !result.ok });
+    toast(result.ok ? t('ai.testOk') : statusText('statusHelp', result.status), { error: !result.ok });
   } catch (err) {
     toast(errorMessage(err), { error: true });
   }

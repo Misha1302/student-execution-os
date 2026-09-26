@@ -196,6 +196,7 @@ class _Parser:
         self.zone = zone
         self.taken = [False] * len(text)
         self.pieces: list[_Piece] = []
+        self.alarm_ends: list[int] = []  # where an alarm word ends (reminder_cue)
 
     # -- span bookkeeping ---------------------------------------------------------------
 
@@ -370,6 +371,13 @@ class _Parser:
         # 6pm, 6 p.m.
         for match in self.scan(rf"(?<![\w.:]){prep}(\d{{1,2}})\s*(am|pm|a\.m\.|p\.m\.)(?!\w)"):
             self._time_piece(match, _hour(int(match.group(2)), match.group(3), explicit=True), 0, match.group(1))
+        # "будильник на 8", "alarm for 10": right after an alarm word, "на"/"for" and a
+        # bare number is the clock time (elsewhere "на 8" is not: "на 8 человек").
+        for match in self.scan(rf"(?<!\w)(?:на|for)\s+(\d{{1,2}}){suffix}(?![\w:.])(?!\s*(?:минут|мин|hours?|mins?|minutes?|{_COUNTED}))"):
+            number = int(match.group(1))
+            if number <= 23 and any(end <= match.start() and not self.low[end:match.start()].strip()
+                                    for end in self.alarm_ends):
+                self._time_piece(match, _hour(number, match.group(2), explicit=bool(match.group(2))), 0, None)
         # "в 6 вечера", "к шести", "at six", "в 18 часов" — a preposition is required.
         words = rf"(\d{{1,2}}|{_NUM_ALT}|часу)"
         pattern = (rf"(?<!\w)(к|до|в|во|около|после|с|со|не\s+позже|не\s+позднее|at|by|before|until|after|around)\s+{words}"
@@ -466,12 +474,14 @@ class _Parser:
         """"напомни", and alarm words ("поставь будильник", "разбуди меня", "wake me up")."""
         spans = []
         self.alarm = self.wake = self.remind_word = False
+        self.alarm_ends = []
         for match in self.scan(r"(?<!\w)(?:(?:и\s+)?(?:поставь|поставить|заведи|завести|включи)\s+будильник|разбуди(?:те)?(?:\s+меня)?|будильник|(?:and\s+)?set\s+(?:an?\s+)?alarm|wake\s+me(?:\s+up)?|alarm|напомни(?:те)?(?:\s+мне)?|напомнить(?:\s+мне)?|поставь\s+напоминание|напоминание|remind\s+me(?:\s+to)?|reminder)(?!\w)"):
             self.take(match.start(), match.end())
             spans.append((match.start(), match.end()))
             word = match.group(0)
             if re.search(r"будильник|alarm", word) or re.search(r"разбуд|wake", word):
                 self.alarm = True
+                self.alarm_ends.append(match.end())
             if re.search(r"разбуд|wake", word):
                 self.wake = True
             if re.search(r"напомн|напоминан|remind", word):

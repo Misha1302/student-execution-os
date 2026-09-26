@@ -200,6 +200,7 @@ class Parser {
     this.today = toDay(now);
     this.taken = new Array(text.length).fill(false);
     this.pieces = [];
+    this.alarmEnds = []; // where an alarm word ends (reminderCue)
   }
 
   free(start, end) { for (let i = start; i < end; i += 1) if (this.taken[i]) return false; return true; }
@@ -382,6 +383,14 @@ class Parser {
     for (const x of this.scan(`(?<![\\w.:])${prep}(\\d{1,2})\\s*(am|pm|a\\.m\\.|p\\.m\\.)(?!\\w)`)) {
       this.timePiece(x, hourOf(Number(x.m[2]), x.m[3], true), 0, x.m[1]);
     }
+    // "будильник на 8", "alarm for 10": right after an alarm word, "на"/"for" and a
+    // bare number is the clock time (elsewhere "на 8" is not: "на 8 человек").
+    for (const x of this.scan(`(?<!\\w)(?:на|for)\\s+(\\d{1,2})${suffix}(?![\\w:.])(?!\\s*(?:минут|мин|hours?|mins?|minutes?|${COUNTED}))`)) {
+      const n = Number(x.m[1]);
+      if (n <= 23 && this.alarmEnds.some((end) => end <= x.start && !this.low.slice(end, x.start).trim())) {
+        this.timePiece(x, hourOf(n, x.m[2], Boolean(x.m[2])), 0, null);
+      }
+    }
     const words = `(\\d{1,2}|${NUM_ALT}|часу)`;
     const pattern = `(?<!\\w)(к|до|в|во|около|после|с|со|не\\s+позже|не\\s+позднее|at|by|before|until|after|around)\\s+${words}`
       + `(?:\\s*(?:час(?:а|ов|ам|у)?|ч\\.?|o'?clock))?${suffix}(?!\\s*(?:минут|мин|hours?|mins?|minutes?|дн|недел|week|day|${COUNTED}))(?!\\w)`;
@@ -471,12 +480,12 @@ class Parser {
   // "напомни", and alarm words ("поставь будильник", "разбуди меня", "wake me up").
   reminderCue() {
     const spans = [];
-    this.alarm = false; this.wake = false; this.remindWord = false;
+    this.alarm = false; this.wake = false; this.remindWord = false; this.alarmEnds = [];
     for (const x of this.scan('(?<!\\w)(?:(?:и\\s+)?(?:поставь|поставить|заведи|завести|включи)\\s+будильник|разбуди(?:те)?(?:\\s+меня)?|будильник|(?:and\\s+)?set\\s+(?:an?\\s+)?alarm|wake\\s+me(?:\\s+up)?|alarm|напомни(?:те)?(?:\\s+мне)?|напомнить(?:\\s+мне)?|поставь\\s+напоминание|напоминание|remind\\s+me(?:\\s+to)?|reminder)(?!\\w)')) {
       this.take(x.start, x.end);
       spans.push([x.start, x.end]);
       const word = x.m[0];
-      if (/будильник|alarm|разбуд|wake/u.test(word)) this.alarm = true;
+      if (/будильник|alarm|разбуд|wake/u.test(word)) { this.alarm = true; this.alarmEnds.push(x.end); }
       if (/разбуд|wake/u.test(word)) this.wake = true;
       if (/напомн|напоминан|remind/u.test(word)) this.remindWord = true;
     }

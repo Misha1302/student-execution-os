@@ -120,10 +120,13 @@ export function eventCreatePayload(fields) {
     category: fields.category || 'GENERAL',
     importance: fields.importance || 'NORMAL',
     attendance_policy: fields.attendance_policy || 'REQUIRED',
-    location_effect: { kind: 'NONE' },
+    // A journey the Assistant read ("from home to campus") is kept, not reset to none.
+    location_effect: fields.location_effect?.kind ? fields.location_effect : { kind: 'NONE' },
   };
   if (fields.description) payload.description = fields.description;
   if (fields.remind_before_minutes != null) payload.remind_before_minutes = fields.remind_before_minutes;
+  if (fields.arrival_requirement_minutes) payload.arrival_requirement_minutes = fields.arrival_requirement_minutes;
+  if (fields.assistant_batch_id) payload.assistant_batch_id = fields.assistant_batch_id;
   return payload;
 }
 

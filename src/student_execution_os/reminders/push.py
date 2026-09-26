@@ -348,6 +348,9 @@ class PushDispatcher:
             "collapse_key": task_ids[0] if len(task_ids) == 1 else "group",
             "created_at": row["created_at"], "locale": prefs.locale, "timezone": prefs.timezone_name,
             "labels": FOLLOW_UP[prefs.locale],
+            # Whose message this is: a phone signed out of (or switched away from) this
+            # account ignores it, so an unrevoked push token cannot ring old alarms.
+            "account_id": row["account_id"],
         }
         if row["reminder_id"]:
             reminder = repo.connection.execute(

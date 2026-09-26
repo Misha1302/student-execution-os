@@ -71,4 +71,18 @@ public class ReminderActionsTest {
         assertEquals("reminder.snooze", later.getString("type"));
         assertEquals("2026-09-24T16:10:00Z", later.getJSONObject("payload").getString("until"));
     }
+
+    @Test
+    public void httpOkConflictIsNotTreatedAsApplied() throws Exception {
+        JSONArray conflict = new JSONArray().put(new JSONObject().put("status", "CONFLICT").put("code", "TASK_CANCELLED"));
+        JSONArray rejected = new JSONArray().put(new JSONObject().put("status", "REJECTED").put("code", "VALIDATION_ERROR"));
+        JSONArray applied = new JSONArray().put(new JSONObject().put("status", "APPLIED"));
+        JSONArray safeNoop = new JSONArray().put(new JSONObject().put("status", "NOOP").put("code", "ALREADY_COMPLETED"));
+        JSONArray unsafeNoop = new JSONArray().put(new JSONObject().put("status", "NOOP").put("code", "UNKNOWN"));
+        assertEquals(SyncResultPolicy.Decision.PERMANENT_FAILURE, SyncResultPolicy.decide(conflict));
+        assertEquals(SyncResultPolicy.Decision.PERMANENT_FAILURE, SyncResultPolicy.decide(rejected));
+        assertEquals(SyncResultPolicy.Decision.SUCCESS, SyncResultPolicy.decide(applied));
+        assertEquals(SyncResultPolicy.Decision.SUCCESS, SyncResultPolicy.decide(safeNoop));
+        assertEquals(SyncResultPolicy.Decision.PERMANENT_FAILURE, SyncResultPolicy.decide(unsafeNoop));
+    }
 }

@@ -303,6 +303,29 @@ function eventFromTask(d) {
   };
 }
 
+// Presence-aware reminder enrichment. `undefined` means the provider omitted a
+// field, not "reset it"; explicit card edits outrank deterministic intent, which
+// in turn is a floor under AI enrichment.
+export function mergeReminderDraft(previous, incoming, floor = null) {
+  const old = previous || {};
+  const next = { ...old };
+  for (const key of ['title', 'remind_at', 'note', 'delivery', 'wake_check', 'raise_volume', 'obligation_id']) {
+    if (key in (incoming || {})) next[key] = incoming[key];
+  }
+  next.deliveryChosen = Boolean(old.deliveryChosen);
+  next.wakeChosen = Boolean(old.wakeChosen);
+  if (old.deliveryChosen) next.delivery = old.delivery;
+  if (old.wakeChosen) next.wake_check = old.wake_check;
+  if (!next.delivery) next.delivery = 'PUSH';
+  if (!('wake_check' in next)) next.wake_check = false;
+  if (!('raise_volume' in next)) next.raise_volume = hasAlarm(next.delivery);
+  if (floor && !next.deliveryChosen) {
+    if (floor.delivery === 'PUSH_AND_ALARM' || next.delivery === 'PUSH') next.delivery = floor.delivery;
+  }
+  if (floor?.wake_check && !next.wakeChosen) next.wake_check = true;
+  return next;
+}
+
 // ---- the sheet ----------------------------------------------------------------------
 
 export function openCapture({ text = '', listen: listenNow = false } = {}) {
@@ -318,6 +341,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   let kindChosen = false;      // the user picked the kind; parses no longer switch it
   let eventDraft = null;
   let reminderDraft = null;   // { title, remind_at, delivery, wake_check, raise_volume, note }
+  let reminderFloor = null;   // explicit alarm/wake semantics from the local parser
   const eventEdited = new Set(); // event fields the user set by hand
   let dictation = null;
 
@@ -382,7 +406,8 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   // A parse (local or the model's) that found a fixed-time event.
   function adoptEvent(parsed) {
     const next = { ...(eventDraft || { attendance_policy: 'REQUIRED', remind_before_minutes: DEFAULT_LEAD }) };
-    for (const key of ['title', 'description', 'category', 'importance', 'starts_at', 'ends_at']) {
+    for (const key of ['title', 'description', 'category', 'importance', 'starts_at', 'ends_at',
+      'attendance_policy', 'location_effect', 'arrival_requirement_minutes', 'remind_before_minutes']) {
       if (!eventEdited.has(key) && parsed[key] !== undefined) next[key] = parsed[key];
     }
     eventDraft = next;
@@ -497,13 +522,11 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     writeFields(taskDetails, draft);
   }
 
-  function adoptReminder(parsed) {
-    reminderDraft = {
-      title: parsed.title, remind_at: parsed.remind_at, note: parsed.note ?? null,
-      delivery: reminderDraft?.deliveryChosen ? reminderDraft.delivery : parsed.delivery || 'PUSH',
-      deliveryChosen: reminderDraft?.deliveryChosen || false,
-      wake_check: Boolean(parsed.wake_check), raise_volume: parsed.raise_volume !== false,
-    };
+  function adoptReminder(parsed, source = 'assistant') {
+    if (source === 'local') {
+      reminderFloor = hasAlarm(parsed.delivery) ? { delivery: parsed.delivery, wake_check: parsed.wake_check === true } : null;
+    }
+    reminderDraft = mergeReminderDraft(reminderDraft, parsed, reminderFloor);
     if (!kindChosen) kind = 'REMINDER';
     // The same moment as a task's reminder, if the user says "это задача".
     merge({ title: parsed.title, remind_at: parsed.remind_at, actual_cutoff: { state: 'ABSENT' } }, 'reminder');
@@ -525,13 +548,14 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     const command = parseCommand(raw, now(), knownItems());
     if (command) { showLocalCommand(command); return; }
     const parsed = parseTask(raw, now());
+    reminderFloor = null;
     unresolved = parsed.unresolved || [];
     if (parsed.kind === 'EVENT') {
       unresolved = [];
       adoptEvent(parsed);
     } else if (parsed.kind === 'REMINDER') {
       unresolved = [];
-      adoptReminder(parsed);
+      adoptReminder(parsed, 'local');
     } else {
       if (!kindChosen) kind = 'TASK';
       merge(parsed, 'local');
@@ -582,11 +606,15 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       render();
       return;
     }
+    // The words asked for an alarm: a task or event reading of them is a downgrade
+    // (an older server may still send one), so the local alarm card stays.
+    if (reminderFloor && !kindChosen) return;
     const create = actions.length === 1 && actions[0].command === 'CREATE_TASK' ? actions[0] : null;
     const event = actions.length === 1 && actions[0].command === 'CREATE_EVENT' && actions[0].payload?.starts_at && actions[0].payload?.ends_at ? actions[0] : null;
     if (event) {
       // The model's reading goes through the same card and the same event.create
       // validation as the local parse; it only improves title and times.
+      assistant = { batch_id: result.batch_id, action_id: event.id };
       unresolved = [];
       adoptEvent(event.payload);
       render();
@@ -620,7 +648,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       return;
     }
     if (e.detail.name === 'card-wake' && reminderDraft) {
-      reminderDraft = { ...reminderDraft, wake_check: e.detail.value === 'true' };
+      reminderDraft = { ...reminderDraft, wake_check: e.detail.value === 'true', wakeChosen: true };
       return;
     }
     if (e.detail.name !== 'card-lead' || !eventDraft) return;
@@ -736,6 +764,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     if (kind === 'EVENT' && eventDraft) {
       if (details.open) fromEventDetails();
       const fields = { ...eventDraft, title: String(eventDraft.title || '').trim() };
+      if (assistant) fields.assistant_batch_id = assistant.batch_id;
       if (!fields.title) { toast(t('form.titleRequired'), { error: true }); return; }
       if (!(new Date(fields.ends_at) > new Date(fields.starts_at))) { toast(t('event.endBeforeStart'), { error: true }); return; }
       const id = await createEvent(fields, { toastText: t('capture.eventSaved', { when: eventWhen(fields) }) });

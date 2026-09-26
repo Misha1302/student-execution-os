@@ -1369,7 +1369,7 @@ class UiService:
             service = SQLiteAssistantService(repo, self.principal, provider=resolved.provider)
             result = service.interpret(str(payload.get("text", "")), payload.get("context"), degrade_invalid=True)
             if resolved.source.value == "USER_BYOK":
-                credentials.record_use(self.account_id, service.provider_failure)
+                credentials.record_use(self.account_id, resolved.version, service.provider_failure)
             result["credential_source"] = resolved.source.value
             return result
 

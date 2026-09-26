@@ -12,12 +12,9 @@ from student_execution_os.domain.errors import AuthorizationDenied, IdempotencyC
 from student_execution_os.domain.model import (
     ActorCategory,
     AttendancePolicy,
-    EventTimeSemantics,
     HardCutoff,
     Importance,
     LifecycleStatus,
-    LocationEffect,
-    LocationEffectKind,
     ObligationCategory,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
@@ -29,6 +26,7 @@ from .providers import ProviderUnavailable
 
 
 COMMANDS = {command.value for command in AgentCommand}
+_CREATES = {AgentCommand.CREATE_TASK.value, AgentCommand.CREATE_EVENT.value, AgentCommand.CREATE_REMINDER.value}
 # Commands that close or put away something the user has: always confirmed by the user.
 DESTRUCTIVE = {AgentCommand.COMPLETE_OBLIGATION.value, AgentCommand.CANCEL_OBLIGATION.value,
                AgentCommand.ARCHIVE_OBLIGATION.value}
@@ -95,9 +93,7 @@ class DeterministicAssistantParser:
         unresolved = [field for field in parsed.pop("unresolved") if field != "title"]
         parsed.pop("cutoff_time_assumed", None)
         if parsed.get("kind") == "REMINDER":
-            payload = {key: parsed[key] for key in ("title", "note", "remind_at", "delivery", "wake_check", "raise_volume")
-                       if parsed.get(key) is not None}
-            return [{"command": AgentCommand.CREATE_REMINDER.value, "payload": payload, "confidence": 0.85,
+            return [{"command": AgentCommand.CREATE_REMINDER.value, "payload": _reminder_payload(parsed), "confidence": 0.85,
                      "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]
         if parsed.get("kind") == "EVENT":
             payload = {key: parsed[key] for key in ("title", "description", "starts_at", "ends_at", "category", "importance")
@@ -109,6 +105,12 @@ class DeterministicAssistantParser:
         return [{"command": AgentCommand.CREATE_TASK.value, "payload": payload,
                  "confidence": 0.8 if not unresolved else 0.6, "unresolved_fields": unresolved,
                  "expected_version": None, "requires_confirmation": False}]
+
+
+def _reminder_payload(parsed: dict[str, object]) -> dict[str, object]:
+    """CREATE_REMINDER payload of a local ``parse_task`` reading (known fields only)."""
+    return {key: parsed[key] for key in ("title", "note", "remind_at", "delivery", "wake_check", "raise_volume")
+            if parsed.get(key) is not None}
 
 
 def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
@@ -491,6 +493,7 @@ class SQLiteAssistantService:
             raise ValidationError("assistant provider returned an invalid actions list")
         if len(raw_actions) > 10:
             raise ValidationError("assistant proposed too many actions")
+        raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
         actions = []
         for raw in raw_actions:
             clean = validate_proposal(raw, self.canonical, self.principal.account_id)
@@ -502,6 +505,44 @@ class SQLiteAssistantService:
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
             })
         return provider.name, assistant_message, actions
+
+    @staticmethod
+    def _reconcile_explicit_intent(text: str, context: dict[str, object],
+                                   raw_actions: list[object]) -> list[object]:
+        """Keep explicitly stated alarm semantics as a floor under the model's proposal.
+
+        The language model enriches a proposal (title, time, note); it is not the
+        authority to turn «поставь будильник» into a push, to drop «разбуди меня»
+        wake semantics by omitting a field, or to capture an alarm as a task.
+        ``parse_task`` is the single owner of RU/EN intent detection (the client runs
+        the same rules in nlparse.js). Only creation is reconciled: a command about an
+        existing item («отмени будильник») is not a new alarm request.
+        """
+        now = _dt(str(context.get("now"))) if context.get("now") else None
+        parsed = parse_task(text, now=now or datetime.now(timezone.utc),
+                            timezone_name=str(context.get("timezone") or "UTC"))
+        floor = str(parsed.get("delivery") or "")
+        if parsed.get("kind") != "REMINDER" or floor not in ("ALARM", "PUSH_AND_ALARM"):
+            return raw_actions
+        proposed = raw_actions[0] if len(raw_actions) == 1 else None
+        if not isinstance(proposed, dict) or proposed.get("command") not in _CREATES:
+            return raw_actions  # several items, or a command about an existing one
+        local = _reminder_payload(parsed)
+        if proposed.get("command") != AgentCommand.CREATE_REMINDER.value:
+            # An alarm captured as a task/event is a semantic downgrade.
+            return [{**proposed, "command": AgentCommand.CREATE_REMINDER.value, "payload": local,
+                     "unresolved_fields": [], "expected_version": None}]
+        incoming = proposed.get("payload")
+        if not isinstance(incoming, dict):
+            return raw_actions
+        # Omitted fields keep the local reading; supplied ones are enrichment...
+        payload = {**local, **incoming}
+        # ...except that delivery may only keep or strengthen the alarm part.
+        if floor == "PUSH_AND_ALARM" or payload.get("delivery") not in ("ALARM", "PUSH_AND_ALARM"):
+            payload["delivery"] = floor
+        if local.get("wake_check"):
+            payload["wake_check"] = True
+        return [{**proposed, "payload": payload}]
 
     def apply(self, payload: dict[str, object]) -> dict[str, object]:
         batch_id = str(payload.get("batch_id", ""))
@@ -601,31 +642,6 @@ class SQLiteAssistantService:
                                now=self.canonical.clock.now()).task_create(task_id, dict(data))
             return {"action_id": action["id"], "entity_id": task_id, "version": outcome.entity["version"],
                     "status": outcome.entity["status"], "entity": outcome.entity}
-        if command is AgentCommand.CREATE_EVENT:
-            effect_data = data.get("location_effect") or {"kind": "NONE"}
-            if not isinstance(effect_data, dict):
-                raise ValidationError("event location_effect must be an object")
-            event = self.canonical.create_event(
-                **common,
-                title=str(data["title"]),
-                description=data.get("description"),
-                starts_at=_dt(str(data["starts_at"])),
-                ends_at=_dt(str(data["ends_at"])),
-                time_semantics=EventTimeSemantics.FIXED_INTERVAL,
-                category=ObligationCategory(data.get("category", "GENERAL")),
-                importance=Importance(data.get("importance", "NORMAL")),
-                attendance_policy=AttendancePolicy(data.get("attendance_policy", "REQUIRED")),
-                location_effect=LocationEffect(
-                    LocationEffectKind(effect_data.get("kind", "NONE")),
-                    effect_data.get("origin_place_id"),
-                    effect_data.get("destination_place_id"),
-                ),
-                arrival_requirement_minutes=int(data.get("arrival_requirement_minutes", 0)),
-            )
-            return {
-                "action_id": action["id"], "entity_id": event.obligation.id,
-                "version": event.obligation.version, "status": event.obligation.lifecycle_status.value,
-            }
         if command is AgentCommand.REFINE_TASK:
             entity = str(data["obligation_id"])
             task = self.canonical.update_task(**common, obligation_id=entity, expected_version=int(action["expected_version"]),
@@ -651,6 +667,10 @@ class SQLiteAssistantService:
         target = target_of(self.canonical, self.principal.account_id, data)
         kind, entity = (target[0], target[1]) if target else ("", "")
         fields = {key: value for key, value in data.items() if key not in _TARGET}
+        if command is AgentCommand.CREATE_EVENT:
+            # One event.create owner for manual, offline and Assistant creation, so a
+            # requested reminder lead (remind_before_minutes) is stored the same way.
+            return "event.create", f"event-{uuid4()}", fields
         if command is AgentCommand.CREATE_REMINDER:
             return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
         if command is AgentCommand.UPDATE_TASK:

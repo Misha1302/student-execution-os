@@ -106,6 +106,31 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(done["entity"]["status"], "DONE")
         self.assertEqual(self.sync("reminder.done", "reminder-bread-1")["code"], "ALREADY_DONE")
 
+    def test_i_am_up_on_one_phone_reaches_the_other_phones_alarm_schedule(self):
+        self.device("phone-a", ["reminder-actions-v1", "wake-alarm-v1"])
+        self.device("phone-b", ["reminder-actions-v1", "wake-alarm-v1"])
+        self.sync("reminder.create", "reminder-wake-ab", {
+            "title": "Подъём", "remind_at": "2026-09-24T04:00:00+00:00", "delivery": "ALARM",
+            "wake_check": True, "raise_volume": True})
+        PushDispatcher(self.db, self.phone).run_once(self.clock.now, "w")
+        self.phone.sent.clear()
+        self.tick(datetime(2026, 9, 24, 4, 0, tzinfo=timezone.utc))
+        self.assertTrue(all(p["account_id"] == "a" for p, _ in self.phone.sent), "pushes name their account")
+        self.phone.sent.clear()
+        self.sync("reminder.ack", "reminder-wake-ab", {"stage": "UP"})  # pressed on phone A
+        PushDispatcher(self.db, self.phone).run_once(self.clock.now, "w")
+        self.assertEqual(sorted(p["_token"] for p, _ in self.phone.sent if p["type"] == "alarm-sync"), ["phone-a", "phone-b"])
+        # What phone B fetches: still open (A runs the awake check) but answered, so B
+        # stops ringing it (AlarmState.merge; AlarmStateTest covers the phone side).
+        listed = self.ok(self.client.get("/api/v1/reminders/alarms"))["alarms"]
+        self.assertEqual([(a["id"], a["status"], bool(a["acknowledged_at"])) for a in listed],
+                         [("reminder-wake-ab", "FIRED", True)])
+        self.phone.sent.clear()
+        self.sync("reminder.ack", "reminder-wake-ab", {"stage": "AWAKE"})
+        PushDispatcher(self.db, self.phone).run_once(self.clock.now, "w")
+        self.assertEqual(len([p for p, _ in self.phone.sent if p["type"] == "alarm-sync"]), 2)
+        self.assertEqual(self.ok(self.client.get("/api/v1/reminders/alarms"))["alarms"], [])
+
     def test_rescheduling_or_cancelling_before_delivery_drops_the_stale_message(self):
         self.device("phone", ["reminder-actions-v1"])
         self.sync("reminder.create", "reminder-late-01", {"title": "Позвонить", "remind_at": "2026-09-23T10:00:00+00:00"})

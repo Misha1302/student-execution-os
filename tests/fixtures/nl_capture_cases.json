@@ -849,6 +849,60 @@
     "raise_volume": false,
     "unresolved": []
    }
+  },
+  {
+   "text": "поставить будильник на 11:00",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Подъём",
+    "remind_at": "2026-09-23 11:00",
+    "delivery": "ALARM",
+    "wake_check": true,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "заведи будильник на 8",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Подъём",
+    "remind_at": "2026-09-24 08:00",
+    "delivery": "ALARM",
+    "wake_check": true,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "set an alarm for 11",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Wake up",
+    "remind_at": "2026-09-23 11:00",
+    "delivery": "ALARM",
+    "wake_check": true,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "забронировать стол на 8",
+   "expect": {
+    "title": "Забронировать стол на 8",
+    "estimated_total_effort_minutes": null,
+    "importance": "NORMAL",
+    "category": "GENERAL",
+    "cutoff": "UNKNOWN",
+    "target_at": null,
+    "actionable_from": null,
+    "remind_at": null,
+    "splittable": false,
+    "unresolved": [
+     "estimated_total_effort_minutes",
+     "actual_cutoff"
+    ]
+   }
   }
  ]
 }

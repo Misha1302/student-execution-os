@@ -1,4 +1,4 @@
-import { isNative, prefGet, prefSet } from './native.js';
+import { isNative, prefGet, prefSet, clearDeviceAlarms } from './native.js';
 
 // Session state. In the browser the page is served by the API host itself, so the
 // base URL is same-origin (''). The Android app keeps a user-chosen server URL.
@@ -32,6 +32,9 @@ export async function restoreSession() {
   try { session.user = JSON.parse((await prefGet(KEYS.user)) || 'null'); } catch { session.user = null; }
 }
 
+// Device alarms belong to one account on one server. The stored credentials change
+// first and the alarms are cleared after: a background alarm sync that finishes in
+// between then sees the new owner and discards the old account's list.
 export async function setServer(url) {
   const next = normalizeServer(url);
   const changed = Boolean(session.server && session.server !== next);
@@ -42,14 +45,17 @@ export async function setServer(url) {
     session.user = null;
     await prefSet(KEYS.token, null);
     await prefSet(KEYS.user, null);
+    await clearDeviceAlarms();
   }
 }
 
 export async function setAuth(token, user) {
+  const ownershipChanged = Boolean(session.token && (!token || session.user?.account_id !== user?.account_id));
   session.token = token;
   session.user = user;
   await prefSet(KEYS.token, token);
   await prefSet(KEYS.user, user ? JSON.stringify(user) : null);
+  if (ownershipChanged) await clearDeviceAlarms();
 }
 
 export async function clearAuth() { await setAuth(null, null); }

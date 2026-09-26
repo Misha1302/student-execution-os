@@ -287,10 +287,27 @@ export async function openDeviceSettings(target) {
 
 // Hands the device every upcoming alarm of the account. The native side replaces
 // its schedule with this list (AlarmManager alarm clocks, kept across reboots).
+// An unchanged list is not handed over again; the memo belongs to the device's
+// schedule, so clearing that schedule forgets it.
+let lastAlarmList = '';
+
 export async function syncAlarms(alarms, labels = {}) {
   const native = seos();
   if (!native) return { supported: false };
-  return native.syncAlarms({ alarms, labels });
+  const signature = JSON.stringify({ alarms, labels });
+  if (signature === lastAlarmList) return { unchanged: true };
+  const result = await native.syncAlarms({ alarms, labels });
+  lastAlarmList = signature;
+  return result;
+}
+
+// Ends the signed-in account's ownership of this phone's alarms (logout, another
+// account or server): scheduled and ringing ones stop; the local test alarm stays.
+export async function clearDeviceAlarms() {
+  lastAlarmList = '';
+  const native = seos();
+  if (!native?.clearAlarms) return { supported: false, removed: 0 };
+  return native.clearAlarms();
 }
 
 export async function testAlarm() {

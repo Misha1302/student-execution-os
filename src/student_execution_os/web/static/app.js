@@ -242,8 +242,12 @@ function syncSheet() {
     || (peek('/api/v1/today')?.plan?.canonical_events || []).find((x) => x.id === op.entity_id)?.title || t('sync.someTask');
   const row = (item, problem) => {
     const op = item.operation || {};
-    const reason = item.result?.message ? ` — ${item.result.message}` : '';
-    const detail = problem ? `${t(`sync.why.${item.state}`)}${reason}` : new Date(item.queued_at).toLocaleString();
+    const codeKey = `sync.code.${item.result?.code || ''}`;
+    const coded = t(codeKey);
+    // Raw domain/exception text is diagnostic data, not primary user copy.
+    const detail = problem
+      ? (coded === codeKey ? t(`sync.why.${item.state}`) : coded)
+      : new Date(item.queued_at).toLocaleString();
     return `<article class="row"><span class="row-main"><strong>${esc(t(`sync.op.${op.type}`))} · ${esc(titleOf(op, item))}</strong>
       <small>${esc(detail)}</small></span>
       ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(t('sync.dismiss'))}</button>` : ''}</article>`;

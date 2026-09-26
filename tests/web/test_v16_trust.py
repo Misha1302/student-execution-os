@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 from student_execution_os.agent.credentials import TEST_LIMITER, CredentialCipher
 from student_execution_os.domain.clock import FrozenClock
-from student_execution_os.persistence import SQLiteCanonicalRepository
+from student_execution_os.persistence import SCHEMA_VERSION, SQLiteCanonicalRepository
 from student_execution_os.reminders.push import PushDispatcher, SendResult
 from student_execution_os.web.app import create_app
 from student_execution_os.web.queries import TEST_NOTIFICATION_LIMITER
@@ -226,7 +226,7 @@ class V16MigrationTest(unittest.TestCase):
                 conn.commit()
             with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
                 repo.initialize()
-                self.assertEqual(repo.schema_version(), 16)
+                self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
                 row = repo.connection.execute("SELECT model,status,key_hint FROM llm_credentials").fetchone()
                 self.assertEqual(tuple(row), ("m", "OK", "sk-••••abcd"))
                 repo.connection.execute("UPDATE llm_credentials SET status='QUOTA_EXCEEDED'")

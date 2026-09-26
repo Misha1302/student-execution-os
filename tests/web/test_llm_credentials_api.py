@@ -49,14 +49,22 @@ class FakeLlm:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.bodies: list[dict] = []
         self.status: dict[str, int] = {}
+        self.error_body: dict | None = None  # what a non-2xx answer carries
+        self.during_call = None  # runs while a request is "in flight"
 
     def __call__(self, url, *, headers, json, timeout, follow_redirects):
         key = headers.get("x-api-key") or headers.get("Authorization", "").removeprefix("Bearer ")
         self.calls.append((url, key))
+        self.bodies.append(json)
+        if self.during_call is not None:
+            self.during_call()
         response = Mock()
         response.status_code = self.status.get(key, 200)
-        if "/v1/messages" in url:
+        if response.status_code >= 300 and self.error_body is not None:
+            response.json.return_value = self.error_body
+        elif "/v1/messages" in url:
             response.json.return_value = {"content": [{"text": _proposal(f"anthropic:{key[-4:]}")}]}
         else:
             response.json.return_value = {"choices": [{"message": {"content": _proposal(f"openai:{key[-4:]}")}}]}
@@ -253,6 +261,79 @@ class LlmCredentialsApiTest(unittest.TestCase):
             self.assertEqual(saved["credential"]["base_url"], "https://llm.example/v1")
             self.interpret(self.alice)
         self.assertEqual(self.fake.calls[-1], ("https://llm.example/v1/chat/completions", KEY_A))
+
+    def _public_dns(self):
+        return patch("student_execution_os.agent.providers.socket.getaddrinfo",
+                     return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("104.18.2.161", 443))])
+
+    def test_groq_style_openai_compatible_flow_uses_ai(self):
+        with self._public_dns():
+            saved = self.ok(self.save(self.alice, provider="openai-compatible", model="openai/gpt-oss-20b",
+                                      api_key=KEY_A, base_url="https://api.groq.com/openai/v1"))
+            self.assertEqual(saved["source"], "USER_BYOK")
+            tested = self.ok(self.client.post("/api/v1/settings/llm/test", headers=self._h(self.alice)))
+            self.assertTrue(tested["ok"], tested)
+            self.assertEqual(tested["status"], "OK")
+            self.assertEqual(tested["checked"], ["key", "endpoint", "model", "format"])
+            preview = self.ok(self.client.post("/api/v1/assistant/interpret", headers=self._h(self.alice), json={
+                "text": "Задача: купить молоко завтра, 15 минут",
+                "context": {"timezone": "Europe/Moscow", "locale": "ru"}}))
+        self.assertEqual(preview["credential_source"], "USER_BYOK")
+        self.assertEqual(preview["engine"], "AI")
+        self.assertFalse(preview["fallback"])
+        self.assertEqual(preview["provider"], "openai-compatible")
+        self.assertEqual(preview["model"], "openai/gpt-oss-20b")
+        self.assertEqual(self.fake.calls[-1], ("https://api.groq.com/openai/v1/chat/completions", KEY_A))
+        # Groq's gpt-oss fails JSON mode deterministically at temperature 0 for some inputs.
+        self.assertNotIn("temperature", self.fake.bodies[-1])
+        settings = self.ok(self.client.get("/api/v1/settings/llm", headers=self._h(self.alice)))
+        self.assertEqual(settings["credential"]["status"], "OK")
+        self.assertEqual(settings["credential"]["base_url"], "https://api.groq.com/openai/v1")
+
+    def test_provider_refusing_the_server_is_not_reported_as_a_wrong_key(self):
+        # Groq answers a request from a region it does not serve with a bare 403, for any key.
+        self.fake.status[KEY_A] = 403
+        self.fake.error_body = {"error": {"message": "Forbidden"}}
+        with self._public_dns():
+            self.ok(self.save(self.alice, provider="openai-compatible", model="openai/gpt-oss-20b",
+                              api_key=KEY_A, base_url="https://api.groq.com/openai/v1"))
+            tested = self.ok(self.client.post("/api/v1/settings/llm/test", headers=self._h(self.alice)))
+            self.assertFalse(tested["ok"])
+            self.assertEqual((tested["status"], tested["reason"], tested["http_status"]),
+                             ("SERVER_BLOCKED", "SERVER_BLOCKED", 403))
+            preview = self.interpret(self.alice, "купить молоко")
+        self.assertEqual(preview["fallback_reason"], "SERVER_BLOCKED")
+        settings = self.ok(self.client.get("/api/v1/settings/llm", headers=self._h(self.alice)))
+        self.assertEqual(settings["credential"]["status"], "SERVER_BLOCKED")
+
+    def _replace_key_mid_request(self, who):
+        def swap():
+            self.fake.during_call = None
+            with SQLiteCanonicalRepository(self.db, clock=FrozenClock(NOW)) as repo:
+                LlmCredentialStore(repo).save(who["account"], {"provider": "anthropic", "model": "claude-x",
+                                                               "api_key": KEY_B})
+        self.fake.during_call = swap
+
+    def test_old_provider_result_cannot_update_replaced_credential(self):
+        self.fake.status[KEY_A] = 401
+        self.assertEqual(self.ok(self.save(self.alice, provider="openai", model="m", api_key=KEY_A))
+                         ["credential"]["version"], 1)
+        self._replace_key_mid_request(self.alice)
+        tested = self.ok(self.client.post("/api/v1/settings/llm/test", headers=self._h(self.alice)))
+        self.assertEqual(tested["status"], "INVALID_KEY")  # the answer about key A itself
+        settings = self.ok(self.client.get("/api/v1/settings/llm", headers=self._h(self.alice)))
+        self.assertEqual(settings["credential"]["key_hint"], key_hint(KEY_B))
+        self.assertEqual(settings["credential"]["version"], 2)
+        self.assertEqual(settings["credential"]["status"], "UNTESTED")
+        self.assertIsNone(settings["credential"]["last_checked_at"])
+
+    def test_old_assistant_failure_cannot_update_replaced_credential(self):
+        self.fake.status[KEY_A] = 401
+        self.ok(self.save(self.alice, provider="openai", model="m", api_key=KEY_A))
+        self._replace_key_mid_request(self.alice)
+        self.assertEqual(self.interpret(self.alice)["fallback_reason"], "AUTH")
+        settings = self.ok(self.client.get("/api/v1/settings/llm", headers=self._h(self.alice)))
+        self.assertEqual((settings["credential"]["version"], settings["credential"]["status"]), (2, "UNTESTED"))
 
     def test_test_endpoint_is_rate_limited(self):
         self.ok(self.save(self.alice, provider="openai", model="m", api_key=KEY_A))

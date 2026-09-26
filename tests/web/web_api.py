@@ -254,6 +254,8 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('src="/assets/app.js"', response.text)
         self.assertNotIn("<script>", response.text)
+        # Revalidated on every load, so a deploy reaches browsers that opened the app before.
+        self.assertEqual(self.client.get("/assets/app.js").headers["cache-control"], "no-cache")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 package io.github.misha1302.seos.alarm;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -86,6 +87,76 @@ public class AlarmStateTest {
         List<AlarmState> reloaded = AlarmState.listFromJson(AlarmState.listToJson(merged));
         assertEquals(merged.get(0).key(), reloaded.get(0).key());
         assertEquals(AlarmState.RINGING, reloaded.get(0).phase);
+    }
+
+    @Test
+    public void sameEpisodeUsesFreshServerMetadataAndCompatibleLocalProgress() {
+        AlarmState old = new AlarmState("reminder-wake", NOW, "Old title", true, true, false);
+        old.fire(NOW);
+        AlarmState fresh = new AlarmState("reminder-wake", NOW, "New title", false, false, false);
+        AlarmState merged = AlarmState.merge(Collections.singletonList(old), Collections.singletonList(fresh), NOW).get(0);
+        assertEquals("New title", merged.title);
+        assertFalse(merged.wakeCheck);
+        assertFalse(merged.raiseVolume);
+        assertEquals(AlarmState.RINGING, merged.phase);
+        assertEquals(1, merged.round);
+    }
+
+    private static AlarmState listed(boolean acknowledged) throws Exception {
+        return AlarmState.fromServer(new JSONObject().put("id", "reminder-wake").put("remind_at", Iso.format(NOW))
+                .put("title", "Подъём").put("wake_check", true).put("raise_volume", true).put("status", "FIRED")
+                .put("acknowledged_at", acknowledged ? Iso.format(NOW + M) : JSONObject.NULL));
+    }
+
+    @Test
+    public void iAmUpOnAnotherPhoneStopsThisOneButKeepsTheAnsweringPhonesAwakeCheck() throws Exception {
+        // Phone B is still ringing; phone A answered «Я встал» (the server lists the
+        // wake alarm as FIRED + acknowledged until the awake check is answered).
+        AlarmState ringingOnB = wake();
+        ringingOnB.fire(NOW);
+        AlarmState onB = AlarmState.merge(Collections.singletonList(ringingOnB),
+                Collections.singletonList(listed(true)), NOW + 2 * M).get(0);
+        assertEquals(AlarmState.DONE, onB.phase);
+        assertFalse(onB.active());
+
+        AlarmState answeredOnA = wake();
+        answeredOnA.fire(NOW);
+        answeredOnA.up(NOW + M);
+        AlarmState onA = AlarmState.merge(Collections.singletonList(answeredOnA),
+                Collections.singletonList(listed(true)), NOW + 2 * M).get(0);
+        assertEquals(AlarmState.AWAKE_WAIT, onA.phase);
+        assertEquals(AlarmState.AWAKE_CHECK, onA.nextKind);
+
+        // A phone that first hears of the alarm after it was answered never rings it.
+        AlarmState fresh = AlarmState.merge(Collections.emptyList(), Collections.singletonList(listed(true)), NOW).get(0);
+        assertEquals(AlarmState.DONE, fresh.phase);
+        // Not yet answered anywhere: ringing continues.
+        AlarmState still = AlarmState.merge(Collections.singletonList(ringingOnB),
+                Collections.singletonList(listed(false)), NOW).get(0);
+        assertEquals(AlarmState.RINGING, still.phase);
+        // The acknowledgement survives the phone's own store.
+        assertTrue(AlarmState.listFromJson(AlarmState.listToJson(Collections.singletonList(onB))).get(0).acknowledged);
+    }
+
+    @Test
+    public void removedAlarmDoesNotKeepRinging() {
+        AlarmState ringing = wake();
+        ringing.fire(NOW);
+        assertTrue(AlarmState.merge(Collections.singletonList(ringing), Collections.emptyList(), NOW).isEmpty());
+    }
+
+    @Test
+    public void changedTimeStartsNewEpisodeAndLogoutPreservesOnlyLocalTestAlarm() {
+        AlarmState old = wake();
+        old.fire(NOW);
+        AlarmState moved = new AlarmState(old.id, NOW + 60 * M, "Moved", true, false, false);
+        AlarmState local = new AlarmState("test", NOW + M, "Test", false, false, true);
+        List<AlarmState> merged = AlarmState.merge(Arrays.asList(old, local), Collections.singletonList(moved), NOW);
+        assertEquals(2, merged.size());
+        AlarmState episode = merged.stream().filter(s -> !s.local).findFirst().get();
+        assertEquals(AlarmState.SCHEDULED, episode.phase);
+        assertEquals(0, episode.round);
+        assertEquals(Collections.singletonList(local), AlarmState.withoutAccountAlarms(merged));
     }
 
     @Test

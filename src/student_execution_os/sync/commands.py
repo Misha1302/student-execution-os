@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from student_execution_os.domain.errors import DomainError, EntityNotFound, ValidationError
+from student_execution_os.domain.errors import DomainError, EntityNotFound, ValidationError, VersionConflict
 from student_execution_os.domain.model import (
     ActorCategory,
     AttendancePolicy,
@@ -398,8 +398,12 @@ class Commands:
     def task_start(self, task_id: str, payload: dict[str, Any]) -> Outcome:
         current = self._task(task_id)
         if current.obligation.lifecycle_status not in OPEN:
-            return self._task_out(task_id, CONFLICT, "TASK_CLOSED",
-                                  f"task is {current.obligation.lifecycle_status.value.lower()}")
+            if current.obligation.completed_at is not None:
+                # Completion subsumes a delayed "I started": nothing is left to apply
+                # and nothing should be offered for a retry.
+                return self._task_out(task_id, NOOP, "SUPERSEDED")
+            # Starting work that was cancelled elsewhere is a real disagreement.
+            return self._task_out(task_id, CONFLICT, "TASK_CANCELLED", "task was cancelled; reopen it first")
         if current.started_at is not None:
             self._touch(task_id)
             return self._task_out(task_id, NOOP, "ALREADY_STARTED")
@@ -408,21 +412,22 @@ class Commands:
         return self._task_out(task_id)
 
     def task_complete(self, task_id: str, payload: dict[str, Any]) -> Outcome:
-        status = self._task(task_id).obligation.lifecycle_status
-        if status is LifecycleStatus.COMPLETED:
+        current = self._task(task_id).obligation
+        # An archived task keeps completed_at: archived-after-done is still done.
+        if current.completed_at is not None:
             return self._task_out(task_id, NOOP, "ALREADY_COMPLETED")
-        if status is not LifecycleStatus.ACTIVE and status is not LifecycleStatus.DRAFT:
+        if current.lifecycle_status not in OPEN:
             return self._task_out(task_id, CONFLICT, "TASK_CANCELLED", "task was cancelled; reopen it first")
         self._transition(task_id, "complete")
         self._touch(task_id)
         return self._task_out(task_id)
 
     def task_cancel(self, task_id: str, payload: dict[str, Any]) -> Outcome:
-        status = self._task(task_id).obligation.lifecycle_status
-        if status is LifecycleStatus.CANCELLED:
-            return self._task_out(task_id, NOOP, "ALREADY_CANCELLED")
-        if status is LifecycleStatus.COMPLETED:
+        current = self._task(task_id).obligation
+        if current.completed_at is not None:
             return self._task_out(task_id, CONFLICT, "TASK_COMPLETED", "task was completed; reopen it first")
+        if current.lifecycle_status not in OPEN:  # cancelled, or archived after cancelling
+            return self._task_out(task_id, NOOP, "ALREADY_CANCELLED")
         self._transition(task_id, "cancel")
         self._touch(task_id)
         return self._task_out(task_id)
@@ -745,7 +750,7 @@ class Commands:
         if stage == "UP" and before["acknowledged_at"]:
             return Outcome(NOOP, before, "ALREADY_UP")
         repo.cancel_pending_messages(self.account_id, reminder_id, "ACKNOWLEDGED")
-        return Outcome(APPLIED, repo.acknowledge(self.account_id, reminder_id, stage, self.now))
+        return self._reminder_out(repo.acknowledge(self.account_id, reminder_id, stage, self.now), before=before)
 
     def reminder_cancel(self, reminder_id: str, payload: dict[str, Any]) -> Outcome:
         repo = self._reminders()
@@ -821,8 +826,11 @@ class SyncService:
                                                             _REMINDER_ACTIONS[op_type], self.now)
             except EntityNotFound as exc:
                 outcome = Outcome(REJECTED, None, "NOT_FOUND", str(exc))
+            except VersionConflict as exc:
+                # A race with another writer is a conflict to reconcile, not invalid input.
+                outcome = Outcome(CONFLICT, None, "VERSION_CONFLICT", str(exc))
             except (DomainError, ValueError, KeyError, TypeError) as exc:
-                outcome = Outcome(REJECTED, None, "VALIDATION", str(exc) or type(exc).__name__)
+                outcome = Outcome(REJECTED, None, "VALIDATION_ERROR", str(exc) or type(exc).__name__)
             result = {
                 "op_id": op_id, "type": op_type, "entity_id": entity_id, "status": outcome.status,
                 "code": outcome.code, "message": outcome.message, "entity": outcome.entity,

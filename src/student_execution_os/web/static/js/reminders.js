@@ -240,24 +240,22 @@ export function remindAboutSheet(entity) {
 
 // ---- the phone's alarm schedule ------------------------------------------------------
 
-let lastAlarmSync = '';
-
 // Hands the device every open alarm reminder of the account (queued ones included).
+// An alarm answered on another phone («Я встал» there) is sent too, marked
+// acknowledged: the device stops ringing it but keeps its own awake check.
 export async function syncDeviceAlarms() {
   if (!alarmsSupported()) return;
   let reminders = peek('/api/v1/reminders');
   if (!reminders) {
     try { reminders = (await load('/api/v1/reminders', { cached: true })).data; } catch { return; }
   }
-  const alarms = (reminders || []).filter((r) => hasAlarm(r.delivery) && isOpen(r) && !r.acknowledged_at)
-    .map((r) => ({ id: r.id, remind_at: r.remind_at, title: r.title, wake_check: Boolean(r.wake_check), raise_volume: Boolean(r.raise_volume), status: r.status }));
+  const alarms = (reminders || []).filter((r) => hasAlarm(r.delivery) && isOpen(r))
+    .map((r) => ({ id: r.id, remind_at: r.remind_at, title: r.title, wake_check: Boolean(r.wake_check),
+      raise_volume: Boolean(r.raise_volume), status: r.status, acknowledged_at: r.acknowledged_at || null }));
   const labels = Object.fromEntries(['alarm_up', 'alarm_done', 'alarm_snooze', 'awake_title', 'awake_body', 'awake_ok', 'awake_wait', 'alarm_missed', 'test_title']
     .map((key) => [key, t(`alarm.${key}`)]));
-  const signature = JSON.stringify(alarms);
-  if (signature === lastAlarmSync) return;
   try {
     await syncAlarms(alarms, labels);
-    lastAlarmSync = signature;
   } catch (err) { console.warn('alarm sync failed', err); }
 }
 

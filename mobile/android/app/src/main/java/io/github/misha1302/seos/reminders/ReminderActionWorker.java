@@ -107,10 +107,9 @@ public class ReminderActionWorker extends Worker {
             if (status == 200) {
                 // Parse to be sure this is the sync API and not, say, a captive portal page.
                 JSONArray results = new JSONObject(read(connection.getInputStream())).getJSONArray("results");
-                for (int i = 0; i < results.length(); i++) {
-                    String state = results.getJSONObject(i).optString("status");
-                    if ("REJECTED".equals(state)) return 422;  // nothing to retry; tell the user
-                }
+                SyncResultPolicy.Decision decision = SyncResultPolicy.decide(results);
+                if (decision == SyncResultPolicy.Decision.PERMANENT_FAILURE) return 422;
+                if (decision == SyncResultPolicy.Decision.RETRY) return 503;
             }
             return status;
         } finally {

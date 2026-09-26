@@ -221,12 +221,16 @@ class Task:
     def __post_init__(self) -> None:
         if self.obligation.kind is not ObligationKind.TASK:
             raise ValidationError("Task requires TASK obligation kind")
-        draft = self.obligation.lifecycle_status is LifecycleStatus.DRAFT
+        active = self.obligation.lifecycle_status is LifecycleStatus.ACTIVE
         if (self.estimated_total_effort_minutes is None) != (self.remaining_effort_minutes is None):
             raise ValidationError("estimated and remaining effort must both be known or both be unknown")
         if self.estimated_total_effort_minutes is None:
-            if not draft:
-                raise ValidationError("only DRAFT tasks may have unknown effort")
+            # Effort is a planning requirement, not a historical-data requirement.
+            # A draft may be closed before it is refined, and persisted closed tasks
+            # with unknown effort must remain reconstructable. Reopening such a task
+            # returns it to DRAFT in the repository transition owner.
+            if active:
+                raise ValidationError("ACTIVE tasks must have known effort")
         elif self.estimated_total_effort_minutes <= 0:
             raise ValidationError("estimated total effort must be positive")
         if self.remaining_effort_minutes is not None and self.remaining_effort_minutes < 0:

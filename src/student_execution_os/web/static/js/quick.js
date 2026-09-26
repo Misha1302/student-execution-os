@@ -78,14 +78,30 @@ export function quickActionsFor(kind, e) {
   return items;
 }
 
-export async function openQuickActions(kind, id) {
-  const entity = findEntity(kind, id);
-  if (!entity) return;
-  const items = quickActionsFor(kind, entity);
-  haptic('MEDIUM');
-  const chosen = await actionSheet({ title: entity.title, items });
-  const item = items.find((x) => x.id === chosen);
-  if (item) await item.run();
+const quickFlights = new Set();
+
+export async function singleFlightQuickAction(kind, id, run) {
+  const key = `${kind}:${id}`;
+  if (quickFlights.has(key)) return false;
+  quickFlights.add(key);
+  try {
+    await run();
+    return true;
+  } finally {
+    quickFlights.delete(key);
+  }
+}
+
+export function openQuickActions(kind, id) {
+  return singleFlightQuickAction(kind, id, async () => {
+    const entity = findEntity(kind, id);
+    if (!entity) return;
+    const items = quickActionsFor(kind, entity);
+    haptic('MEDIUM');
+    const chosen = await actionSheet({ title: entity.title, items });
+    const item = items.find((x) => x.id === chosen);
+    if (item) await item.run();
+  });
 }
 
 // A finished task swiped away: archive it at once, Undo for 10 seconds.
@@ -99,46 +115,67 @@ export function archiveDone(task) {
 // ---- gestures -------------------------------------------------------------------
 
 const LONG_PRESS_MS = 550;
+// After the finger lifts, the browser may still send the click of that gesture.
+const CLICK_AFTER_TOUCH_MS = 400;
 // The row a gesture just used: the click the browser sends after it must not also open
 // it. Only that row is affected; an Undo tapped right away still works.
 let suppressOn = null;
-const suppress = (node, ms) => { suppressOn = node; setTimeout(() => { if (suppressOn === node) suppressOn = null; }, ms); };
+let suppressTimer = null;
+const suppress = (node, ms = null) => {
+  clearTimeout(suppressTimer);
+  suppressOn = node;
+  suppressTimer = ms == null ? null : setTimeout(() => { if (suppressOn === node) suppressOn = null; }, ms);
+};
 
-export function installQuickActions(root = document) {
-  // Right click (desktop).
+export function installQuickActions(root = document, open = openQuickActions) {
+  // One touch owns everything the browser derives from it: Android/WebView also
+  // sends a contextmenu for the same press (before or after our timer, depending on
+  // the system long-press timeout), and a click when the finger lifts. The sheet
+  // opens once per gesture; those follow-ups are consumed.
+  let gesture = null; // { ref, start, timer, fired }
+  const fire = () => {
+    if (!gesture || gesture.fired) return;
+    clearTimeout(gesture.timer);
+    gesture.fired = true;
+    suppress(gesture.ref.node); // until the finger lifts (see touchend)
+    open(gesture.ref.kind, gesture.ref.id);
+  };
+  const cancel = () => { if (gesture) clearTimeout(gesture.timer); gesture = null; };
+  const consume = (event) => { event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation?.(); };
+
+  // Right click (desktop), or the long press of a touch.
   root.addEventListener('contextmenu', (event) => {
     const ref = entityRef(event.target);
     if (!ref || event.target.closest('input,textarea,select')) return;
+    if (gesture && gesture.ref.node === ref.node) { consume(event); fire(); return; }
+    if (suppressOn && suppressOn.contains(event.target)) { consume(event); return; }
     event.preventDefault();
-    openQuickActions(ref.kind, ref.id);
+    open(ref.kind, ref.id);
   });
-  // Long press (touch): a still finger for LONG_PRESS_MS; the click that follows is eaten.
-  let timer = null;
-  let start = null;
-  const cancel = () => { clearTimeout(timer); timer = null; start = null; };
+  // Long press (touch): a still finger for LONG_PRESS_MS.
   root.addEventListener('touchstart', (event) => {
+    cancel();
     const ref = entityRef(event.target);
     if (!ref || event.touches.length !== 1) return;
-    start = { x: event.touches[0].clientX, y: event.touches[0].clientY };
-    timer = setTimeout(() => {
-      timer = null;
-      suppress(ref.node, 800);
-      openQuickActions(ref.kind, ref.id);
-    }, LONG_PRESS_MS);
+    gesture = { ref, start: { x: event.touches[0].clientX, y: event.touches[0].clientY }, fired: false, timer: null };
+    gesture.timer = setTimeout(fire, LONG_PRESS_MS);
   }, { passive: true });
   root.addEventListener('touchmove', (event) => {
-    if (!start || !timer) return;
-    const dx = event.touches[0].clientX - start.x;
-    const dy = event.touches[0].clientY - start.y;
+    if (!gesture || gesture.fired) return;
+    const dx = event.touches[0].clientX - gesture.start.x;
+    const dy = event.touches[0].clientY - gesture.start.y;
     if (Math.hypot(dx, dy) > 10) cancel();
   }, { passive: true });
-  root.addEventListener('touchend', () => { if (timer) cancel(); });
-  root.addEventListener('touchcancel', cancel);
+  const lift = () => {
+    if (gesture?.fired) suppress(gesture.ref.node, CLICK_AFTER_TOUCH_MS);
+    cancel();
+  };
+  root.addEventListener('touchend', lift);
+  root.addEventListener('touchcancel', lift);
   root.addEventListener('click', (event) => {
     if (!suppressOn || !suppressOn.contains(event.target)) return;
-    suppressOn = null;
-    event.preventDefault();
-    event.stopPropagation();
+    suppress(null);
+    consume(event);
   }, true);
   installSwipeArchive(root);
 }
@@ -179,4 +216,3 @@ function installSwipeArchive(root) {
   root.addEventListener('touchend', end);
   root.addEventListener('touchcancel', end);
 }
-

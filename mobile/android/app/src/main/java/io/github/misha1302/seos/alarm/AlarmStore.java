@@ -16,6 +16,7 @@ public final class AlarmStore {
     private static final String ALARMS = "alarms";
     private static final String LABELS = "labels";
     private static final String VOLUME = "volume_restore";
+    private static final String OWNER = "session_owner";
 
     private AlarmStore() {}
 
@@ -32,6 +33,33 @@ public final class AlarmStore {
         long cutoff = System.currentTimeMillis() - 24 * 3600_000L;
         states.removeIf(s -> !s.active() && s.at < cutoff);
         prefs(context).edit().putString(ALARMS, AlarmState.listToJson(states)).apply();
+    }
+
+    public static synchronized String owner(Context context) {
+        return prefs(context).getString(OWNER, null);
+    }
+
+    public static synchronized void setOwner(Context context, String owner) {
+        SharedPreferences.Editor edit = prefs(context).edit();
+        if (owner == null || owner.isEmpty()) edit.remove(OWNER); else edit.putString(OWNER, owner);
+        edit.apply();
+    }
+
+    /** Remove everything owned by the authenticated account, preserving local tests. */
+    public static synchronized int clearAccountAlarms(Context context) {
+        List<AlarmState> current = all(context);
+        int removed = 0;
+        for (AlarmState state : current) {
+            if (state.local) continue;
+            removed++;
+            AlarmScheduler.cancel(context, state);
+            AlarmNotifications.cancelAll(context, state);
+            if (AlarmState.RINGING.equals(state.phase)) AlarmService.stop(context, state.id);
+        }
+        save(context, AlarmState.withoutAccountAlarms(current));
+        setOwner(context, null);
+        AlarmService.restoreVolume(context);
+        return removed;
     }
 
     public static synchronized AlarmState get(Context context, String id) {

@@ -5,6 +5,8 @@ import socket
 import unittest
 from unittest.mock import Mock, patch
 
+import httpx
+
 from student_execution_os.agent.providers import (
     AnthropicProvider,
     OpenAICompatibleProvider,
@@ -37,7 +39,9 @@ class AssistantProviderTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["command"], "CREATE_TASK")
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer server-secret")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "configured-model")
-        self.assertEqual(post.call_args.kwargs["json"]["temperature"], 0)
+        # No temperature: reasoning models behind compatible APIs (Groq's gpt-oss) fail
+        # JSON mode at temperature 0 for some inputs; the proposal is validated anyway.
+        self.assertNotIn("temperature", post.call_args.kwargs["json"])
         self.assertFalse(post.call_args.kwargs["follow_redirects"])
 
     @patch("student_execution_os.agent.providers.httpx.post")
@@ -64,6 +68,50 @@ class AssistantProviderTests(unittest.TestCase):
                 AnthropicProvider("sk-abcdefghijwxyz", "m").check()
             self.assertEqual(caught.exception.reason, reason)
             self.assertNotIn("wxyz", str(caught.exception))
+
+    @patch("student_execution_os.agent.providers.httpx.post")
+    def test_forbidden_without_a_key_complaint_means_the_server_is_refused(self, post):
+        cases = (
+            (403, {"error": {"message": "Forbidden"}}, "SERVER_BLOCKED"),  # Groq, unsupported region
+            (403, {"error": {"code": "unsupported_country_region_territory", "type": "request_forbidden",
+                             "message": "Country, region, or territory not supported"}}, "SERVER_BLOCKED"),
+            (403, "<html>Access denied</html>", "SERVER_BLOCKED"),  # a CDN page, not the provider's API
+            (401, {"error": {"message": "Invalid API Key", "type": "invalid_request_error",
+                             "code": "invalid_api_key"}}, "AUTH"),
+            (403, {"error": {"message": "Invalid API key in request"}}, "AUTH"),
+            (403, {"error": {"message": "You have insufficient permissions for this operation."}}, "AUTH"),
+        )
+        for status, body, reason in cases:
+            response = self.response(body, status)
+            if isinstance(body, str):
+                response.json.side_effect = ValueError("not json")
+            post.return_value = response
+            with self.assertRaises(ProviderUnavailable) as caught:
+                build_provider("openai-compatible", api_key="gsk-test-123456789", model="openai/gpt-oss-20b",
+                               base_url="https://api.groq.com/openai/v1").check()
+            self.assertEqual((caught.exception.reason, caught.exception.http_status), (reason, status), body)
+
+    @patch("student_execution_os.agent.providers.httpx.post")
+    def test_groq_json_validation_failure_is_a_format_problem(self, post):
+        post.return_value = self.response({"error": {
+            "message": "Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.",
+            "type": "invalid_request_error", "code": "json_validate_failed"}}, 400)
+        with self.assertRaises(ProviderUnavailable) as caught:
+            build_provider("openai-compatible", api_key="gsk-test-123456789", model="m",
+                           base_url="https://api.groq.com/openai/v1").interpret("hi", {})
+        self.assertEqual(caught.exception.reason, "FORMAT")
+
+    def test_request_that_cannot_be_built_is_not_a_network_failure(self):
+        provider = build_provider("openai-compatible", api_key="gsk-test-123456789", model="m",
+                                  base_url="https://api.groq.com/openai/v1")
+        for error, reason in ((httpx.LocalProtocolError("Illegal header value"), "REQUEST"),
+                              (httpx.ConnectTimeout("timed out"), "NETWORK"),
+                              (httpx.ReadTimeout("timed out"), "NETWORK"),
+                              (httpx.ConnectError("refused"), "NETWORK")):
+            with patch("student_execution_os.agent.providers.httpx.post", side_effect=error), \
+                 self.assertRaises(ProviderUnavailable) as caught:
+                provider.check()
+            self.assertEqual(caught.exception.reason, reason, type(error).__name__)
 
     def test_provider_repr_never_shows_the_key(self):
         for provider in (build_provider("openai", api_key="sk-supersecret-1234", model="m"),

@@ -53,18 +53,26 @@ public final class AlarmState {
     public final boolean raiseVolume;
     /** Local-only (the test alarm from Settings): nothing is reported to the server. */
     public final boolean local;
+    /** «Я встал» was answered for this episode, on this or another phone (server-owned). */
+    public final boolean acknowledged;
     public String phase = SCHEDULED;
     public int round = 0;
     public long next;
     public String nextKind = FIRE;
 
     public AlarmState(String id, long at, String title, boolean wakeCheck, boolean raiseVolume, boolean local) {
+        this(id, at, title, wakeCheck, raiseVolume, local, false);
+    }
+
+    public AlarmState(String id, long at, String title, boolean wakeCheck, boolean raiseVolume, boolean local,
+                      boolean acknowledged) {
         this.id = id;
         this.at = at;
         this.title = title;
         this.wakeCheck = wakeCheck;
         this.raiseVolume = raiseVolume;
         this.local = local;
+        this.acknowledged = acknowledged;
         this.next = at;
     }
 
@@ -141,8 +149,15 @@ public final class AlarmState {
     // ---- sync with the server's list -----------------------------------------------------
 
     /**
-     * Merges the server's upcoming alarms into what this phone has: unchanged ones keep
-     * their progress, moved ones start over, removed ones go (unless ringing right now).
+     * Merges the server's upcoming alarms into what this phone has. The server owns the
+     * configuration (title, wake check, volume) and whether the episode was answered;
+     * the phone owns its execution progress (phase, round, next event).
+     * <ul>
+     * <li>Same reminder and moment: fresh configuration plus this phone's progress.</li>
+     * <li>Answered («Я встал») on another phone: stop here. The phone that was answered
+     *     keeps its own awake check (it is in AWAKE_WAIT/CHECKING).</li>
+     * <li>A new moment is a new episode; removed episodes go (the local test alarm stays).</li>
+     * </ul>
      * A moment already past by more than {@link #STALE_AFTER} when first seen is not rung.
      */
     public static List<AlarmState> merge(List<AlarmState> current, List<AlarmState> incoming, long now) {
@@ -151,19 +166,38 @@ public final class AlarmState {
         List<AlarmState> result = new ArrayList<>();
         for (AlarmState fresh : incoming) {
             AlarmState known = byKey.remove(fresh.key());
-            if (known != null) {
-                result.add(known);
-            } else {
+            boolean answeredHere = known != null && (AWAKE_WAIT.equals(known.phase)
+                    || CHECKING.equals(known.phase) || DONE.equals(known.phase));
+            if (fresh.acknowledged && !answeredHere) {
+                fresh.phase = DONE;
+                fresh.nextKind = null;
+            } else if (known == null) {
                 if (fresh.at < now - STALE_AFTER) {
                     fresh.phase = MISSED;
                     fresh.nextKind = null;
                 }
-                result.add(fresh);
+            } else if (!fresh.wakeCheck && (AWAKE_WAIT.equals(known.phase) || CHECKING.equals(known.phase))) {
+                // Made a plain alarm after it was answered: nothing is left to check.
+                fresh.phase = DONE;
+                fresh.nextKind = null;
+            } else {
+                fresh.phase = known.phase;
+                fresh.round = known.round;
+                fresh.next = known.next;
+                fresh.nextKind = known.nextKind;
             }
+            result.add(fresh);
         }
         for (AlarmState left : byKey.values()) {
-            if (left.local || RINGING.equals(left.phase)) result.add(left);
+            if (left.local) result.add(left);
         }
+        return result;
+    }
+
+    /** The local test alarm is device-owned; all other alarms belong to the session. */
+    public static List<AlarmState> withoutAccountAlarms(List<AlarmState> current) {
+        List<AlarmState> result = new ArrayList<>();
+        for (AlarmState state : current) if (state.local) result.add(state);
         return result;
     }
 
@@ -171,19 +205,21 @@ public final class AlarmState {
 
     public static AlarmState fromServer(JSONObject json) throws JSONException {
         String at = json.optString("at", "");
+        String acknowledged = json.isNull("acknowledged_at") ? "" : json.optString("acknowledged_at", "");
         return new AlarmState(json.getString("id"), Iso.parse(at.isEmpty() ? json.getString("remind_at") : at),
-                json.optString("title", ""), json.optBoolean("wake_check", false), json.optBoolean("raise_volume", false), false);
+                json.optString("title", ""), json.optBoolean("wake_check", false), json.optBoolean("raise_volume", false),
+                false, !acknowledged.isEmpty());
     }
 
     public JSONObject toJson() throws JSONException {
         return new JSONObject().put("id", id).put("at", at).put("title", title).put("wake", wakeCheck)
-                .put("loud", raiseVolume).put("local", local).put("phase", phase).put("round", round)
+                .put("loud", raiseVolume).put("local", local).put("ack", acknowledged).put("phase", phase).put("round", round)
                 .put("next", next).put("nextKind", nextKind == null ? JSONObject.NULL : nextKind);
     }
 
     public static AlarmState fromJson(JSONObject json) throws JSONException {
         AlarmState state = new AlarmState(json.getString("id"), json.getLong("at"), json.optString("title", ""),
-                json.optBoolean("wake"), json.optBoolean("loud"), json.optBoolean("local"));
+                json.optBoolean("wake"), json.optBoolean("loud"), json.optBoolean("local"), json.optBoolean("ack"));
         state.phase = json.optString("phase", SCHEDULED);
         state.round = json.optInt("round", 0);
         state.next = json.optLong("next", state.at);

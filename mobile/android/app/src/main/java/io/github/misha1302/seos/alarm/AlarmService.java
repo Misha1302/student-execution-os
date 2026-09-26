@@ -99,6 +99,9 @@ public class AlarmService extends Service {
 
     private void startRinging(AlarmState state) {
         stopSound();
+        // A same-episode server refresh can turn raise-volume off while ringing.
+        // Restore the original level before applying the fresh configuration.
+        restoreVolume(this);
         AudioManager audio = getSystemService(AudioManager.class);
         if (state.raiseVolume && audio != null) {
             int current = audio.getStreamVolume(AudioManager.STREAM_ALARM);

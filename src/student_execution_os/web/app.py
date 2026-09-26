@@ -548,6 +548,9 @@ def create_app(
         return Response(
             target.read_bytes(),
             media_type=mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+            # Revalidate on every load: after a deploy the browser must not keep old
+            # modules (e.g. translations without a status the new server reports).
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.get("/")

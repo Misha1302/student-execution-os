@@ -78,7 +78,10 @@ class ProviderUnavailable(ValidationError):
     stable code; the message never contains the credential or the provider's body.
 
     ========== =============================================================
-    AUTH       the key was refused (401/403)
+    AUTH       the key was refused (401, or 403 that blames the key)
+    SERVER_BLOCKED  403 that does not blame the key: the provider refuses this
+               server (e.g. its region: Groq answers any key from an
+               unsupported country with a bare "Forbidden")
     NOT_FOUND  the model does not exist or this key has no access to it
     ENDPOINT   the API address does not serve this provider's API
     RATE_LIMITED  too many requests right now (429)
@@ -90,6 +93,7 @@ class ProviderUnavailable(ValidationError):
     REJECTED   any other refusal of the request (4xx)
     UPSTREAM   the provider failed (5xx, overloaded)
     NETWORK    no connection, DNS, TLS or timeout
+    REQUEST    the request could not even be built (e.g. an illegal header)
     BLOCKED_URL  a user-supplied address points into a private network
     ========== =============================================================
     """
@@ -124,12 +128,20 @@ def _error_fields(response: httpx.Response) -> tuple[bool, str]:
     return True, " ".join(parts).lower()
 
 
+# What a 403 says when it is about the credential rather than about who is asking.
+_KEY_WORDS = ("key", "auth", "token", "credential", "permission", "unauthorized")
+
+
 def _reason(status: int, response: httpx.Response | None = None, *, custom_address: bool = False) -> str:
     provider_error, text = _error_fields(response) if response is not None else (False, "")
     mentions_model = "model" in text
     quota = any(word in text for word in ("insufficient_quota", "quota", "billing", "credit balance", "credits"))
     if status in (401, 403):
-        return "NOT_FOUND" if mentions_model and ("not_found" in text or "access" in text) else "AUTH"
+        if mentions_model and ("not_found" in text or "access" in text):
+            return "NOT_FOUND"
+        if status == 403 and not any(word in text for word in _KEY_WORDS):
+            return "SERVER_BLOCKED"
+        return "AUTH"
     if status == 402 or (status in (400, 429) and quota):
         return "QUOTA"
     if status == 429:
@@ -141,7 +153,7 @@ def _reason(status: int, response: httpx.Response | None = None, *, custom_addre
             return "ENDPOINT"
         return "NOT_FOUND"
     if status in (400, 422):
-        if any(word in text for word in ("response_format", "json_object", "json mode", "json_mode", "temperature",
+        if any(word in text for word in ("response_format", "json_object", "json mode", "json_mode", "json_validate", "temperature",
                                           "unsupported parameter", "unsupported_parameter", "not supported")):
             return "FORMAT"
         if mentions_model and any(word in text for word in ("not found", "not_found", "does not exist", "invalid model",
@@ -230,6 +242,9 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         response = httpx.post(url, headers=headers, json=body, timeout=timeout, follow_redirects=False)
     except httpx.TimeoutException:
         raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "NETWORK") from None
+    except (httpx.LocalProtocolError, httpx.UnsupportedProtocol):
+        # Refused by httpx before anything was sent: a bug here, not the network.
+        raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST") from None
     except httpx.HTTPError:
         raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK") from None
     if response.status_code >= 300:
@@ -266,13 +281,13 @@ class OpenAICompatibleProvider:
         )
 
     def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
-        # Current OpenAI reasoning models reject a non-default temperature; output is
-        # validated field by field anyway, so determinism is not relied upon there.
-        extra: dict[str, Any] = {} if self.name == "openai" else {"temperature": 0}
+        # No temperature: OpenAI reasoning models reject a non-default one, and Groq's
+        # gpt-oss fails JSON mode at temperature 0 on some inputs every time. The output
+        # is validated field by field anyway, so determinism is not relied upon there.
         response = self._chat([
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _user_message(text, context)},
-        ], response_format={"type": "json_object"}, **extra)
+        ], response_format={"type": "json_object"})
         content = _field(response, ("choices", 0, "message", "content"), self.name)
         if not isinstance(content, str):
             raise ProviderUnavailable(f"assistant provider {self.name} returned no text", "MALFORMED")

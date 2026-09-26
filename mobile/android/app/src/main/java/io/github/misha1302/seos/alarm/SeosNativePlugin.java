@@ -7,6 +7,7 @@ import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.work.WorkManager;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -77,7 +78,9 @@ public class SeosNativePlugin extends Plugin {
             JSArray alarms = call.getArray("alarms", new JSArray());
             JSONObject labels = call.getObject("labels", null);
             if (labels != null) AlarmStore.setLabels(getContext(), labels);
-            int count = AlarmSyncWorker.apply(getContext(), new JSONArray(alarms.toString()));
+            // The page hands over the signed-in account's list.
+            String owner = AlarmSyncWorker.sessionOwner(getContext());
+            int count = AlarmSyncWorker.apply(getContext(), new JSONArray(alarms.toString()), owner);
             JSObject out = new JSObject();
             out.put("scheduled", count);
             out.put("exact", AlarmScheduler.exactAllowed(getContext()));
@@ -85,6 +88,18 @@ public class SeosNativePlugin extends Plugin {
         } catch (JSONException malformed) {
             call.reject("malformed alarm list", "INVALID");
         }
+    }
+
+    /** End authenticated alarm ownership before credentials/cache are changed. */
+    @PluginMethod
+    public void clearAlarms(PluginCall call) {
+        int removed = AlarmStore.clearAccountAlarms(getContext());
+        WorkManager work = WorkManager.getInstance(getContext());
+        work.cancelUniqueWork("seos-alarm-sync");
+        work.cancelAllWorkByTag("seos-reminder-action");
+        JSObject out = new JSObject();
+        out.put("removed", removed);
+        call.resolve(out);
     }
 
     /** A local alarm in five seconds (not a reminder on the server) to hear and see it. */

@@ -104,6 +104,14 @@ public final class AlarmNotifications {
         NotificationManagerCompat.from(context).cancel("seos-awake:" + state.id, RINGING_ID);
     }
 
+    static void cancelAll(Context context, AlarmState state) {
+        NotificationManagerCompat manager = NotificationManagerCompat.from(context);
+        manager.cancel("seos-awake:" + state.id, RINGING_ID);
+        manager.cancel("seos-missed:" + state.id, RINGING_ID);
+        manager.cancel("seos-alarm:" + state.id, RINGING_ID);
+        if (AlarmState.RINGING.equals(state.phase)) manager.cancel(RINGING_ID);
+    }
+
     static void showMissed(Context context, AlarmState state) {
         ensureChannels(context);
         Intent open = new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
