@@ -6,12 +6,14 @@ import { showExecutionNotification, clearExecutionNotification } from './native.
 
 export function executionSeconds(session, at = Date.now()) {
   if (!session) return 0;
-  let seconds = Number(session.actual_work_seconds || 0);
-  if (session.state === 'ACTIVE' && session.current_segment_started_at) {
-    const measuredAt = session.measured_at || session.current_segment_started_at;
-    seconds += Math.max(0, Math.floor((at - new Date(measuredAt).getTime()) / 1000));
-  }
-  return Math.max(0, seconds);
+  const measuredSeconds = Math.max(0, Number(session.actual_work_seconds || 0));
+  if (session.state !== 'ACTIVE' || !session.current_segment_started_at) return measuredSeconds;
+  const segmentStart = new Date(session.current_segment_started_at).getTime();
+  const measuredAt = new Date(session.measured_at || session.current_segment_started_at).getTime();
+  const measuredCurrentSegment = Math.max(0, Math.floor((measuredAt - segmentStart) / 1000));
+  const closedSegments = Math.max(0, measuredSeconds - measuredCurrentSegment);
+  const currentAtTarget = Math.max(0, Math.floor((at - segmentStart) / 1000));
+  return closedSegments + currentAtTarget;
 }
 
 export function clockText(seconds) {
