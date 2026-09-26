@@ -26,7 +26,8 @@ const ACK_KEEP_MS = 24 * 3600 * 1000;
 // Operations whose second copy would change nothing (or is an accidental double tap).
 const IDEMPOTENT = new Set(['task.start', 'task.complete', 'task.cancel', 'task.reopen', 'task.archive', 'task.unarchive',
   'task.restore', 'task.delete', 'event.cancel', 'event.reopen', 'event.delete',
-  'reminder.done', 'reminder.cancel', 'reminder.reopen', 'reminder.delete']);
+  'reminder.done', 'reminder.cancel', 'reminder.reopen', 'reminder.delete',
+  'execution.pause', 'execution.resume', 'execution.finish', 'execution.cancel']);
 
 let flushing = null;
 let again = false;
