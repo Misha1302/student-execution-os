@@ -1284,14 +1284,30 @@ class UiService:
             }.get(action)
             if method is None:
                 raise ValueError("unsupported lifecycle action")
-            ob = method(
-                account_id=self.account_id,
-                obligation_id=obligation_id,
-                expected_version=expected_version,
-                actor=ActorCategory.USER_UI,
-            )
-            if repo.connection.execute("SELECT 1 FROM tasks WHERE obligation_id=?", (obligation_id,)).fetchone():
-                ReminderStore(repo).touch(self.account_id, obligation_id, self._now())
+            is_task = repo.connection.execute(
+                "SELECT 1 FROM tasks t JOIN obligations o ON o.id=t.obligation_id "
+                "WHERE o.account_id=? AND t.obligation_id=?",
+                (self.account_id, obligation_id),
+            ).fetchone() is not None
+            # Keep the legacy direct lifecycle API consistent with the offline command
+            # boundary: a Task cannot be closed while actual execution keeps running.
+            with repo._tx():
+                if is_task and action in {"complete", "cancel"}:
+                    execution = SQLiteExecutionStore(repo)
+                    active = execution.active(self.account_id, self._now())
+                    if active is not None and active["task_id"] == obligation_id:
+                        if action == "complete":
+                            execution.finish(self.account_id, active["id"], self._now(), ActorCategory.USER_UI)
+                        else:
+                            execution.cancel(self.account_id, active["id"], self._now(), ActorCategory.USER_UI)
+                ob = method(
+                    account_id=self.account_id,
+                    obligation_id=obligation_id,
+                    expected_version=expected_version,
+                    actor=ActorCategory.USER_UI,
+                )
+                if is_task:
+                    ReminderStore(repo).touch(self.account_id, obligation_id, self._now())
             return {
                 "id": ob.id,
                 "status": ob.lifecycle_status.value,
