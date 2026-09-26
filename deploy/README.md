@@ -168,10 +168,39 @@ docker compose \
 The base Compose file supplies empty proxy settings, so recreating the API this way
 returns LLM traffic to its previous direct route.
 
-#### External HTTP(S) egress proxy
+#### External HTTP(S) egress proxy (preferred)
 
-If an operator prefers a trusted non-Tor HTTP(S) CONNECT proxy, the existing generic
-configuration remains available:
+Tor exits are themselves often rejected by providers, so the preferred production route
+is a private Squid on a small VM in a provider-supported region:
+
+```
+API --HTTP CONNECT (allowlisted hosts only)--> Squid on the egress VM --HTTPS--> provider
+```
+
+On a fresh Ubuntu/Debian VM, run `deploy/llm-egress/squid/setup-egress-host.sh` as root
+with the production server's public IPv4 (and optionally the exact provider hosts,
+default `api.groq.com`). It installs the distribution's Squid, accepts CONNECT only
+from that /32, only to port 443 of the exact hosts, caches nothing, never intercepts
+TLS, and persists a host-firewall rule for port 3128. Also restrict the cloud ingress
+rule (security list / security group) for TCP 3128 to the same /32; never 0.0.0.0/0.
+
+Check it from the production host (no API key needed; any HTTP status from Groq means
+the tunnel works), and check that another destination is refused with 403:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' --proxy http://PROXY_IP:3128 https://api.groq.com/
+curl -sS -o /dev/null -w '%{http_code}\n' --proxy http://PROXY_IP:3128 https://example.com/
+```
+
+Reading failures: a connect timeout means the proxy is unreachable or the cloud/host
+firewall drops this source; `CONNECT tunnel failed, response 403` means Squid refused
+the source or destination (`/var/log/squid/access.log` shows `TCP_DENIED` with the
+client and host:443 only); a TLS or 5xx error after a successful CONNECT is the
+provider connection; an HTTP 4xx body from the provider is an application answer and
+is classified by Settings → AI → Test as usual.
+
+Do not combine it with the Tor overlay: deploy the normal nginx Compose file with
+`--remove-orphans`. The configuration steps are the generic ones below:
 
 1. Put the proxy URL in the API-only secret file
    `secrets/api/llm-egress-proxy.url` (or the nginx deployment equivalent under
