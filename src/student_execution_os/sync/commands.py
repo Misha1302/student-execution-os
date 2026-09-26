@@ -457,7 +457,7 @@ class Commands:
         return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_ACTIVE")
 
     def execution_finish(self, session_id: str, payload: dict[str, Any]) -> Outcome:
-        allowed = {"outcome", "remaining_effort_minutes"}
+        allowed = {"outcome", "remaining_effort_minutes", "task_id"}
         unknown = set(payload) - allowed
         if unknown:
             raise ValidationError("execution finish fields are not supported: " + ", ".join(sorted(unknown)))
@@ -466,6 +466,9 @@ class Commands:
             raise ValidationError("invalid execution finish outcome")
         before = self._execution().payload(self.account_id, session_id, self.now)
         task_id = str(before["task_id"])
+        supplied_task_id = str(payload.get("task_id") or "")
+        if supplied_task_id and supplied_task_id != task_id:
+            raise ValidationError("execution finish task_id does not match the session")
         task = self._task(task_id)
         if outcome in {"UPDATE_REMAINING", "COMPLETE"} and task.obligation.lifecycle_status not in OPEN:
             if outcome == "COMPLETE" and task.obligation.completed_at is not None:
