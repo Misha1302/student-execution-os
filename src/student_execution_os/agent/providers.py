@@ -11,6 +11,7 @@ import json
 import os
 import socket
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -132,6 +133,48 @@ def _error_fields(response: httpx.Response) -> tuple[bool, str]:
 _KEY_WORDS = ("key", "auth", "token", "credential", "permission", "unauthorized")
 
 
+def _llm_egress_proxy(url: str) -> str | None:
+    """Return an operator-controlled proxy for this exact provider host.
+
+    Some providers accept a user's key from their laptop but reject the VPS egress
+    network or country. BYOK keys must still stay server-side, so the supported fix
+    is a narrowly-scoped outbound proxy rather than handing the saved key back to a
+    browser or mobile client.
+
+    The proxy is opt-in twice: a proxy URL must be configured and the request host
+    must be listed in SEOS_LLM_EGRESS_PROXY_HOSTS. This prevents an arbitrary
+    user-supplied OpenAI-compatible URL from gaining access to an operator proxy.
+    """
+    inline = os.environ.get("SEOS_LLM_EGRESS_PROXY", "").strip()
+    file_name = os.environ.get("SEOS_LLM_EGRESS_PROXY_FILE", "").strip()
+    if inline and file_name:
+        raise ProviderUnavailable("configure only one LLM egress proxy source", "REQUEST")
+    proxy = inline
+    if file_name:
+        try:
+            proxy = Path(file_name).read_text(encoding="utf-8").strip()
+        except OSError:
+            raise ProviderUnavailable("the LLM egress proxy configuration is unreadable", "REQUEST") from None
+    if not proxy:
+        return None
+
+    allowed = {
+        item.strip().lower().rstrip(".")
+        for item in os.environ.get("SEOS_LLM_EGRESS_PROXY_HOSTS", "").split(",")
+        if item.strip()
+    }
+    if not allowed:
+        raise ProviderUnavailable("LLM egress proxy hosts are not configured", "REQUEST")
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    if host not in allowed:
+        return None
+
+    parts = urlsplit(proxy)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ProviderUnavailable("the LLM egress proxy must be an http(s) URL", "REQUEST")
+    return proxy
+
+
 def _reason(status: int, response: httpx.Response | None = None, *, custom_address: bool = False) -> str:
     provider_error, text = _error_fields(response) if response is not None else (False, "")
     mentions_model = "model" in text
@@ -237,9 +280,16 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
           public_only: bool = False, custom_address: bool = False) -> httpx.Response:
     if public_only:
         assert_public_base_url(url)
+    proxy = _llm_egress_proxy(url)
     try:
         # Redirects are not followed: a redirect must not carry the key elsewhere.
-        response = httpx.post(url, headers=headers, json=body, timeout=timeout, follow_redirects=False)
+        # A configured egress proxy is used only for an explicit host allowlist. It
+        # changes the network origin without moving the BYOK credential to the client.
+        if proxy:
+            with httpx.Client(proxy=proxy, trust_env=False, timeout=timeout, follow_redirects=False) as client:
+                response = client.post(url, headers=headers, json=body)
+        else:
+            response = httpx.post(url, headers=headers, json=body, timeout=timeout, follow_redirects=False)
     except httpx.TimeoutException:
         raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "NETWORK") from None
     except (httpx.LocalProtocolError, httpx.UnsupportedProtocol):

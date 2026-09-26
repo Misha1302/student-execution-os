@@ -30,6 +30,7 @@ container that needs it (files, not environment variables: variables show up in
 |---|---|---|
 | `secrets/worker/fcm-service-account.json` | reminder-worker | Firebase Admin SDK service account for FCM push |
 | `secrets/api/credential.key` | api | master key that encrypts every account's own AI key (ADR 0017) |
+| `secrets/api/llm-egress-proxy.url` | api | optional HTTP(S) proxy URL for LLM-only egress; needed only when a provider rejects the VPS network |
 
 For the Docker + Caddy variant the directory is `deploy/secrets/` (git-ignored); for the
 nginx variant it is `/etc/student-execution-os/secrets/`. The container user is uid 10001:
@@ -71,6 +72,33 @@ key the app uses its built-in parser. The operator pays for nobody's inference.
 future paid tier; they are used **only** for accounts granted an entitlement
 (`python -m student_execution_os llm-entitlement --database … --login <user> --grant <plan>`).
 The old `SEOS_LLM_*` variables are ignored (the server warns at startup).
+
+### Provider rejects the server but the key works elsewhere
+
+BYOK inference deliberately originates from the API container so the saved key is never
+returned to browser or Android storage. Therefore a successful `curl` from a laptop/VPN
+does **not** prove that the provider accepts the VPS egress IP. If Settings shows
+`SERVER_BLOCKED` (HTTP 403) while the same key works from another network, route only
+that provider host through an operator-controlled HTTP(S) CONNECT proxy in an allowed
+network:
+
+1. Put the proxy URL in the API-only secret file
+   `secrets/api/llm-egress-proxy.url` (or the nginx deployment equivalent under
+   `/etc/student-execution-os/secrets/api/`) and keep it mode 0400.
+2. Set
+   `SEOS_LLM_EGRESS_PROXY_FILE=/run/secrets/seos/llm-egress-proxy.url` and
+   `SEOS_LLM_EGRESS_PROXY_HOSTS=api.groq.com` in the deployment environment.
+3. Recreate the API container and run **Settings → AI → Test** again.
+
+For a proxy URL without credentials, `SEOS_LLM_EGRESS_PROXY=http://proxy:3128` may be
+used instead of the file. Configure exactly one of the two proxy sources. The proxy is
+used only when the provider request's hostname exactly matches the comma-separated
+allowlist; arbitrary user-supplied OpenAI-compatible hosts continue to use the normal
+route. Keep the egress proxy internet-only (no private-network reachability) and do not
+use TLS interception, because it carries users' provider requests.
+
+A host-level VPN/WireGuard policy route that changes the API container's egress is an
+equivalent deployment fix and needs no application proxy setting.
 
 Reminder pushes to current Android builds are data-only and rendered by the app with
 working Start / Done / Snooze buttons; older installs still get system-rendered pushes.

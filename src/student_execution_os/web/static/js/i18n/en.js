@@ -863,7 +863,7 @@ export default {
   'ai.status.other': 'Error',
   'ai.statusHelp.other': 'The check failed ({status}). Update the app to see the details.',
   'ai.status.SERVER_BLOCKED': 'Provider refuses this server',
-  'ai.statusHelp.SERVER_BLOCKED': 'The provider refused the request from this app\'s server without blaming the key (HTTP 403), usually because of the server\'s region. The key itself is probably fine; choose a provider available there.',
+  'ai.statusHelp.SERVER_BLOCKED': 'The provider refused this app server (HTTP 403). This is often the server network or region, not the key. If the same key works from another network, route LLM traffic through an allowed-region server egress or use a provider reachable from this server.',
   'ai.step.key': 'Key',
   'ai.step.endpoint': 'API address',
   'ai.step.model': 'Model',

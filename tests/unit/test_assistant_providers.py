@@ -91,6 +91,54 @@ class AssistantProviderTests(unittest.TestCase):
                                base_url="https://api.groq.com/openai/v1").check()
             self.assertEqual((caught.exception.reason, caught.exception.http_status), (reason, status), body)
 
+    @patch("student_execution_os.agent.providers.httpx.Client")
+    @patch("student_execution_os.agent.providers.httpx.post")
+    def test_llm_egress_proxy_is_scoped_to_an_explicit_provider_host(self, direct_post, client_type):
+        proxy_post = client_type.return_value.__enter__.return_value.post
+        proxy_post.return_value = self.response({"choices": [{"message": {"content":
+            '{"message":"Preview","actions":[{"command":"CREATE_TASK","payload":{"title":"Essay"},"confidence":0.9,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}'}}]})
+        with patch.dict(os.environ, {
+            "SEOS_LLM_EGRESS_PROXY": "http://egress.example:3128",
+            "SEOS_LLM_EGRESS_PROXY_HOSTS": "api.groq.com",
+        }, clear=True), patch("student_execution_os.agent.providers.assert_public_base_url"):
+            provider = build_provider("openai-compatible", api_key="gsk-test-123456789", model="openai/gpt-oss-20b",
+                                      base_url="https://api.groq.com/openai/v1", user_supplied=True)
+            self.assertEqual(provider.interpret("Essay", {})["actions"][0]["command"], "CREATE_TASK")
+
+        client_type.assert_called_once_with(proxy="http://egress.example:3128", trust_env=False,
+                                            timeout=30.0, follow_redirects=False)
+        self.assertEqual(proxy_post.call_args.args[0], "https://api.groq.com/openai/v1/chat/completions")
+        self.assertEqual(proxy_post.call_args.kwargs["headers"]["Authorization"], "Bearer gsk-test-123456789")
+        direct_post.assert_not_called()
+
+    @patch("student_execution_os.agent.providers.httpx.Client")
+    @patch("student_execution_os.agent.providers.httpx.post")
+    def test_llm_egress_proxy_does_not_proxy_unlisted_user_hosts(self, direct_post, client_type):
+        direct_post.return_value = self.response({"choices": [{"message": {"content":
+            '{"message":"Preview","actions":[{"command":"CREATE_TASK","payload":{"title":"Essay"},"confidence":0.9,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}'}}]})
+        with patch.dict(os.environ, {
+            "SEOS_LLM_EGRESS_PROXY": "http://egress.example:3128",
+            "SEOS_LLM_EGRESS_PROXY_HOSTS": "api.groq.com",
+        }, clear=True), patch("student_execution_os.agent.providers.assert_public_base_url"):
+            provider = build_provider("openai-compatible", api_key="k" * 20, model="m",
+                                      base_url="https://llm.example/v1", user_supplied=True)
+            provider.interpret("Essay", {})
+
+        client_type.assert_not_called()
+        direct_post.assert_called_once()
+
+    @patch("student_execution_os.agent.providers.httpx.post")
+    def test_llm_egress_proxy_requires_an_allowlist(self, direct_post):
+        with patch.dict(os.environ, {
+            "SEOS_LLM_EGRESS_PROXY": "http://egress.example:3128",
+            "SEOS_LLM_EGRESS_PROXY_HOSTS": "",
+        }, clear=True):
+            provider = build_provider("openai", api_key="sk-test-123456789", model="m")
+            with self.assertRaises(ProviderUnavailable) as caught:
+                provider.check()
+        self.assertEqual(caught.exception.reason, "REQUEST")
+        direct_post.assert_not_called()
+
     @patch("student_execution_os.agent.providers.httpx.post")
     def test_groq_json_validation_failure_is_a_format_problem(self, post):
         post.return_value = self.response({"error": {
