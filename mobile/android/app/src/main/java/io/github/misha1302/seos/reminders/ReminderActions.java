@@ -70,7 +70,9 @@ public final class ReminderActions {
                         + ",\"reminder_message_id\":" + quote(messageId) + "}";
             } else if (DONE.equals(action)) {
                 type = "task.complete";
-                payload = "{\"reminder_message_id\":" + quote(messageId) + "}";
+                opId = opId + "-" + pressedAtMillis;
+                payload = "{\"occurred_at\":" + quote(iso(pressedAtMillis))
+                        + ",\"reminder_message_id\":" + quote(messageId) + "}";
             } else if (snoozeMinutes(action) > 0) {
                 type = "reminder.snooze";
                 payload = "{\"until\":" + quote(iso(snoozeUntil(action, pressedAtMillis)))
