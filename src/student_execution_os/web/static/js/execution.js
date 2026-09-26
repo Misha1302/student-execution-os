@@ -1,5 +1,5 @@
 import { t, fmtDuration } from './i18n.js';
-import { esc, icon, openSheet, chipGroup, chipValue, toast } from './ui.js';
+import { esc, icon, openSheet, chipGroup, chipValue, toast, localInputValue, isoFromLocalInput } from './ui.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
 import { showExecutionNotification, clearExecutionNotification } from './native.js';
@@ -25,6 +25,7 @@ export function clockText(seconds) {
 export function executionCard(session, task) {
   if (!session) return '';
   const paused = session.state === 'PAUSED';
+  const suspicious = executionSeconds(session) >= 8 * 3600;
   return `<article class="card now-card execution-card" data-execution-id="${esc(session.id)}">
     <div class="now-head">
       <span class="eyebrow">${esc(paused ? t('execution.paused') : t('execution.active'))}</span>
@@ -32,6 +33,8 @@ export function executionCard(session, task) {
     </div>
     <h3>${esc(task?.title || session.task_title || t('execution.work'))}</h3>
     <p class="muted">${esc(t('execution.startedAt', { when: new Date(session.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }))}</p>
+    ${suspicious ? `<div class="banner warn"><div><strong>${esc(t('execution.longRunning'))}</strong><p>${esc(t('execution.longRunningHelp'))}</p></div>
+      <button class="button small" data-action="execution-review" data-id="${esc(session.id)}">${esc(t('execution.reviewTimer'))}</button></div>` : ''}
     <div class="now-actions">
       ${paused
         ? `<button class="button primary" data-action="execution-resume" data-id="${esc(session.id)}">${esc(t('execution.resume'))}</button>`
@@ -98,14 +101,15 @@ export async function resumeExecution(session) {
   return result;
 }
 
-export function finishExecution(session, task, { complete = false } = {}) {
+export function finishExecution(session, task, { complete = false, occurredAt = null } = {}) {
   if (!session || !task) return Promise.resolve(null);
+  const finishAt = occurredAt || new Date().toISOString();
   if (complete) {
-    const result = await change('execution.finish', session.id, { task_id: task.id, outcome: 'COMPLETE', occurred_at: new Date().toISOString() }, { success: t('execution.completed') });
+    const result = await change('execution.finish', session.id, { task_id: task.id, outcome: 'COMPLETE', occurred_at: finishAt }, { success: t('execution.completed') });
     if (result) clearExecutionNotification().catch(() => {});
     return result;
   }
-  const worked = Math.max(1, Math.round(executionSeconds(session) / 60));
+  const worked = Math.max(1, Math.round(executionSeconds(session, new Date(finishAt).getTime()) / 60));
   const current = Number(task.remaining_effort_minutes || 0);
   const suggested = Math.max(0, current - worked);
   const options = [...new Set([suggested, 15, 30, 45, 60, 90, current].filter((x) => Number.isFinite(x) && x >= 0))]
@@ -139,7 +143,7 @@ export function finishExecution(session, task, { complete = false } = {}) {
     syncVisibility();
     dialog.querySelector('[data-save]').addEventListener('click', async () => {
       const outcome = chipValue(dialog, 'execution-outcome') || 'KEEP_REMAINING';
-      const payload = { task_id: task.id, outcome, occurred_at: new Date().toISOString() };
+      const payload = { task_id: task.id, outcome, occurred_at: finishAt };
       if (outcome === 'UPDATE_REMAINING') payload.remaining_effort_minutes = Number(chipValue(dialog, 'execution-remaining') || 0);
       const result = await change('execution.finish', session.id, payload, { success: t('execution.saved') });
       if (result) clearExecutionNotification().catch(() => {});
@@ -149,3 +153,28 @@ export function finishExecution(session, task, { complete = false } = {}) {
     });
   });
 }
+
+export function reviewLongExecution(session, task) {
+  if (!session || !task) return;
+  const dialog = openSheet({
+    eyebrow: task.title,
+    title: t('execution.reviewTimer'),
+    body: `<p class="muted">${esc(t('execution.longRunningHelp'))}</p>
+      <label class="field"><span>${esc(t('execution.finishedAt'))}</span>
+        <input type="datetime-local" data-execution-finished-at value="${esc(localInputValue(new Date()))}">
+      </label>`,
+    actions: `<button value="cancel" class="button ghost">${esc(t('execution.stillWorking'))}</button>
+      <button type="button" class="button primary" data-finish-at>${esc(t('execution.finishAtTime'))}</button>`,
+  });
+  dialog.querySelector('[data-finish-at]').addEventListener('click', async () => {
+    const raw = dialog.querySelector('[data-execution-finished-at]').value;
+    const instant = isoFromLocalInput(raw);
+    if (!instant || new Date(instant) < new Date(session.started_at) || new Date(instant) > new Date()) {
+      toast(t('execution.invalidFinishTime'), { error: true });
+      return;
+    }
+    dialog.close('correct');
+    await finishExecution(session, task, { occurredAt: instant });
+  });
+}
+
