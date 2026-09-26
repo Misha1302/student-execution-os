@@ -1,0 +1,181 @@
+// Deterministic tests for the relay Worker: `node --test deploy/cloudflare-groq-relay/test/*.test.js`.
+// The global fetch is replaced, so nothing leaves the machine.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { afterEach, beforeEach, test } from "node:test";
+
+import worker, { MAX_BODY_BYTES, RELAY_PATH, UPSTREAM } from "../src/index.js";
+
+const TOKEN = "t".repeat(64);
+const ENV = { RELAY_TOKEN: TOKEN };
+const BASE = "https://seos-groq-relay.example.workers.dev";
+const realFetch = globalThis.fetch;
+let calls;
+
+function upstreamAnswers(status, body = "{}", headers = {}) {
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(body, { status, headers: { "Content-Type": "application/json", ...headers } });
+  };
+}
+
+function relayRequest({ path = RELAY_PATH, method = "POST", headers = {}, body = '{"model":"m"}' } = {}) {
+  return new Request(BASE + path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer gsk-test",
+      "X-SEOS-Relay-Token": TOKEN,
+      ...headers,
+    },
+    body: method === "GET" || method === "HEAD" ? undefined : body,
+  });
+}
+
+beforeEach(() => {
+  calls = [];
+  upstreamAnswers(200, '{"choices":[]}');
+});
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+test("root and other paths are 404 with a relay error", async () => {
+  for (const path of ["/", "/openai/v1/models", "/openai/v1/chat/completions/", "/OPENAI/v1/chat/completions"]) {
+    const response = await worker.fetch(relayRequest({ path }), ENV);
+    assert.equal(response.status, 404, path);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "not_found");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("only POST is accepted", async () => {
+  for (const method of ["GET", "PUT", "DELETE", "PATCH"]) {
+    const response = await worker.fetch(relayRequest({ method }), ENV);
+    assert.equal(response.status, 405, method);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "method_not_allowed");
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("the relay token is required and compared exactly", async () => {
+  for (const token of [undefined, "", "wrong", TOKEN + "x", TOKEN.slice(1)]) {
+    const headers = token === undefined ? { "X-SEOS-Relay-Token": "" } : { "X-SEOS-Relay-Token": token };
+    const response = await worker.fetch(relayRequest({ headers }), ENV);
+    assert.equal(response.status, 401, String(token));
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "unauthorized");
+    assert.ok(!(await response.text()).includes(TOKEN));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("a missing or weak Worker secret fails closed", async () => {
+  for (const env of [{}, { RELAY_TOKEN: "" }, { RELAY_TOKEN: "short" }, undefined]) {
+    const response = await worker.fetch(relayRequest({ headers: { "X-SEOS-Relay-Token": "short" } }), env);
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "relay_misconfigured");
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("provider Authorization and JSON content type are required", async () => {
+  let response = await worker.fetch(relayRequest({ headers: { Authorization: "" } }), ENV);
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), "invalid_request");
+  response = await worker.fetch(relayRequest({ headers: { Authorization: "Basic abc" } }), ENV);
+  assert.equal(response.status, 400);
+  response = await worker.fetch(relayRequest({ headers: { "Content-Type": "text/plain" } }), ENV);
+  assert.equal(response.status, 415);
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), "invalid_request");
+  assert.equal(calls.length, 0);
+});
+
+test("bodies over the limit are refused before contacting Groq", async () => {
+  const response = await worker.fetch(relayRequest({ body: "x".repeat(MAX_BODY_BYTES + 1) }), ENV);
+  assert.equal(response.status, 413);
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), "invalid_request");
+  assert.equal(calls.length, 0);
+  assert.equal(MAX_BODY_BYTES, 1024 * 1024);
+});
+
+test("a valid request goes only to the hard-coded upstream with a fresh header set", async () => {
+  const response = await worker.fetch(relayRequest({
+    headers: { "X-Target-Host": "evil.example", Host: "evil.example", "X-Forwarded-Host": "evil.example",
+               Cookie: "a=b" },
+  }), ENV);
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, UPSTREAM);
+  assert.equal(UPSTREAM, "https://api.groq.com/openai/v1/chat/completions");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.redirect, "manual");
+  assert.deepEqual(Object.keys(calls[0].init.headers).sort(), ["Accept", "Authorization", "Content-Type"]);
+  assert.equal(calls[0].init.headers.Authorization, "Bearer gsk-test");
+  assert.equal(new TextDecoder().decode(calls[0].init.body), '{"model":"m"}');
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), null);
+});
+
+test("query strings cannot select a target", async () => {
+  for (const query of ["?url=https://example.com", "?target=https://example.com", "?"]) {
+    const response = await worker.fetch(relayRequest({ path: RELAY_PATH + query }), ENV);
+    // "?" alone is normalised away by URL; it then reaches the fixed upstream.
+    if (query === "?") {
+      assert.equal(response.status, 200);
+      continue;
+    }
+    assert.equal(response.status, 404, query);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "not_found");
+  }
+  assert.deepEqual(calls.map((call) => call.url), [UPSTREAM]);
+});
+
+test("Groq errors are forwarded without a relay error header", async () => {
+  for (const status of [400, 401, 403, 404, 429, 500, 503]) {
+    upstreamAnswers(status, '{"error":{"code":"x"}}', { "Retry-After": "7", "x-request-id": "req_1",
+                                                         "Set-Cookie": "c=1", Server: "cloudflare", "cf-ray": "abc" });
+    const response = await worker.fetch(relayRequest(), ENV);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), null, String(status));
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(response.headers.get("Retry-After"), "7");
+    assert.equal(response.headers.get("x-request-id"), "req_1");
+    assert.equal(response.headers.get("Set-Cookie"), null);
+    assert.equal(response.headers.get("cf-ray"), null);
+    assert.equal(await response.text(), '{"error":{"code":"x"}}');
+  }
+});
+
+test("an upstream redirect is not followed and not passed through", async () => {
+  upstreamAnswers(302, "", { Location: "https://evil.example/steal" });
+  const response = await worker.fetch(relayRequest(), ENV);
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), "upstream_redirect");
+  assert.equal(response.headers.get("Location"), null);
+  assert.equal(calls.length, 1);
+});
+
+test("an unreachable upstream is a relay error", async () => {
+  globalThis.fetch = async () => {
+    throw new TypeError("network");
+  };
+  const response = await worker.fetch(relayRequest(), ENV);
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), "provider_unreachable");
+});
+
+test("the source never logs and has no generic target parsing", () => {
+  const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /console\./);
+  // One outbound call site; the other "fetch(" is the handler definition itself.
+  assert.equal((source.match(/\bfetch\(/g) || []).length, 2);
+  assert.match(source, /^  fetch\(request, env\) \{$/m);
+  assert.match(source, /await fetch\(UPSTREAM,/);
+  assert.match(source, /redirect: "manual"/);
+  assert.doesNotMatch(source, /searchParams|X-Target|x-target|\.get\("url"\)|new URL\([^r]/);
+  const config = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  assert.match(config, /"name": "seos-groq-relay"/);
+  assert.match(config, /"observability": \{ "enabled": false \}/);
+  assert.doesNotMatch(config, /RELAY_TOKEN"\s*:|"vars"/);
+});

@@ -26,6 +26,13 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Static compile and JS syntax check
         run: make static
+      - name: Cloudflare Groq relay Worker tests
+        run: make worker
+      - name: No committed Wrangler secrets or state
+        run: |
+          if git ls-files | grep -E '(^|/)(\.dev\.vars|\.wrangler/)'; then
+            echo "Wrangler secrets/state must not be committed" >&2; exit 1
+          fi
       - name: Validate default and Tor-enabled Compose configurations
         run: |
           docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config >/dev/null

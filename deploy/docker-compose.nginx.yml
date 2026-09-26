@@ -29,6 +29,11 @@ services:
       SEOS_LLM_EGRESS_PROXY: ${SEOS_LLM_EGRESS_PROXY:-}
       SEOS_LLM_EGRESS_PROXY_FILE: ${SEOS_LLM_EGRESS_PROXY_FILE:-}
       SEOS_LLM_EGRESS_PROXY_HOSTS: ${SEOS_LLM_EGRESS_PROXY_HOSTS:-}
+      # Alternative: an operator application relay (deploy/cloudflare-groq-relay).
+      # Configure the proxy OR the relay for a host, never both.
+      SEOS_LLM_EGRESS_RELAY_URL: ${SEOS_LLM_EGRESS_RELAY_URL:-}
+      SEOS_LLM_EGRESS_RELAY_TOKEN_FILE: ${SEOS_LLM_EGRESS_RELAY_TOKEN_FILE:-}
+      SEOS_LLM_EGRESS_RELAY_HOSTS: ${SEOS_LLM_EGRESS_RELAY_HOSTS:-}
     ports:
       - "127.0.0.1:8765:8765"
     volumes:

@@ -9,6 +9,10 @@ services:
       SEOS_LLM_EGRESS_PROXY: http://llm-egress-proxy:8118
       SEOS_LLM_EGRESS_PROXY_FILE: ""
       SEOS_LLM_EGRESS_PROXY_HOSTS: ${SEOS_LLM_EGRESS_PROXY_HOSTS:-api.groq.com}
+      # Enabling this overlay is the explicit operator choice of Tor: the relay is off.
+      SEOS_LLM_EGRESS_RELAY_URL: ""
+      SEOS_LLM_EGRESS_RELAY_TOKEN_FILE: ""
+      SEOS_LLM_EGRESS_RELAY_HOSTS: ""
     depends_on:
       llm-egress-proxy:
         condition: service_started

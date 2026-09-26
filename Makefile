@@ -1,4 +1,4 @@
-.PHONY: restore static test api browser smoke verify web mobile-sync apk
+.PHONY: restore static worker test api browser smoke verify web mobile-sync apk
 
 restore:
 	python -c "import fastapi, uvicorn, httpx, playwright"
@@ -6,6 +6,10 @@ restore:
 static:
 	PYTHONPATH=src python -m compileall -q src tests
 	find src/student_execution_os/web/static -name '*.js' -print0 | xargs -0 -n1 node --check
+	node --check deploy/cloudflare-groq-relay/src/index.js
+
+worker:
+	node --test deploy/cloudflare-groq-relay/test/*.test.js
 
 test:
 	PYTHONPATH=src python -m unittest discover -s tests -p 'test_*.py' -v
@@ -32,7 +36,7 @@ smoke:
 web:
 	PYTHONPATH=src python -m student_execution_os.web.server --help >/dev/null
 
-verify: restore static test api browser smoke web
+verify: restore static worker test api browser smoke web
 
 mobile-sync:
 	cd mobile && npm ci && npm run sync
