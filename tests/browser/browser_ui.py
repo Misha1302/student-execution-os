@@ -68,6 +68,11 @@ class BrowserUiTest(unittest.TestCase):
         self.overrides: dict[tuple[str, str], tuple[int, dict]] = {}
         self.offline: set[tuple[str, str]] = set()
         self.config_js: str | None = None
+        # Index into self.posts already consumed by _wait_sync(). A sync wait must
+        # observe a *new* /api/v1/sync request, not reuse an earlier request from
+        # the same test; otherwise an async click can race the helper and make it
+        # return before the operation has even been queued.
+        self._sync_wait_cursor = 0
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -166,11 +171,27 @@ class BrowserUiTest(unittest.TestCase):
                       ".flatMap(([, v]) => JSON.parse(v)).filter((x) => x.state === 'PENDING').length")
 
     def _wait_sync(self, page, *, tries: int = 60) -> None:
-        """Changes are queued locally and sent in the background: wait until sent."""
+        """Wait for the next queued change to reach /sync and leave PENDING.
+
+        self.posts is shared for the whole test method, so checking only that it is
+        non-empty is racy: a previous sync can satisfy the condition before the
+        current click's async handler has queued anything. Track which requests a
+        previous wait already consumed and require fresh sync evidence.
+        """
+        if self._sync_wait_cursor > len(self.posts):  # a test deliberately cleared the fixture log
+            self._sync_wait_cursor = 0
         for _ in range(tries):  # the page CSP forbids wait_for_function's string eval
-            if page.evaluate(self.PENDING_OPS_JS) == 0 and self.posts:
+            fresh = self.posts[self._sync_wait_cursor:]
+            saw_sync = any(path == "/api/v1/sync" for path, _payload in fresh)
+            if saw_sync and page.evaluate(self.PENDING_OPS_JS) == 0:
+                self._sync_wait_cursor = len(self.posts)
                 return
             page.wait_for_timeout(100)
+        self.fail({
+            "message": "timed out waiting for a fresh /api/v1/sync request",
+            "pending": page.evaluate(self.PENDING_OPS_JS),
+            "new_posts": self.posts[self._sync_wait_cursor:],
+        })
 
     @staticmethod
     def _text(page) -> str:
@@ -958,13 +979,20 @@ class BrowserUiTest(unittest.TestCase):
                 self.assertEqual(out["sheets"], 1)
                 self.assertEqual(out["hash"], "#/tasks")  # the synthetic click did not open the task
                 sheet = page.locator("dialog.sheet[open]")
-                sheet.locator('[data-choice="complete"]').click()
+                # Closing without choosing an action proves the single-flight lock is
+                # released while the same task still exists in the open list.
+                page.keyboard.press("Escape")
+                page.locator("dialog.sheet[open]").wait_for(state="detached")
+                self.assertEqual(page.evaluate(self.LONG_PRESS_JS, [task["id"], 600])["sheets"], 1)
+
+                # Now choose the mutation. Completion re-renders the open list and may
+                # legitimately remove this row, so do not use the completed row itself
+                # to test gesture-lock release.
+                page.locator('dialog.sheet[open] [data-choice="complete"]').click()
                 self._wait_sync(page)
                 completes = [o for o in self._queued(page) if o["type"] == "task.complete"]
                 self.assertEqual(len(completes), 1)
                 self.assertEqual(page.locator("dialog.sheet[open]").count(), 0)
-                # The lock was released: the next long press opens the sheet again.
-                self.assertEqual(page.evaluate(self.LONG_PRESS_JS, [task["id"], 600])["sheets"], 1)
                 self.assertEqual(self.page_errors, [])
                 page.close()
 
