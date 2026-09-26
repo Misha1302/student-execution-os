@@ -214,6 +214,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "task_progress_counts",
     "reminders",
     "deleted_reminders",
+    "execution_sessions",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
@@ -240,6 +241,11 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
     "plan_blocks": (
         "SELECT b.* FROM plan_blocks b JOIN plan_snapshots p ON p.id=b.plan_id "
         "WHERE p.account_id=? ORDER BY b.plan_id,b.starts_at,b.id"
+    ),
+    "execution_segments": (
+        "SELECT s.* FROM execution_segments s JOIN execution_sessions e "
+        "ON e.account_id=s.account_id AND e.id=s.session_id "
+        "WHERE e.account_id=? ORDER BY s.session_id,s.started_at,s.id"
     ),
 }
 
