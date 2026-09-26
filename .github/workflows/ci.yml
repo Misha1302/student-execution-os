@@ -26,6 +26,16 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Static compile and JS syntax check
         run: make static
+      - name: Validate default and Tor-enabled Compose configurations
+        run: |
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config >/dev/null
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tor.yml --env-file deploy/.env.example config >/dev/null
+          docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml --env-file deploy/.env.example config >/dev/null
+          docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml -f deploy/docker-compose.tor.yml --env-file deploy/.env.example config >/dev/null
+      - name: Build Tor LLM egress images
+        run: |
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tor.yml \
+            --env-file deploy/.env.example build tor llm-egress-proxy
       - name: Unit, integration and acceptance tests
         run: make test
       - name: Web API tests
