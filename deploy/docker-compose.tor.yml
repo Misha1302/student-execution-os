@@ -1,0 +1,55 @@
+# Optional LLM-only Tor egress overlay.
+#
+# Compose this with the existing deployment. It does not publish Tor/Privoxy ports
+# and does not change the API container default route. The application itself still
+# selects proxy use only for exact hosts in SEOS_LLM_EGRESS_PROXY_HOSTS.
+services:
+  api:
+    environment:
+      SEOS_LLM_EGRESS_PROXY: http://llm-egress-proxy:8118
+      SEOS_LLM_EGRESS_PROXY_FILE: ""
+      SEOS_LLM_EGRESS_PROXY_HOSTS: ${SEOS_LLM_EGRESS_PROXY_HOSTS:-api.groq.com}
+    depends_on:
+      llm-egress-proxy:
+        condition: service_started
+    networks:
+      - default
+      - llm-egress
+
+  llm-egress-proxy:
+    build:
+      context: ./llm-egress/privoxy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      tor:
+        condition: service_started
+    networks:
+      - llm-egress
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/privoxy-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  tor:
+    build:
+      context: ./llm-egress/tor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - llm-egress
+      - tor-uplink
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/tor-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+networks:
+  default:
+  llm-egress:
+    internal: true
+  tor-uplink:

@@ -1,0 +1,14 @@
+ClientOnly 1
+AvoidDiskWrites 1
+DataDirectory /var/lib/tor
+
+# The SOCKS listener exists only inside Docker networks; no host port is published.
+SocksPort 0.0.0.0:9050
+SafeSocks 1
+
+# Health checking is local to this container. No ControlPort is exposed externally.
+ControlPort 127.0.0.1:9051
+CookieAuthentication 1
+CookieAuthFile /var/lib/tor/control_auth_cookie
+
+Log notice stdout
