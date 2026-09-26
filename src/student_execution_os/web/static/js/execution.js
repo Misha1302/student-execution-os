@@ -48,7 +48,10 @@ export function mountExecutionTimers(root, session) {
     });
   };
   render();
-  const handle = setInterval(render, 1000);
+  const handle = setInterval(() => {
+    if (!root.isConnected) { clearInterval(handle); return; }
+    render();
+  }, 1000);
   return () => clearInterval(handle);
 }
 
