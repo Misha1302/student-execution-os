@@ -520,7 +520,11 @@ class Commands:
                 fields["remaining_effort_low_minutes"] = None
                 fields["remaining_effort_high_minutes"] = None
                 current = self._task(task_id)
-                if remaining is not None and current.estimated_total_effort_minutes is not None and remaining > current.estimated_total_effort_minutes:
+                if current.estimated_total_effort_minutes is None:
+                    if remaining == 0:
+                        raise ValidationError("complete the task instead of setting unknown-effort draft remaining to zero")
+                    fields["estimated_total_effort_minutes"] = remaining
+                elif remaining is not None and remaining > current.estimated_total_effort_minutes:
                     fields["estimated_total_effort_minutes"] = remaining
             self._update(task_id, **fields)
             self._touch(task_id)
