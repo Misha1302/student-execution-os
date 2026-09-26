@@ -2,6 +2,7 @@ import { t, fmtDuration } from './i18n.js';
 import { esc, icon, openSheet, chipGroup, chipValue, toast } from './ui.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
+import { showExecutionNotification, clearExecutionNotification } from './native.js';
 
 export function executionSeconds(session, at = Date.now()) {
   if (!session) return 0;
@@ -40,8 +41,12 @@ export function executionCard(session, task) {
   </article>`;
 }
 
-export function mountExecutionTimers(root, session) {
-  if (!session) return () => {};
+export function mountExecutionTimers(root, session, task = null) {
+  if (!session) {
+    clearExecutionNotification().catch(() => {});
+    return () => {};
+  }
+  showExecutionNotification(session, task?.title || session.task_title).catch(() => {});
   const render = () => {
     root.querySelectorAll(`[data-execution-timer="${CSS.escape(session.id)}"]`).forEach((el) => {
       el.textContent = clockText(executionSeconds(session));
@@ -58,26 +63,46 @@ export function mountExecutionTimers(root, session) {
 export async function startExecution(task, plan) {
   if (!task) return null;
   const block = (plan?.blocks || []).find((b) => b.type === 'WORK' && b.obligation_id === task.id);
-  return change('execution.start', newEntityId('execution'), {
+  const id = newEntityId('execution');
+  const occurredAt = new Date().toISOString();
+  const result = await change('execution.start', id, {
     task_id: task.id,
     planning_snapshot_id: plan?.id || null,
     source_plan_block_id: block?.id || null,
-    occurred_at: new Date().toISOString(),
+    occurred_at: occurredAt,
   }, { success: t('execution.started') });
+  if (result) showExecutionNotification({
+    id, task_id: task.id, task_title: task.title, state: 'ACTIVE',
+    started_at: occurredAt, current_segment_started_at: occurredAt, actual_work_seconds: 0,
+  }, task.title).catch(() => {});
+  return result;
 }
 
-export function pauseExecution(session) {
-  return change('execution.pause', session.id, { occurred_at: new Date().toISOString() }, { success: t('execution.pausedToast') });
+export async function pauseExecution(session) {
+  const occurredAt = new Date().toISOString();
+  const result = await change('execution.pause', session.id, { occurred_at: occurredAt }, { success: t('execution.pausedToast') });
+  if (result) showExecutionNotification({
+    ...session, state: 'PAUSED', current_segment_started_at: null,
+    actual_work_seconds: executionSeconds(session), updated_at: occurredAt,
+  }, session.task_title).catch(() => {});
+  return result;
 }
 
-export function resumeExecution(session) {
-  return change('execution.resume', session.id, { occurred_at: new Date().toISOString() }, { success: t('execution.resumedToast') });
+export async function resumeExecution(session) {
+  const occurredAt = new Date().toISOString();
+  const result = await change('execution.resume', session.id, { occurred_at: occurredAt }, { success: t('execution.resumedToast') });
+  if (result) showExecutionNotification({
+    ...session, state: 'ACTIVE', current_segment_started_at: occurredAt, updated_at: occurredAt,
+  }, session.task_title).catch(() => {});
+  return result;
 }
 
 export function finishExecution(session, task, { complete = false } = {}) {
   if (!session || !task) return Promise.resolve(null);
   if (complete) {
-    return change('execution.finish', session.id, { task_id: task.id, outcome: 'COMPLETE', occurred_at: new Date().toISOString() }, { success: t('execution.completed') });
+    const result = await change('execution.finish', session.id, { task_id: task.id, outcome: 'COMPLETE', occurred_at: new Date().toISOString() }, { success: t('execution.completed') });
+    if (result) clearExecutionNotification().catch(() => {});
+    return result;
   }
   const worked = Math.max(1, Math.round(executionSeconds(session) / 60));
   const current = Number(task.remaining_effort_minutes || 0);
@@ -116,6 +141,7 @@ export function finishExecution(session, task, { complete = false } = {}) {
       const payload = { task_id: task.id, outcome, occurred_at: new Date().toISOString() };
       if (outcome === 'UPDATE_REMAINING') payload.remaining_effort_minutes = Number(chipValue(dialog, 'execution-remaining') || 0);
       const result = await change('execution.finish', session.id, payload, { success: t('execution.saved') });
+      if (result) clearExecutionNotification().catch(() => {});
       dialog.close('saved');
       if (result) toast(t('execution.replanning'));
       resolve(result);
