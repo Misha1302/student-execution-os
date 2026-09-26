@@ -301,8 +301,22 @@ export default {
         </button>`).join('')}</div>` : `<p class="muted pad">${esc(t('today.noBoundaries'))}</p>`}
       </section>`;
   },
-  mount(root, data) {
-    mountExecutionTimers(root, data?.active_execution || null);
+  mount(root, data, ctx) {
+    const session = data?.active_execution || null;
+    const task = session ? (data?.tasks || []).find((x) => x.id === session.task_id) : null;
+    mountExecutionTimers(root, session, task);
+    const action = ctx.query?.execution_action;
+    const requestedId = ctx.query?.session_id;
+    if (!session || !action || requestedId !== session.id || action === 'open') return;
+    const key = `${session.id}:${action}`;
+    if (this._handledExecutionIntent === key) return;
+    this._handledExecutionIntent = key;
+    history.replaceState(null, '', '#/today');
+    setTimeout(() => {
+      if (action === 'pause') pauseExecution(session);
+      else if (action === 'resume') resumeExecution(session);
+      else if (action === 'finish' && task) finishExecution(session, task);
+    }, 0);
   },
   actions: {
     progress(el, ctx) {
