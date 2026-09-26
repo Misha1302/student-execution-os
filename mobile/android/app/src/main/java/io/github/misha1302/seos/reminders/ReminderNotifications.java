@@ -144,7 +144,8 @@ public final class ReminderNotifications {
             String id = action.optString("id");
             String label = action.optString("label", id);
             PendingIntent intent;
-            if (ReminderActions.runsInBackground(id) && !reminder.subjects().isEmpty()) {
+            if (ReminderActions.runsInBackground(id) && !reminder.subjects().isEmpty()
+                    && (!ReminderActions.START.equals(id) || reminder.taskIds.size() == 1)) {
                 intent = background(context, reminder, id, base + 1 + i);
             } else if ("RESCHEDULE".equals(id) && firstTask != null) {
                 intent = openApp(context, "/task/" + Uri.encode(firstTask) + "?step=reschedule", base + 1 + i);
