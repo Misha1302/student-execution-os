@@ -162,7 +162,7 @@ export default {
     'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title, from: ctx.data.status }); },
   },
   mount(root, task, ctx) {
-    mountExecutionTimers(root, task?.execution_active || null);
+    mountExecutionTimers(root, task?.execution_active || null, task);
     root.querySelector('[data-attachment-input]')?.addEventListener('change', async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;
