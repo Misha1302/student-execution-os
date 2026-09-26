@@ -36,6 +36,7 @@ from student_execution_os.domain.model import (
     TemporalPrecision,
 )
 from student_execution_os.persistence import extras
+from student_execution_os.execution import SQLiteExecutionStore
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 from student_execution_os.persistence.product import SQLiteAttachmentRepository, SQLiteSavedViewRepository
 from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
@@ -529,6 +530,7 @@ class UiService:
                     "infeasible_reasons": list(snapshot.travel_projection.infeasible_reasons),
                 },
                 "source_health": self._source_health(repo),
+                "active_execution": SQLiteExecutionStore(repo).active(self.account_id, self._now()),
             }
 
     def _plan_payload(self, plan, tasks: list[dict[str, Any]], events: list[dict[str, Any]], constraints) -> dict[str, Any]:
@@ -614,6 +616,23 @@ class UiService:
                 "plan": self._plan_payload(outcome.plan, tasks, events, snapshot.constraints),
                 "tasks": tasks,
             }
+
+    def execution_active(self) -> dict[str, Any]:
+        with self._repo() as repo:
+            return {"now": _jsonify(self._now()), "session": SQLiteExecutionStore(repo).active(self.account_id, self._now())}
+
+    def execution_sessions(self, task_id: str | None = None, days: int = 90) -> dict[str, Any]:
+        days = max(1, min(int(days), 3650))
+        with self._repo() as repo:
+            sessions = SQLiteExecutionStore(repo).list(
+                self.account_id, self._now(), task_id=task_id,
+                since=self._now() - timedelta(days=days), limit=500,
+            )
+            return {"now": _jsonify(self._now()), "sessions": sessions}
+
+    def execution_session(self, session_id: str) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteExecutionStore(repo).payload(self.account_id, session_id, self._now())
 
     def tasks(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
