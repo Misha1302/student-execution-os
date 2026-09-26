@@ -127,7 +127,7 @@ export async function finishExecution(session, task, { complete = false, occurre
             ['UPDATE_REMAINING', t('execution.updateRemaining')],
             ['KEEP_REMAINING', t('execution.keepRemaining')],
             ['COMPLETE', t('execution.doneOption')],
-          ], 'UPDATE_REMAINING')}</div>
+          ], suggested === 0 ? 'COMPLETE' : 'UPDATE_REMAINING')}</div>
         <div class="field" data-execution-remaining><span>${esc(t('execution.remaining'))}</span>
           ${chipGroup('execution-remaining', options, String(suggested))}</div>
         <p class="help">${esc(t('execution.noAutoProgress'))}</p>`,
