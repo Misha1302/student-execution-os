@@ -36,6 +36,13 @@ class SQLiteExecutionStore:
             raise EntityNotFound("execution session not found")
         return row
 
+    @staticmethod
+    def _require_moment(value: datetime, *, not_before: datetime | None = None) -> None:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValidationError("execution timestamp must be offset-aware")
+        if not_before is not None and value < not_before:
+            raise ValidationError("execution transition cannot move backwards in time")
+
     def _seconds(self, account_id: str, session_id: str, now: datetime) -> tuple[int, str | None]:
         rows = self.repo.connection.execute(
             "SELECT started_at,ended_at FROM execution_segments "
@@ -132,6 +139,7 @@ class SQLiteExecutionStore:
         planning_snapshot_id: str | None = None,
         source_plan_block_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
+        self._require_moment(now)
         existing = self.repo.connection.execute(
             "SELECT state,task_id FROM execution_sessions WHERE account_id=? AND id=?",
             (account_id, session_id),
@@ -171,6 +179,11 @@ class SQLiteExecutionStore:
             return self.payload(account_id, session_id, now), False
         if row["state"] != "ACTIVE":
             raise VersionConflict("only an active execution session can be paused")
+        segment = self.repo.connection.execute(
+            "SELECT started_at FROM execution_segments WHERE account_id=? AND session_id=? AND ended_at IS NULL",
+            (account_id, session_id),
+        ).fetchone()
+        self._require_moment(now, not_before=_dt(segment["started_at"]) if segment is not None else _dt(row["started_at"]))
         self.repo.connection.execute(
             "UPDATE execution_segments SET ended_at=? WHERE account_id=? AND session_id=? AND ended_at IS NULL",
             (_iso(now), account_id, session_id),
@@ -189,6 +202,7 @@ class SQLiteExecutionStore:
             return self.payload(account_id, session_id, now), False
         if row["state"] != "PAUSED":
             raise VersionConflict("only a paused execution session can be resumed")
+        self._require_moment(now, not_before=_dt(row["updated_at"]))
         self.repo.connection.execute(
             "INSERT INTO execution_segments(id,account_id,session_id,started_at,created_at) VALUES (?,?,?,?,?)",
             (f"segment-{uuid4()}", account_id, session_id, _iso(now), _iso(now)),
@@ -207,6 +221,7 @@ class SQLiteExecutionStore:
             return self.payload(account_id, session_id, now), False
         if row["state"] == "CANCELLED":
             raise VersionConflict("cancelled execution session cannot be finished")
+        self._require_moment(now, not_before=_dt(row["updated_at"]))
         if row["state"] == "ACTIVE":
             self.repo.connection.execute(
                 "UPDATE execution_segments SET ended_at=? WHERE account_id=? AND session_id=? AND ended_at IS NULL",
@@ -226,6 +241,7 @@ class SQLiteExecutionStore:
             return self.payload(account_id, session_id, now), False
         if row["state"] == "FINISHED":
             raise VersionConflict("finished execution session cannot be cancelled")
+        self._require_moment(now, not_before=_dt(row["updated_at"]))
         if row["state"] == "ACTIVE":
             self.repo.connection.execute(
                 "UPDATE execution_segments SET ended_at=? WHERE account_id=? AND session_id=? AND ended_at IS NULL",
