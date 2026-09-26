@@ -31,6 +31,7 @@ container that needs it (files, not environment variables: variables show up in
 | `secrets/worker/fcm-service-account.json` | reminder-worker | Firebase Admin SDK service account for FCM push |
 | `secrets/api/credential.key` | api | master key that encrypts every account's own AI key (ADR 0017) |
 | `secrets/api/llm-egress-proxy.url` | api | optional HTTP(S) proxy URL for LLM-only egress; needed only when a provider rejects the VPS network |
+| `secrets/api/llm-egress-relay.token` | api | optional shared secret for the Cloudflare Groq relay (same value as the Worker's `RELAY_TOKEN`) |
 
 For the Docker + Caddy variant the directory is `deploy/secrets/` (git-ignored); for the
 nginx variant it is `/etc/student-execution-os/secrets/`. The container user is uid 10001:
@@ -187,6 +188,62 @@ used only when the provider request's hostname exactly matches the comma-separat
 allowlist; arbitrary user-supplied OpenAI-compatible hosts continue to use the normal
 route. Keep an external egress proxy internet-only (no private-network reachability) and
 do not use TLS interception.
+
+#### Cloudflare Groq relay (default for production)
+
+`deploy/cloudflare-groq-relay/` is a Cloudflare Worker that relays exactly
+`POST /openai/v1/chat/completions` to the hard-coded
+`https://api.groq.com/openai/v1/chat/completions`. The API sends there **only** requests
+whose original host is exactly in `SEOS_LLM_EGRESS_RELAY_HOSTS`:
+
+```
+Execution OS API --HTTPS, X-SEOS-Relay-Token + user's Authorization--> Worker --HTTPS--> Groq
+Execution OS API --everything else--> Internet directly
+```
+
+**Trust difference:** unlike Tor or a CONNECT proxy, the Worker **terminates TLS**, so
+Cloudflare can technically observe the user's Groq key and the prompt it forwards. The
+Worker code never logs, stores or returns them (Workers observability is disabled), and
+forwards the key only to the hard-coded Groq endpoint. It is not end-to-end TLS between
+the API and Groq. The relay is scoped by exact host; arbitrary user-supplied
+OpenAI-compatible addresses never reach it. Redirects are never followed and TLS
+verification stays on at both hops. Deploying the Worker: see its `README.md`.
+
+Enable it (nginx deployment):
+
+```bash
+S=/etc/student-execution-os/secrets
+# write the same value that was stored as the Worker secret RELAY_TOKEN, without echoing it
+install -o 10001 -g 10001 -m 0400 /dev/stdin "$S/api/llm-egress-relay.token" < /path/to/relay-token
+```
+
+and in `/etc/student-execution-os/student-execution-os.env`:
+
+```bash
+SEOS_LLM_EGRESS_RELAY_URL=https://seos-groq-relay.misha13022008.workers.dev
+SEOS_LLM_EGRESS_RELAY_TOKEN_FILE=/run/secrets/seos/llm-egress-relay.token
+SEOS_LLM_EGRESS_RELAY_HOSTS=api.groq.com
+SEOS_LLM_EGRESS_PROXY=
+SEOS_LLM_EGRESS_PROXY_FILE=
+SEOS_LLM_EGRESS_PROXY_HOSTS=
+```
+
+then run the normal deployment command **without** the Tor overlay (`--remove-orphans`
+removes Tor/Privoxy). Only one egress mechanism may serve a host: a request that both a
+proxy and the relay would handle fails with `REQUEST` ("configure only one LLM egress
+mechanism") instead of silently picking one. The Tor overlay clears the relay settings
+itself, so enabling it is the explicit switch back to Tor.
+
+Errors the Worker produces carry `X-SEOS-Relay-Error` and are never reported as the
+user's key: `unauthorized`/`invalid_request`/`relay_misconfigured` → `REQUEST` (operator
+configuration), `provider_unreachable` → `NETWORK`, `upstream_redirect` → `UPSTREAM`.
+Answers from Groq itself have no such header and keep the normal classification (401 →
+`AUTH`, region 403 → `SERVER_BLOCKED`, model 403 → `NOT_FOUND`, 429 → `RATE_LIMITED`/`QUOTA`).
+
+**Rollback A (direct):** empty the three `SEOS_LLM_EGRESS_RELAY_*` variables and run the
+normal nginx deployment command above with `--remove-orphans`.
+**Rollback B (Tor):** run the Tor overlay command above; it disables the relay. There is
+no automatic Worker→Tor failover by design: switching network origin is an operator decision.
 
 Reminder pushes to current Android builds are data-only and rendered by the app with
 working Start / Done / Snooze buttons; older installs still get system-rendered pushes.

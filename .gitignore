@@ -13,6 +13,10 @@ secrets/
 *service-account*.json
 *.serviceaccount.json
 *credential-key*
+# Cloudflare Wrangler local secrets/state
+.dev.vars
+.dev.vars.*
+.wrangler/
 
 # IDE/editor
 .idea/

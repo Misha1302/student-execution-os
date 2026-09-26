@@ -94,7 +94,8 @@ class ProviderUnavailable(ValidationError):
     REJECTED   any other refusal of the request (4xx)
     UPSTREAM   the provider failed (5xx, overloaded)
     NETWORK    no connection, DNS, TLS or timeout
-    REQUEST    the request could not even be built (e.g. an illegal header)
+    REQUEST    the request could not even be built (e.g. an illegal header), or
+               the operator's LLM egress proxy/relay is misconfigured or refused it
     BLOCKED_URL  a user-supplied address points into a private network
     ========== =============================================================
     """
@@ -173,6 +174,68 @@ def _llm_egress_proxy(url: str) -> str | None:
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ProviderUnavailable("the LLM egress proxy must be an http(s) URL", "REQUEST")
     return proxy
+
+
+@dataclass(frozen=True)
+class _Relay:
+    url: str  # the relay endpoint this request is sent to
+    # repr=False: the operator secret never appears in a traceback or log line.
+    token: str = field(repr=False)
+
+
+# X-SEOS-Relay-Error codes the relay itself produces. Anything else it reports is an
+# operator configuration problem (REQUEST), never the user's key.
+_RELAY_ERRORS = {"provider_unreachable": "NETWORK", "upstream_redirect": "UPSTREAM"}
+
+
+def _llm_egress_relay(url: str) -> _Relay | None:
+    """Return the operator's application relay for this exact provider host.
+
+    An alternative to ``_llm_egress_proxy`` for providers that reject the VPS network:
+    the request is sent to ``SEOS_LLM_EGRESS_RELAY_URL`` + the provider path, with the
+    relay secret from ``SEOS_LLM_EGRESS_RELAY_TOKEN_FILE``, and the relay forwards it to
+    its own hard-coded provider endpoint. Unlike an HTTP CONNECT proxy the relay
+    terminates TLS, so it can see the user's key; it is therefore used only for hosts
+    listed exactly in ``SEOS_LLM_EGRESS_RELAY_HOSTS``.
+    """
+    base = os.environ.get("SEOS_LLM_EGRESS_RELAY_URL", "").strip()
+    if not base:
+        return None
+    allowed = {
+        item.strip().lower().rstrip(".")
+        for item in os.environ.get("SEOS_LLM_EGRESS_RELAY_HOSTS", "").split(",")
+        if item.strip()
+    }
+    if not allowed:
+        raise ProviderUnavailable("LLM egress relay hosts are not configured", "REQUEST")
+    target = urlsplit(url)
+    host = (target.hostname or "").lower().rstrip(".")
+    if host not in allowed or target.scheme != "https" or target.port not in (None, 443):
+        return None
+    if target.query or target.fragment:
+        raise ProviderUnavailable("the provider address cannot be relayed", "REQUEST")
+
+    relay = urlsplit(base)
+    if relay.query or relay.fragment or relay.path not in ("", "/"):
+        raise ProviderUnavailable("the LLM egress relay must be a bare https:// origin", "REQUEST")
+    endpoint = f"{base.rstrip('/')}{target.path}"
+    try:
+        assert_public_base_url(endpoint)
+    except ProviderUnavailable as exc:
+        if exc.reason != "BLOCKED_URL":
+            raise
+        raise ProviderUnavailable("the LLM egress relay must be a public https:// URL", "REQUEST") from None
+
+    file_name = os.environ.get("SEOS_LLM_EGRESS_RELAY_TOKEN_FILE", "").strip()
+    if not file_name:
+        raise ProviderUnavailable("the LLM egress relay token file is not configured", "REQUEST")
+    try:
+        token = Path(file_name).read_text(encoding="utf-8").strip()
+    except OSError:
+        raise ProviderUnavailable("the LLM egress relay token is unreadable", "REQUEST") from None
+    if not token:
+        raise ProviderUnavailable("the LLM egress relay token is empty", "REQUEST")
+    return _Relay(endpoint, token)
 
 
 def _reason(status: int, response: httpx.Response | None = None, *, custom_address: bool = False) -> str:
@@ -284,15 +347,22 @@ def probe_context(now: str) -> dict[str, object]:
 def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: float, name: str,
           public_only: bool = False, custom_address: bool = False) -> httpx.Response:
     if public_only:
-        assert_public_base_url(url)
+        assert_public_base_url(url)  # the user's own address, before any egress choice
     proxy = _llm_egress_proxy(url)
+    relay = _llm_egress_relay(url)
+    if proxy and relay:
+        raise ProviderUnavailable("configure only one LLM egress mechanism", "REQUEST")
     try:
         # Redirects are not followed: a redirect must not carry the key elsewhere.
-        # A configured egress proxy is used only for an explicit host allowlist. It
-        # changes the network origin without moving the BYOK credential to the client.
+        # A configured egress proxy or relay is used only for an explicit host
+        # allowlist. It changes the network origin without moving the BYOK credential
+        # to the client.
         if proxy:
             with httpx.Client(proxy=proxy, trust_env=False, timeout=timeout, follow_redirects=False) as client:
                 response = client.post(url, headers=headers, json=body)
+        elif relay:
+            with httpx.Client(trust_env=False, timeout=timeout, follow_redirects=False) as client:
+                response = client.post(relay.url, headers={**headers, "X-SEOS-Relay-Token": relay.token}, json=body)
         else:
             response = httpx.post(url, headers=headers, json=body, timeout=timeout, follow_redirects=False)
     except httpx.TimeoutException:
@@ -302,6 +372,15 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST") from None
     except httpx.HTTPError:
         raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK") from None
+    relay_error = response.headers.get("X-SEOS-Relay-Error") if relay else None
+    if relay_error and response.status_code >= 300:
+        # The relay refused or failed by itself; the provider never saw the request,
+        # so this must not read as a verdict on the user's key.
+        raise ProviderUnavailable(
+            f"the LLM egress relay for assistant provider {name} answered HTTP {response.status_code}",
+            _RELAY_ERRORS.get(relay_error.strip().lower(), "REQUEST"),
+            response.status_code,
+        )
     if response.status_code >= 300:
         # The provider's body is not echoed: some providers quote part of the key.
         raise ProviderUnavailable(

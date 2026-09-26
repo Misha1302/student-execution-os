@@ -21,7 +21,9 @@ class RepositoryHygieneTest(unittest.TestCase):
     def test_secret_file_names_are_ignored(self):
         for name in ("deadlines-os-firebase-adminsdk-fbsvc-00e9e6be07.json", "prod-firebase-adminsdk-x.json",
                      "fcm-service-account.json", "deploy/secrets/api/credential.key", "deploy/.env",
-                     "mobile/android/app/google-services.json", "student-execution-os.db"):
+                     "mobile/android/app/google-services.json", "student-execution-os.db",
+                     "deploy/cloudflare-groq-relay/.dev.vars", "deploy/cloudflare-groq-relay/.wrangler/state",
+                     "deploy/secrets/api/llm-egress-relay.token"):
             self.assertEqual(_git("check-ignore", "-q", "--no-index", name).returncode, 0, name)
 
     def test_no_tracked_file_contains_a_private_key(self):

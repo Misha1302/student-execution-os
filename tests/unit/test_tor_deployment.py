@@ -23,6 +23,8 @@ class TorDeploymentContractTests(unittest.TestCase):
             overlay,
         )
         self.assertIn('SEOS_LLM_EGRESS_PROXY_FILE: ""', overlay)
+        # Tor is an explicit operator choice: the overlay switches the relay off.
+        self.assertIn('SEOS_LLM_EGRESS_RELAY_URL: ""', overlay)
 
     def test_privoxy_has_no_direct_internet_network_and_no_ports_are_published(self):
         overlay = self.text("deploy/docker-compose.tor.yml")
@@ -58,6 +60,15 @@ class TorDeploymentContractTests(unittest.TestCase):
         self.assertNotIn("verify=False", providers)
         self.assertIn("follow_redirects=False", providers)
         self.assertIn("host not in allowed", providers)
+        self.assertIn("configure only one LLM egress mechanism", providers)
+
+    def test_relay_is_opt_in_and_file_only_in_both_deployments(self):
+        for base in ("deploy/docker-compose.yml", "deploy/docker-compose.nginx.yml"):
+            text = self.text(base)
+            self.assertIn("SEOS_LLM_EGRESS_RELAY_URL: ${SEOS_LLM_EGRESS_RELAY_URL:-}", text)
+            self.assertIn("SEOS_LLM_EGRESS_RELAY_TOKEN_FILE: ${SEOS_LLM_EGRESS_RELAY_TOKEN_FILE:-}", text)
+            self.assertIn("SEOS_LLM_EGRESS_RELAY_HOSTS: ${SEOS_LLM_EGRESS_RELAY_HOSTS:-}", text)
+            self.assertNotIn("SEOS_LLM_EGRESS_RELAY_TOKEN:", text)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+// Cloudflare Worker: SEOS -> Groq relay. See README.md.
+// No secrets here: RELAY_TOKEN is a Worker secret (`wrangler secret put RELAY_TOKEN`).
+{
+  "name": "seos-groq-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  // Served only at https://seos-groq-relay.<account-subdomain>.workers.dev.
+  "workers_dev": true,
+  "preview_urls": false,
+  // No Workers Logs / invocation logs: requests carry a provider key and prompts.
+  "observability": { "enabled": false },
+  "logpush": false
+}
