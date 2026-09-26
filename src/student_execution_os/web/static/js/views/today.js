@@ -4,7 +4,7 @@ import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead 
 import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../capture.js';
 import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
-import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution } from '../execution.js';
+import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 export function parseWhyNow(value) {
   const out = {};
@@ -337,6 +337,11 @@ export default {
       const session = ctx.data?.active_execution;
       const task = session ? (ctx.data?.tasks || []).find((x) => x.id === session.task_id) : null;
       if (session && task) await finishExecution(session, task);
+    },
+    'execution-review'(_el, ctx) {
+      const session = ctx.data?.active_execution;
+      const task = session ? (ctx.data?.tasks || []).find((x) => x.id === session.task_id) : null;
+      if (session && task) reviewLongExecution(session, task);
     },
     async 'execution-complete'(_el, ctx) {
       const session = ctx.data?.active_execution;
