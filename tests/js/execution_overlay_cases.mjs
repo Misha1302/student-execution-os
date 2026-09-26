@@ -51,6 +51,8 @@ assert.equal(day.tasks[0].remaining_effort_minutes, 45);
 
 const complete = item('execution.finish', 'execution-1', { task_id: task.id, outcome: 'COMPLETE' }, '2026-09-27T09:45:00Z');
 day = project('/api/v1/today', base, [start, complete], { now: new Date('2026-09-27T09:45:00Z') });
-assert.equal(day.tasks[0].status, 'COMPLETED');
+assert.equal(day.tasks.length, 0, 'completed work leaves the Today active-task list');
+const allTasks = project('/api/v1/tasks', [task], [start, complete], { now: new Date('2026-09-27T09:45:00Z') });
+assert.equal(allTasks[0].status, 'COMPLETED');
 
 console.log('execution overlay: ok');
