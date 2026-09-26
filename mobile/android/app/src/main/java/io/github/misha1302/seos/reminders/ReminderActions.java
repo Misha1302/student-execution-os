@@ -1,11 +1,13 @@
 package io.github.misha1302.seos.reminders;
 
 import java.text.SimpleDateFormat;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.UUID;
 
 /**
  * Turns a notification button into the server's offline-sync operations.
@@ -55,9 +57,17 @@ public final class ReminderActions {
             String opId = "push-" + messageId + "-" + action + (taskIds.size() > 1 ? "-" + i : "");
             String type;
             String payload;
+            String entityId = taskId;
             if (START.equals(action)) {
-                type = "task.start";
-                payload = "{\"reminder_message_id\":" + quote(messageId) + "}";
+                type = "execution.start";
+                // This JSON is persisted inside the WorkManager request, so retries use
+                // the same id/timestamp even if the phone stays offline for hours.
+                opId = opId + "-" + pressedAtMillis;
+                entityId = "execution-" + UUID.nameUUIDFromBytes(
+                        (opId + "|" + taskId).getBytes(StandardCharsets.UTF_8)).toString();
+                payload = "{\"task_id\":" + quote(taskId)
+                        + ",\"occurred_at\":" + quote(iso(pressedAtMillis))
+                        + ",\"reminder_message_id\":" + quote(messageId) + "}";
             } else if (DONE.equals(action)) {
                 type = "task.complete";
                 payload = "{\"reminder_message_id\":" + quote(messageId) + "}";
@@ -68,7 +78,7 @@ public final class ReminderActions {
             } else {
                 throw new IllegalArgumentException("not a background action: " + action);
             }
-            ops.add("{\"op_id\":" + quote(opId) + ",\"type\":" + quote(type) + ",\"entity_id\":" + quote(taskId)
+            ops.add("{\"op_id\":" + quote(opId) + ",\"type\":" + quote(type) + ",\"entity_id\":" + quote(entityId)
                     + ",\"payload\":" + payload + "}");
         }
         StringBuilder out = new StringBuilder("[");  // String.join needs API 26; minSdk is 24
