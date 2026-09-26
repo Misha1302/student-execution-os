@@ -117,6 +117,9 @@ export default {
   'sync.empty': 'Everything is synced.',
   'sync.retry': 'Send now',
   'sync.dismiss': 'Dismiss',
+  'sync.openCurrentExecution': 'Open current work',
+  'sync.keepCurrentExecution': 'Keep current work',
+  'sync.code.EXECUTION_ACTIVE': 'Another device already has work in progress.',
   'sync.problemHelp': 'The server kept its current version. Open the task to see it and repeat the change if it is still needed.',
   'sync.stillOffline': 'Server is still unreachable; changes stay queued on this device.',
 
