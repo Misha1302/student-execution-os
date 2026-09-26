@@ -24,6 +24,11 @@ services:
       SEOS_PLATFORM_LLM_MODEL: ${SEOS_PLATFORM_LLM_MODEL:-}
       SEOS_PLATFORM_LLM_BASE_URL: ${SEOS_PLATFORM_LLM_BASE_URL:-}
       SEOS_PLATFORM_LLM_API_KEY: ${SEOS_PLATFORM_LLM_API_KEY:-}
+      # Optional LLM-only egress route for providers that reject this VPS network.
+      # Prefer *_FILE when the proxy URL contains credentials.
+      SEOS_LLM_EGRESS_PROXY: ${SEOS_LLM_EGRESS_PROXY:-}
+      SEOS_LLM_EGRESS_PROXY_FILE: ${SEOS_LLM_EGRESS_PROXY_FILE:-}
+      SEOS_LLM_EGRESS_PROXY_HOSTS: ${SEOS_LLM_EGRESS_PROXY_HOSTS:-}
     ports:
       - "127.0.0.1:8765:8765"
     volumes:

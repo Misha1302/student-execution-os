@@ -18,6 +18,11 @@ services:
       SEOS_PLATFORM_LLM_MODEL: ${SEOS_PLATFORM_LLM_MODEL:-}
       SEOS_PLATFORM_LLM_BASE_URL: ${SEOS_PLATFORM_LLM_BASE_URL:-}
       SEOS_PLATFORM_LLM_API_KEY: ${SEOS_PLATFORM_LLM_API_KEY:-}
+      # Optional LLM-only egress route for providers that reject this VPS network.
+      # Prefer *_FILE when the proxy URL contains credentials.
+      SEOS_LLM_EGRESS_PROXY: ${SEOS_LLM_EGRESS_PROXY:-}
+      SEOS_LLM_EGRESS_PROXY_FILE: ${SEOS_LLM_EGRESS_PROXY_FILE:-}
+      SEOS_LLM_EGRESS_PROXY_HOSTS: ${SEOS_LLM_EGRESS_PROXY_HOSTS:-}
     volumes:
       - seos-data:/data
       # deploy/secrets/ is git-ignored; see deploy/README.md "Secrets".
