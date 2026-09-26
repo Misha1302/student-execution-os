@@ -4,7 +4,7 @@ import { t, code, fmtDuration, fmtDateTime, fmtRelative, now } from '../i18n.js'
 import { esc, icon, chip, riskChip, kv, empty, setBusy } from '../ui.js';
 import { lifecycle, logProgress, mutate, change, taskPlace } from '../actions.js';
 import { editTaskSheet, rescheduleSheet, deadlineText } from '../capture.js';
-import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution } from '../execution.js';
+import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 function fileBase64(file) {
   return new Promise((resolve, reject) => {
@@ -150,6 +150,11 @@ export default {
     },
     async 'execution-finish'(_el, ctx) {
       if (ctx.data.execution_active) await finishExecution(ctx.data.execution_active, ctx.data);
+    },
+    'execution-review'(_el, ctx) {
+      const session = ctx.data?.execution_active;
+      const task = ctx.data;
+      if (session && task) reviewLongExecution(session, task);
     },
     async 'execution-complete'(_el, ctx) {
       if (ctx.data.execution_active) await finishExecution(ctx.data.execution_active, ctx.data, { complete: true });
