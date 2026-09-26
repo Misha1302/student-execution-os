@@ -539,13 +539,16 @@ class Commands:
         return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_CANCELLED")
 
     def task_complete(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("task.complete only accepts occurred_at")
         current = self._task(task_id).obligation
         # An archived task keeps completed_at: archived-after-done is still done.
         if current.completed_at is not None:
             return self._task_out(task_id, NOOP, "ALREADY_COMPLETED")
         if current.lifecycle_status not in OPEN:
             return self._task_out(task_id, CONFLICT, "TASK_CANCELLED", "task was cancelled; reopen it first")
-        self._execution().finish_active_for_task(self.account_id, task_id, self.now, self.actor)
+        execution_time = self._execution_moment(payload)
+        self._execution().finish_active_for_task(self.account_id, task_id, execution_time, self.actor)
         self._transition(task_id, "complete")
         self._touch(task_id)
         return self._task_out(task_id)
