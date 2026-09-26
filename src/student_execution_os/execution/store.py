@@ -82,6 +82,7 @@ class SQLiteExecutionStore:
             "estimated_total_effort_at_start": row["estimated_total_effort_at_start"],
             "actual_work_seconds": seconds,
             "actual_work_minutes": seconds // 60,
+            "measured_at": _iso(now),
             "current_segment_started_at": current,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
