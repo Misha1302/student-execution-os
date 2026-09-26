@@ -86,7 +86,8 @@ export function sectionHead(title, action = '') {
 
 // ---- toast ------------------------------------------------------------------------
 
-export function toast(message, { error = false, action = null } = {}) {
+// `duration` (ms): an Undo offer stays up long enough to use (10 s).
+export function toast(message, { error = false, action = null, duration = null } = {}) {
   const region = $('#toast-region');
   const el = document.createElement('div');
   el.className = `toast${error ? ' error' : ''}`;
@@ -95,8 +96,9 @@ export function toast(message, { error = false, action = null } = {}) {
   if (action) el.querySelector('button').addEventListener('click', () => { action.run(); el.remove(); });
   region.append(el);
   if (error) haptic('MEDIUM');
-  setTimeout(() => el.classList.add('leaving'), 3800);
-  setTimeout(() => el.remove(), 4200);
+  const visible = duration ?? (action ? 6000 : 3800);
+  setTimeout(() => el.classList.add('leaving'), visible);
+  setTimeout(() => el.remove(), visible + 400);
 }
 
 export function errorMessage(err) {

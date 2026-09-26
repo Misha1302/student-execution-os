@@ -61,6 +61,30 @@ from student_execution_os.travel import SQLiteTravelRepository
 from student_execution_os.sync.commands import SyncService
 
 
+class _AccountLimiter:
+    """At most ``limit`` calls per account per minute (outbound side effects)."""
+
+    def __init__(self, limit: int) -> None:
+        import threading
+        self.limit = limit
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, account_id: str) -> bool:
+        import time
+        now = time.monotonic()
+        with self._lock:
+            hits = [at for at in self._hits.get(account_id, []) if now - at < 60]
+            allowed = len(hits) < self.limit
+            if allowed:
+                hits.append(now)
+            self._hits[account_id] = hits
+            return allowed
+
+
+TEST_NOTIFICATION_LIMITER = _AccountLimiter(3)
+
+
 def _jsonify(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat()
@@ -681,6 +705,39 @@ class UiService:
                 "horizon_end": _jsonify(end),
             }
 
+    def commitments(self, place: str | None = None, query: str = "") -> dict[str, Any]:
+        """Tasks, events and reminders as one agenda / search result (see web/commitments.py)."""
+        from student_execution_os.web.commitments import commitments
+        if place not in (None, "", "open", "done", "archive"):
+            raise ValueError("place must be open, done or archive")
+        tasks, events, reminders = self.tasks(), self.events(), self.reminders()
+        items = commitments(tasks=tasks, events=events, reminders=reminders, now=self._now(),
+                            place=place or None, query=query[:200])
+        return {"now": _jsonify(self._now()), "items": items}
+
+    def connectors(self) -> list[dict[str, Any]]:
+        from student_execution_os.connectors.service import list_connectors
+        with self._repo() as repo:
+            return list_connectors(repo, self.account_id)
+
+    def sync_connector(self, connector_id: str) -> dict[str, Any]:
+        from student_execution_os.connectors.service import sync_now
+        with self._repo() as repo:
+            return sync_now(repo, self.account_id, connector_id)
+
+    def reminders(self) -> list[dict[str, Any]]:
+        """Standalone reminders: open ones and those closed in the last 30 days."""
+        from student_execution_os.reminders.standalone import SQLiteReminderRepository
+        with self._repo() as repo:
+            return SQLiteReminderRepository(repo).list(self.account_id, since=self._now() - timedelta(days=30))
+
+    def upcoming_alarms(self) -> dict[str, Any]:
+        """What an Android phone must have scheduled (fetched by its background worker)."""
+        from student_execution_os.reminders.standalone import SQLiteReminderRepository
+        with self._repo() as repo:
+            return {"alarms": SQLiteReminderRepository(repo).upcoming_alarms(self.account_id, self._now()),
+                    "now": _jsonify(self._now())}
+
     def notifications(self) -> list[dict[str, Any]]:
         with self._repo() as repo:
             return ReminderStore(repo).messages(self.account_id, since=self._now() - timedelta(days=30))
@@ -703,7 +760,76 @@ class UiService:
         with self._repo() as repo:
             return ReminderStore(repo).register_device(
                 self.account_id, str(payload.get("token", "")), payload.get("label"), payload.get("capabilities"),
+                payload.get("status"),
             )
+
+    def report_device_status(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return ReminderStore(repo).report_device_status(self.account_id, device_id, payload.get("status"))
+
+    def notifications_health(self) -> dict[str, Any]:
+        """Can a reminder actually reach this user, and if not, why.
+
+        ``reach`` is what the product may promise: PUSH (a phone will show it),
+        IN_APP (only the in-app inbox — no phone can show it), NONE (the reminder
+        worker is not running, so nothing is sent at all). ``alarm`` says whether a
+        phone can ring a real alarm. The client adds what only it knows (this
+        browser's or phone's own permission) on top.
+        """
+        from student_execution_os.reminders.store import WAKE_ALARM_CAPABILITY
+        with self._repo() as repo:
+            store = ReminderStore(repo)
+            worker = self._worker_status(repo)
+            running = worker["state"] == "RUNNING"
+            push_configured = worker["push_configured"] if running else provider_from_environment().configured
+            devices = [d for d in store.devices(self.account_id) if d["active"]]
+            showing = [d for d in devices if d["status"].get("notifications") is not False]
+            alarm_devices = [d for d in devices if WAKE_ALARM_CAPABILITY in d["capabilities"]]
+            exact = [d for d in alarm_devices if d["status"].get("exact_alarms") is not False]
+            prefs = store.prefs(self.account_id)
+            problems: list[str] = []
+            if not running:
+                problems.append("WORKER_" + worker["state"])
+            if not push_configured:
+                problems.append("PUSH_UNCONFIGURED")
+            if not devices:
+                problems.append("NO_DEVICE")
+            elif not showing:
+                problems.append("DEVICE_NOTIFICATIONS_OFF")
+            if alarm_devices and not exact:
+                problems.append("EXACT_ALARMS_OFF")
+            if any(d["status"].get("full_screen") is False for d in alarm_devices):
+                problems.append("FULL_SCREEN_OFF")
+            if not prefs.enabled:
+                problems.append("REMINDERS_OFF")
+            reach = "NONE" if not running else "PUSH" if push_configured and showing else "IN_APP"
+            return {
+                "reach": reach,
+                "alarm": "OK" if exact else "INEXACT" if alarm_devices else "NONE",
+                "problems": problems,
+                "reminders_enabled": prefs.enabled,
+                "worker": worker,
+                "push_configured": push_configured,
+                "devices": devices,
+                "recent": store.delivery_summary(self.account_id, self._now() - timedelta(days=7)),
+                "checked_at": _jsonify(self._now()),
+            }
+
+    def send_test_notification(self) -> dict[str, Any]:
+        from student_execution_os.reminders.messages import test_message
+        if not TEST_NOTIFICATION_LIMITER.allow(self.account_id):
+            from student_execution_os.web.auth import RateLimited
+            raise RateLimited("too many test notifications; try again in a minute")
+        with self._repo() as repo:
+            store = ReminderStore(repo)
+            message_id = store.add_service_message(self.account_id, stage="TEST",
+                                                   content=test_message(store.prefs(self.account_id).locale),
+                                                   now=self._now())
+            return store.delivery(self.account_id, message_id)
+
+    def notification_delivery(self, message_id: str) -> dict[str, Any]:
+        with self._repo() as repo:
+            return ReminderStore(repo).delivery(self.account_id, message_id)
 
     def revoke_device(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:
@@ -1241,9 +1367,10 @@ class UiService:
             credentials = LlmCredentialStore(repo)
             resolved = credentials.resolve(self.account_id)
             service = SQLiteAssistantService(repo, self.principal, provider=resolved.provider)
-            result = service.interpret(str(payload.get("text", "")), payload.get("context"))
+            result = service.interpret(str(payload.get("text", "")), payload.get("context"), degrade_invalid=True)
             if resolved.source.value == "USER_BYOK":
                 credentials.record_use(self.account_id, service.provider_failure)
+            result["credential_source"] = resolved.source.value
             return result
 
     def assistant_capabilities(self) -> dict[str, Any]:

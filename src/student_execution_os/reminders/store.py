@@ -18,13 +18,20 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _
 
 from .policy import ReminderPrefs, ReminderState, parse_clock
 
-# Client capabilities the server acts on (see migration 013).
+# Client capabilities the server acts on (see migrations 013 and 016).
 REMINDER_ACTIONS_CAPABILITY = "reminder-actions-v1"
-DEVICE_CAPABILITIES = frozenset({REMINDER_ACTIONS_CAPABILITY})
+WAKE_ALARM_CAPABILITY = "wake-alarm-v1"
+DEVICE_CAPABILITIES = frozenset({REMINDER_ACTIONS_CAPABILITY, WAKE_ALARM_CAPABILITY})
+# What a device may report about itself (all booleans): system notifications allowed,
+# exact alarms allowed, full-screen alarms allowed, battery optimisation active.
+DEVICE_STATUS_KEYS = frozenset({"notifications", "exact_alarms", "full_screen", "battery_optimized"})
+# Messages that are not reminders the user asked for: diagnostics and device signals.
+# They never count toward reminder spacing/caps and never appear in the inbox.
+SERVICE_STAGES = ("TEST", "ALARM_SYNC")
 
 MESSAGE_COLUMNS = (
     "id,stage,task_ids_json,title,body,deep_link,actions_json,created_at,delivery_state,attempts,"
-    "last_error,sent_at,seen_at,acted_at,acted_action"
+    "last_error,sent_at,seen_at,acted_at,acted_action,reminder_id,delivery"
 )
 
 
@@ -190,36 +197,94 @@ class ReminderStore:
     # ---- messages ---------------------------------------------------------------------
 
     def add_message(self, account_id: str, *, stage: str, task_ids: list[str], content: dict[str, Any],
-                    dedupe_key: str, now: datetime) -> str | None:
+                    dedupe_key: str, now: datetime, reminder_id: str | None = None, delivery: str = "PUSH") -> str | None:
         message_id = f"rem-{uuid4().hex[:24]}"
         with self.canonical._tx() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO reminder_messages(id,account_id,dedupe_key,stage,task_ids_json,title,body,deep_link,"
-                "actions_json,created_at,delivery_state,attempts,next_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',0,?)",
+                "actions_json,created_at,delivery_state,attempts,next_attempt_at,reminder_id,delivery) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',0,?,?,?)",
                 (message_id, account_id, dedupe_key, stage, json.dumps(task_ids), content["title"], content["body"],
-                 content["deep_link"], json.dumps(content["actions"]), _iso(now), _iso(now)),
+                 content["deep_link"], json.dumps(content["actions"]), _iso(now), _iso(now), reminder_id, delivery),
             )
         return message_id if cur.rowcount == 1 else None
 
     def last_message_at(self, account_id: str) -> datetime | None:
         row = self.connection.execute(
-            "SELECT max(created_at) FROM reminder_messages WHERE account_id=? AND delivery_state!='CANCELLED'", (account_id,)
+            "SELECT max(created_at) FROM reminder_messages WHERE account_id=? AND delivery_state!='CANCELLED' "
+            "AND stage NOT IN (?,?)", (account_id, *SERVICE_STAGES)
         ).fetchone()
         return _dt(row[0]) if row and row[0] else None
 
     def count_since(self, account_id: str, since: datetime) -> int:
         return int(self.connection.execute(
-            "SELECT count(*) FROM reminder_messages WHERE account_id=? AND created_at>=? AND delivery_state!='CANCELLED'",
-            (account_id, _iso(since)),
+            "SELECT count(*) FROM reminder_messages WHERE account_id=? AND created_at>=? AND delivery_state!='CANCELLED' "
+            "AND stage NOT IN (?,?)",
+            (account_id, _iso(since), *SERVICE_STAGES),
         ).fetchone()[0])
 
     def messages(self, account_id: str, *, since: datetime, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             f"SELECT {MESSAGE_COLUMNS} FROM reminder_messages WHERE account_id=? AND created_at>=? "
-            "AND delivery_state!='CANCELLED' ORDER BY created_at DESC LIMIT ?",
-            (account_id, _iso(since), limit),
+            "AND delivery_state!='CANCELLED' AND stage NOT IN (?,?) ORDER BY created_at DESC LIMIT ?",
+            (account_id, _iso(since), *SERVICE_STAGES, limit),
         ).fetchall()
         return [self._message(row) for row in rows]
+
+    def add_service_message(self, account_id: str, *, stage: str, content: dict[str, Any], now: datetime,
+                            delivery: str = "PUSH") -> str:
+        """A diagnostic or signalling message (see SERVICE_STAGES), sent like a reminder."""
+        if stage not in SERVICE_STAGES:
+            raise ValidationError("not a service message stage")
+        message_id = f"rem-{uuid4().hex[:24]}"
+        with self.canonical._tx() as conn:
+            conn.execute(
+                "INSERT INTO reminder_messages(id,account_id,dedupe_key,stage,task_ids_json,title,body,deep_link,"
+                "actions_json,created_at,delivery_state,attempts,next_attempt_at,delivery) "
+                "VALUES (?,?,?,?,'[]',?,?,?,?,?,'PENDING',0,?,?)",
+                (message_id, account_id, f"{stage}:{message_id}", stage, content["title"], content["body"],
+                 content.get("deep_link", "/today"), json.dumps(content.get("actions", [])), _iso(now), _iso(now), delivery),
+            )
+        return message_id
+
+    def signal_alarm_sync(self, account_id: str, now: datetime) -> None:
+        """Ask the account's alarm-capable phones to fetch and reschedule their alarms.
+
+        One pending signal is enough: it is collapsed until it has been sent.
+        """
+        pending = self.connection.execute(
+            "SELECT 1 FROM reminder_messages WHERE account_id=? AND stage='ALARM_SYNC' AND delivery_state IN ('PENDING','LEASED')",
+            (account_id,),
+        ).fetchone()
+        if pending is None:
+            self.add_service_message(account_id, stage="ALARM_SYNC", now=now,
+                                     content={"title": "", "body": "", "deep_link": "/today"})
+
+    def delivery(self, account_id: str, message_id: str) -> dict[str, Any]:
+        row = self.connection.execute(
+            "SELECT id,stage,delivery_state,attempts,last_error,sent_at,created_at FROM reminder_messages "
+            "WHERE account_id=? AND id=?", (account_id, message_id),
+        ).fetchone()
+        if row is None:
+            raise EntityNotFound("notification not found")
+        return dict(row)
+
+    def delivery_summary(self, account_id: str, since: datetime) -> dict[str, Any]:
+        """How reminders of the last days actually went out (not counting diagnostics)."""
+        counts = {row["delivery_state"]: int(row["n"]) for row in self.connection.execute(
+            "SELECT delivery_state,count(*) AS n FROM reminder_messages WHERE account_id=? AND created_at>=? "
+            "AND stage NOT IN (?,?) GROUP BY delivery_state", (account_id, _iso(since), *SERVICE_STAGES),
+        ).fetchall()}
+        last_sent = self.connection.execute(
+            "SELECT max(sent_at) FROM reminder_messages WHERE account_id=? AND delivery_state='SENT'", (account_id,)
+        ).fetchone()[0]
+        last_error = self.connection.execute(
+            "SELECT last_error FROM reminder_messages WHERE account_id=? AND delivery_state IN ('NO_DEVICE','DEAD') "
+            "ORDER BY created_at DESC LIMIT 1", (account_id,),
+        ).fetchone()
+        return {"sent": counts.get("SENT", 0), "pending": counts.get("PENDING", 0) + counts.get("LEASED", 0),
+                "no_device": counts.get("NO_DEVICE", 0), "failed": counts.get("DEAD", 0),
+                "last_sent_at": last_sent, "last_error": None if last_error is None else last_error[0]}
 
     def message(self, account_id: str, message_id: str) -> dict[str, Any]:
         row = self.connection.execute(
@@ -261,7 +326,7 @@ class ReminderStore:
     # ---- devices ----------------------------------------------------------------------
 
     def register_device(self, account_id: str, token: str, label: str | None,
-                        capabilities: list[str] | None = None) -> dict[str, Any]:
+                        capabilities: list[str] | None = None, status: dict[str, Any] | None = None) -> dict[str, Any]:
         self.canonical._require_account(account_id)
         token = str(token or "").strip()
         if not token or len(token) > 4096:
@@ -270,6 +335,7 @@ class ReminderStore:
                                          or not all(isinstance(item, str) for item in capabilities)):
             raise ValidationError("capabilities must be a list of strings")
         declared = json.dumps(sorted(set(capabilities or []) & DEVICE_CAPABILITIES))
+        reported = json.dumps(device_status(status), sort_keys=True)
         digest = hashlib.sha256(token.encode()).hexdigest()
         now = _iso(self.canonical.clock.now())
         with self.canonical._tx() as conn:
@@ -284,35 +350,50 @@ class ReminderStore:
             if existing is None:
                 device_id = str(uuid4())
                 conn.execute(
-                    "INSERT INTO mobile_devices(id,account_id,platform,token_hash,token,label,created_at,updated_at,capabilities_json) "
-                    "VALUES (?,?,'ANDROID',?,?,?,?,?,?)", (device_id, account_id, digest, token, label, now, now, declared),
+                    "INSERT INTO mobile_devices(id,account_id,platform,token_hash,token,label,created_at,updated_at,"
+                    "capabilities_json,status_json,last_seen_at) VALUES (?,?,'ANDROID',?,?,?,?,?,?,?,?)",
+                    (device_id, account_id, digest, token, label, now, now, declared, reported, now),
                 )
             else:
                 device_id = existing["id"]
                 conn.execute(
-                    "UPDATE mobile_devices SET token=?,label=?,active=1,version=version+1,updated_at=?,capabilities_json=? WHERE id=?",
-                    (token, label, now, declared, device_id),
+                    "UPDATE mobile_devices SET token=?,label=?,active=1,version=version+1,updated_at=?,capabilities_json=?,"
+                    "status_json=?,last_seen_at=? WHERE id=?",
+                    (token, label, now, declared, reported, now, device_id),
                 )
         return self.device(account_id, device_id)
 
+    _DEVICE_COLUMNS = "id,platform,label,active,version,created_at,updated_at,capabilities_json,status_json,last_seen_at"
+
+    @staticmethod
+    def _device(row) -> dict[str, Any]:
+        item = {k: row[k] for k in row.keys() if k not in ("capabilities_json", "status_json")}
+        item["capabilities"] = json.loads(row["capabilities_json"] or "[]")
+        item["status"] = json.loads(row["status_json"] or "{}")
+        return item
+
     def device(self, account_id: str, device_id: str) -> dict[str, Any]:
         row = self.connection.execute(
-            "SELECT id,platform,label,active,version,created_at,updated_at,capabilities_json FROM mobile_devices "
-            "WHERE account_id=? AND id=?", (account_id, device_id),
+            f"SELECT {self._DEVICE_COLUMNS} FROM mobile_devices WHERE account_id=? AND id=?", (account_id, device_id),
         ).fetchone()
         if row is None:
             raise EntityNotFound("device not found")
-        item = dict(row)
-        item["capabilities"] = json.loads(item.pop("capabilities_json") or "[]")
-        return item
+        return self._device(row)
 
     def devices(self, account_id: str) -> list[dict[str, Any]]:
         rows = self.connection.execute(
-            "SELECT id,platform,label,active,version,created_at,updated_at,capabilities_json FROM mobile_devices "
-            "WHERE account_id=? ORDER BY updated_at DESC", (account_id,),
+            f"SELECT {self._DEVICE_COLUMNS} FROM mobile_devices WHERE account_id=? ORDER BY updated_at DESC", (account_id,),
         ).fetchall()
-        return [{**{k: row[k] for k in row.keys() if k != "capabilities_json"},
-                 "capabilities": json.loads(row["capabilities_json"] or "[]")} for row in rows]
+        return [self._device(row) for row in rows]
+
+    def report_device_status(self, account_id: str, device_id: str, status: dict[str, Any] | None) -> dict[str, Any]:
+        """A device tells what it can show right now (permissions change outside the app)."""
+        self.device(account_id, device_id)
+        now = _iso(self.canonical.clock.now())
+        with self.canonical._tx() as conn:
+            conn.execute("UPDATE mobile_devices SET status_json=?,last_seen_at=? WHERE account_id=? AND id=?",
+                         (json.dumps(device_status(status), sort_keys=True), now, account_id, device_id))
+        return self.device(account_id, device_id)
 
     def revoke_device(self, account_id: str, device_id: str) -> dict[str, Any]:
         with self.canonical._tx() as conn:
@@ -335,6 +416,15 @@ class ReminderStore:
                 "UPDATE mobile_devices SET active=0,token='',version=version+1,updated_at=? WHERE id=?",
                 (_iso(self.canonical.clock.now()), device_id),
             )
+
+
+def device_status(status: Any) -> dict[str, bool]:
+    if status is None:
+        return {}
+    if not isinstance(status, dict) or not set(status) <= DEVICE_STATUS_KEYS or not all(
+            isinstance(value, bool) for value in status.values()):
+        raise ValidationError("device status must map " + ", ".join(sorted(DEVICE_STATUS_KEYS)) + " to booleans")
+    return dict(status)
 
 
 def state_payload(state: ReminderState) -> dict[str, Any]:

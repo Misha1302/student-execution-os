@@ -379,6 +379,26 @@ def create_app(
     async def split_recurring_series(template_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.split_recurring_series(template_id, payload)
 
+    @app.get("/api/v1/commitments")
+    async def list_commitments(place: str | None = None, q: str = "", service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.commitments(place, q)
+
+    @app.get("/api/v1/connectors")
+    async def list_connectors(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.connectors()
+
+    @app.post("/api/v1/connectors/{connector_id}/sync")
+    async def sync_connector(connector_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.sync_connector(connector_id)
+
+    @app.get("/api/v1/reminders")
+    async def list_reminders(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.reminders()
+
+    @app.get("/api/v1/reminders/alarms")
+    async def upcoming_alarms(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.upcoming_alarms()
+
     @app.get("/api/v1/notifications")
     async def notifications(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.notifications()
@@ -398,6 +418,22 @@ def create_app(
     @app.post("/api/v1/mobile/devices", status_code=201)
     async def register_mobile_device(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.register_device(payload)
+
+    @app.post("/api/v1/mobile/devices/{device_id}/status")
+    async def report_mobile_device_status(device_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.report_device_status(device_id, payload)
+
+    @app.get("/api/v1/notifications/health")
+    async def notifications_health(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.notifications_health()
+
+    @app.post("/api/v1/notifications/test", status_code=201)
+    async def notifications_test(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.send_test_notification()
+
+    @app.get("/api/v1/notifications/{notification_id}/delivery")
+    async def notification_delivery(notification_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.notification_delivery(notification_id)
 
     @app.post("/api/v1/mobile/devices/{device_id}/revoke")
     async def revoke_mobile_device(device_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:

@@ -468,11 +468,17 @@ class Parser {
     return parts.length ? [true, size] : [null, null];
   }
 
+  // "напомни", and alarm words ("поставь будильник", "разбуди меня", "wake me up").
   reminderCue() {
     const spans = [];
-    for (const x of this.scan('(?<!\\w)(?:напомни(?:те)?(?:\\s+мне)?|напомнить(?:\\s+мне)?|поставь\\s+напоминание|напоминание|remind\\s+me(?:\\s+to)?|reminder)(?!\\w)')) {
+    this.alarm = false; this.wake = false; this.remindWord = false;
+    for (const x of this.scan('(?<!\\w)(?:(?:и\\s+)?(?:поставь|поставить|заведи|завести|включи)\\s+будильник|разбуди(?:те)?(?:\\s+меня)?|будильник|(?:and\\s+)?set\\s+(?:an?\\s+)?alarm|wake\\s+me(?:\\s+up)?|alarm|напомни(?:те)?(?:\\s+мне)?|напомнить(?:\\s+мне)?|поставь\\s+напоминание|напоминание|remind\\s+me(?:\\s+to)?|reminder)(?!\\w)')) {
       this.take(x.start, x.end);
       spans.push([x.start, x.end]);
+      const word = x.m[0];
+      if (/будильник|alarm|разбуд|wake/u.test(word)) this.alarm = true;
+      if (/разбуд|wake/u.test(word)) this.wake = true;
+      if (/напомн|напоминан|remind/u.test(word)) this.remindWord = true;
     }
     return spans;
   }
@@ -661,6 +667,34 @@ function titleOf(parser, category) {
 
 const iso = (date) => (date ? date.toISOString() : null);
 
+function reminderOf(parser, parsedTitle, parsedAt, description) {
+  let title = parsedTitle;
+  let remindAt = parsedAt;
+  const wake = parser.wake || (parser.alarm && !title);
+  const hour = remindAt.getHours();
+  if (wake && hour > 12 && !new RegExp(`(?<!\\d)${hour}(?!\\d)`, 'u').test(parser.low) && !/pm|p\.m\.|вечер|дня|ночи/u.test(parser.low)) {
+    // "разбуди меня в 7" is a morning: the next 7:00, not 19:00.
+    const morning = new Date(remindAt.getTime() - 12 * 3600000);
+    remindAt = morning > parser.now ? morning : new Date(morning.getTime() + 86400000);
+  }
+  const delivery = parser.alarm && parser.remindWord ? 'PUSH_AND_ALARM' : parser.alarm ? 'ALARM' : 'PUSH';
+  if (!title) {
+    const russian = /[а-яё]/u.test(parser.low);
+    title = wake ? (russian ? 'Подъём' : 'Wake up') : parser.alarm ? (russian ? 'Будильник' : 'Alarm') : '';
+  }
+  return {
+    kind: 'REMINDER',
+    title,
+    note: description,
+    remind_at: iso(remindAt),
+    delivery,
+    // An alarm the user asked for by name may raise the alarm volume (restored after).
+    wake_check: Boolean(wake),
+    raise_volume: delivery !== 'PUSH',
+    unresolved: title ? [] : ['title'],
+  };
+}
+
 // parseTask(text, now = new Date()) → task.create-shaped proposal.
 export function parseTask(text, now = new Date()) {
   const lines = String(text || '').trim().split(/\r?\n/u).map((l) => l.trim()).filter(Boolean);
@@ -731,6 +765,12 @@ export function parseTask(text, now = new Date()) {
   }
 
   const title = titleOf(parser, category);
+  if (remindSpans.length && fields.remind_at && effort == null && !hasDeadlineWords
+    && !fields.actual_cutoff && !fields.actionable_from && !fields.target_at) {
+    // "напомни купить хлеб завтра в 18", "разбуди меня в 7": a moment to get the
+    // user's attention, not work to plan — a standalone reminder.
+    return reminderOf(parser, title, fields.remind_at, description);
+  }
   const unresolved = [];
   if (!title) unresolved.push('title');
   if (effort == null) unresolved.push('estimated_total_effort_minutes');

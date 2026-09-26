@@ -23,11 +23,15 @@ from student_execution_os.domain.model import (
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 
 from .model import AgentCommand, AuthenticatedPrincipal
+from .commands import parse_command, reschedule_change
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
 
 
 COMMANDS = {command.value for command in AgentCommand}
+# Commands that close or put away something the user has: always confirmed by the user.
+DESTRUCTIVE = {AgentCommand.COMPLETE_OBLIGATION.value, AgentCommand.CANCEL_OBLIGATION.value,
+               AgentCommand.ARCHIVE_OBLIGATION.value}
 _CREATE_TASK = re.compile(r"^(?:task|задача)\s*:\s*(.+)$", re.IGNORECASE)
 _CREATE_EVENT = re.compile(r"^(?:event|событие)\s*:\s*(.+)$", re.IGNORECASE)
 _DURATION = re.compile(r"(?:\b|\s)(\d{1,4})\s*(?:m|min|mins|minutes|мин|минут)\b", re.IGNORECASE)
@@ -72,27 +76,29 @@ class DeterministicAssistantParser:
                 unresolved.extend(["starts_at", "ends_at"])
             return [{"command": AgentCommand.CREATE_EVENT.value, "payload": payload, "confidence": 0.9,
                      "unresolved_fields": unresolved, "expected_version": None, "requires_confirmation": False}]
-        lowered = clean.lower()
-        for prefix, command in (
-            ("cancel ", AgentCommand.CANCEL_OBLIGATION), ("отмени ", AgentCommand.CANCEL_OBLIGATION),
-            ("complete ", AgentCommand.COMPLETE_OBLIGATION), ("готово ", AgentCommand.COMPLETE_OBLIGATION),
-        ):
-            if lowered.startswith(prefix):
-                target = clean[len(prefix):].strip()
-                match = _resolve_target(target, context.get("obligations"))
-                if match is None:
-                    return [{"command": command.value, "payload": {"obligation_id": target}, "confidence": 0.5,
-                             "unresolved_fields": ["obligation_id", "expected_version"],
-                             "expected_version": None, "requires_confirmation": True}]
-                return [{"command": command.value, "payload": {"obligation_id": match["id"]}, "confidence": 0.85,
-                         "unresolved_fields": [], "expected_version": match["version"], "requires_confirmation": True}]
-        # Everyday phrasing ("в пятницу к шести сдать лабу, часа два, важно").
+        # Commands about existing items ("готово эссе", "перенеси созвон на 18:00").
         now = _dt(str(context.get("now"))) if context.get("now") else None
+        items = [*(context.get("obligations") or []), *(context.get("reminders") or [])]
+        command = parse_command(clean, now=now or datetime.now(timezone.utc),
+                                timezone_name=str(context.get("timezone") or "UTC"), items=items)
+        if command is not None:
+            if "target" in command["unresolved_fields"]:
+                # Older clients expect the unresolved target under obligation_id.
+                command["unresolved_fields"] = ["obligation_id" if f == "target" else f for f in command["unresolved_fields"]]
+                command["payload"] = {"obligation_id": command["payload"].pop("target_text"), **command["payload"]}
+                command["unresolved_fields"].append("expected_version")
+            return [command]
+        # Everyday phrasing ("в пятницу к шести сдать лабу, часа два, важно").
         parsed = parse_task(str(text), now=now or datetime.now(timezone.utc), timezone_name=str(context.get("timezone") or "UTC"))
         if not parsed.get("title"):
             raise ValidationError("input is not supported by the deterministic RU/EN parser")
         unresolved = [field for field in parsed.pop("unresolved") if field != "title"]
         parsed.pop("cutoff_time_assumed", None)
+        if parsed.get("kind") == "REMINDER":
+            payload = {key: parsed[key] for key in ("title", "note", "remind_at", "delivery", "wake_check", "raise_volume")
+                       if parsed.get(key) is not None}
+            return [{"command": AgentCommand.CREATE_REMINDER.value, "payload": payload, "confidence": 0.85,
+                     "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]
         if parsed.get("kind") == "EVENT":
             payload = {key: parsed[key] for key in ("title", "description", "starts_at", "ends_at", "category", "importance")
                        if parsed.get(key) is not None}
@@ -125,23 +131,51 @@ _CREATE_TASK_FIELDS = {
     "actual_cutoff", "target_at", "actionable_from", "remind_at", "splittable", "min_chunk_minutes", "max_chunk_minutes",
 }
 _NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
+_TARGET = {"obligation_id", "reminder_id", "target_text"}
 _PAYLOAD_KEYS = {
     AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS,
     AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "category", "importance",
-                                      "attendance_policy", "location_effect", "arrival_requirement_minutes"},
+                                      "attendance_policy", "location_effect", "arrival_requirement_minutes",
+                                      "remind_before_minutes"},
+    AgentCommand.CREATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume", "obligation_id"},
     AgentCommand.REFINE_TASK.value: {"obligation_id", "estimated_total_effort_minutes", "activate"},
-    AgentCommand.LOG_PROGRESS.value: {"obligation_id", "minutes"},
-    AgentCommand.COMPLETE_OBLIGATION.value: {"obligation_id"},
-    AgentCommand.CANCEL_OBLIGATION.value: {"obligation_id"},
+    AgentCommand.LOG_PROGRESS.value: {"minutes", "count"} | _TARGET,
+    AgentCommand.COMPLETE_OBLIGATION.value: set(_TARGET),
+    AgentCommand.CANCEL_OBLIGATION.value: set(_TARGET),
+    AgentCommand.ARCHIVE_OBLIGATION.value: set(_TARGET),
+    AgentCommand.UPDATE_TASK.value: {"title", "description", "category", "importance", "estimated_total_effort_minutes",
+                                     "actual_cutoff", "target_at", "actionable_from", "remind_at"} | _TARGET,
+    AgentCommand.UPDATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "remind_before_minutes",
+                                      "attendance_policy"} | _TARGET,
+    AgentCommand.UPDATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume"} | _TARGET,
+    AgentCommand.RESCHEDULE.value: {"when", "keep_time"} | _TARGET,
+    AgentCommand.SNOOZE.value: {"until"} | _TARGET,
 }
 _REQUIRED = {
     AgentCommand.CREATE_TASK.value: ("title",),
     AgentCommand.CREATE_EVENT.value: ("title", "starts_at", "ends_at"),
+    AgentCommand.CREATE_REMINDER.value: ("title", "remind_at"),
     AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
-    AgentCommand.LOG_PROGRESS.value: ("obligation_id", "minutes"),
-    AgentCommand.COMPLETE_OBLIGATION.value: ("obligation_id",),
-    AgentCommand.CANCEL_OBLIGATION.value: ("obligation_id",),
+    AgentCommand.RESCHEDULE.value: ("when",),
+    AgentCommand.SNOOZE.value: ("until",),
 }
+# Which kinds of item each command may address ("REMINDER" = a standalone reminder).
+_TARGET_KINDS = {
+    AgentCommand.REFINE_TASK.value: {"TASK"},
+    AgentCommand.LOG_PROGRESS.value: {"TASK"},
+    AgentCommand.COMPLETE_OBLIGATION.value: {"TASK", "REMINDER"},
+    AgentCommand.CANCEL_OBLIGATION.value: {"TASK", "EVENT", "REMINDER"},
+    AgentCommand.ARCHIVE_OBLIGATION.value: {"TASK"},
+    AgentCommand.UPDATE_TASK.value: {"TASK"},
+    AgentCommand.UPDATE_EVENT.value: {"EVENT"},
+    AgentCommand.UPDATE_REMINDER.value: {"REMINDER"},
+    AgentCommand.RESCHEDULE.value: {"TASK", "EVENT", "REMINDER"},
+    AgentCommand.SNOOZE.value: {"TASK", "REMINDER"},
+}
+
+
+def _target_unresolved(unresolved: list[str]) -> bool:
+    return bool({"target", "obligation_id", "reminder_id"} & set(unresolved))
 
 
 def _positive_minutes(value: object, field: str, *, allow_none: bool = False) -> None:
@@ -179,7 +213,7 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     unknown = set(payload) - _PAYLOAD_KEYS[command]
     if unknown:
         raise ValidationError(f"assistant {command} payload has unsupported fields: {', '.join(sorted(unknown))}")
-    for field in _REQUIRED[command]:
+    for field in _REQUIRED.get(command, ()):
         if payload.get(field) in (None, "") and field not in unresolved:
             raise ValidationError(f"assistant {command} payload lacks {field}")
     if "title" in payload:
@@ -211,22 +245,107 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             raise ValidationError("assistant event times must be ISO-8601 instants") from exc
         if starts is None or ends is None or starts.utcoffset() is None or ends.utcoffset() is None or ends <= starts:
             raise ValidationError("assistant event needs offset-aware starts_at < ends_at")
+    if command == AgentCommand.CREATE_REMINDER.value:
+        _validate_reminder_fields(payload, canonical.clock.now(), creating=True)
+    if command == AgentCommand.UPDATE_REMINDER.value:
+        _validate_reminder_fields(payload, canonical.clock.now(), creating=False)
+    if command == AgentCommand.UPDATE_TASK.value:
+        _validate_task_fields(payload, canonical.clock.now())
+    if command == AgentCommand.UPDATE_EVENT.value:
+        for field in ("starts_at", "ends_at"):
+            if payload.get(field) is not None:
+                _instant(payload[field], field)
+        if payload.get("remind_before_minutes") is not None and (
+                isinstance(payload["remind_before_minutes"], bool) or not isinstance(payload["remind_before_minutes"], int)
+                or not 0 <= payload["remind_before_minutes"] <= 1440):
+            raise ValidationError("assistant remind_before_minutes must be 0-1440")
+    if command == AgentCommand.CREATE_EVENT.value and payload.get("remind_before_minutes") is not None:
+        if isinstance(payload["remind_before_minutes"], bool) or not isinstance(payload["remind_before_minutes"], int) \
+                or not 0 <= payload["remind_before_minutes"] <= 1440:
+            raise ValidationError("assistant remind_before_minutes must be 0-1440")
+    if command == AgentCommand.RESCHEDULE.value:
+        if payload.get("when") is not None:
+            _instant(payload["when"], "when")
+        if "keep_time" in payload and not isinstance(payload["keep_time"], bool):
+            raise ValidationError("assistant keep_time must be a boolean")
+    if command == AgentCommand.SNOOZE.value and payload.get("until") is not None:
+        if _instant(payload["until"], "until") <= canonical.clock.now():
+            raise ValidationError("assistant snooze time must be in the future")
+    if command == AgentCommand.LOG_PROGRESS.value:
+        if payload.get("minutes") is None and payload.get("count") is None and not {"minutes", "count"} & set(unresolved):
+            raise ValidationError("assistant LOG_PROGRESS needs minutes or count")
+        if payload.get("count") is not None:
+            _positive_minutes(payload["count"], "count")
+    if payload.get("target_text") is not None and (not isinstance(payload["target_text"], str) or len(payload["target_text"]) > 300):
+        raise ValidationError("assistant target_text must be short text")
     expected = raw["expected_version"]
     if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
         raise ValidationError("assistant expected_version must be an integer")
-    target = payload.get("obligation_id")
-    if target not in (None, "") and "obligation_id" not in unresolved:
-        # Never let a model address something that does not exist in this account.
-        row = canonical.connection.execute(
-            "SELECT version FROM obligations WHERE account_id=? AND id=?", (account_id, str(target))
-        ).fetchone()
-        if row is None:
+    if command in _TARGET_KINDS:
+        _validate_target(command, payload, unresolved, expected, canonical, account_id)
+    elif command == AgentCommand.CREATE_REMINDER.value and payload.get("obligation_id"):
+        if canonical.connection.execute("SELECT 1 FROM obligations WHERE account_id=? AND id=?",
+                                        (account_id, str(payload["obligation_id"]))).fetchone() is None:
             raise ValidationError("assistant proposal references an unknown obligation")
-        if expected is None and "expected_version" not in unresolved:
-            raise ValidationError("assistant proposal on an existing obligation needs expected_version")
     return {"command": command, "payload": payload, "confidence": confidence,
             "unresolved_fields": list(unresolved), "expected_version": expected,
             "requires_confirmation": raw["requires_confirmation"]}
+
+
+def _instant(value: object, field: str) -> datetime:
+    from student_execution_os.sync.commands import parse_instant
+    if not isinstance(value, str):
+        raise ValidationError(f"assistant {field} must be an ISO-8601 instant")
+    parsed = parse_instant(value, field)
+    assert parsed is not None
+    return parsed
+
+
+def target_of(canonical: SQLiteCanonicalRepository, account_id: str, payload: dict[str, Any]) -> tuple[str, str, int] | None:
+    """(kind, id, version) of the item an action addresses, or None when it is unknown."""
+    if payload.get("reminder_id"):
+        row = canonical.connection.execute("SELECT version FROM reminders WHERE account_id=? AND id=?",
+                                           (account_id, str(payload["reminder_id"]))).fetchone()
+        return None if row is None else ("REMINDER", str(payload["reminder_id"]), int(row["version"]))
+    if payload.get("obligation_id"):
+        row = canonical.connection.execute("SELECT kind,version FROM obligations WHERE account_id=? AND id=?",
+                                           (account_id, str(payload["obligation_id"]))).fetchone()
+        return None if row is None else (row["kind"], str(payload["obligation_id"]), int(row["version"]))
+    return None
+
+
+def _validate_target(command: str, payload: dict[str, Any], unresolved: list[str], expected: object,
+                     canonical: SQLiteCanonicalRepository, account_id: str) -> None:
+    if _target_unresolved(unresolved):
+        return  # the user picks the item in the preview; apply refuses until then
+    if payload.get("obligation_id") and payload.get("reminder_id"):
+        raise ValidationError("assistant action must address one item")
+    if not payload.get("obligation_id") and not payload.get("reminder_id"):
+        raise ValidationError(f"assistant {command} payload lacks obligation_id")
+    target = target_of(canonical, account_id, payload)
+    if target is None:
+        # Never let a model address something that does not exist in this account.
+        raise ValidationError("assistant proposal references an unknown obligation")
+    if target[0] not in _TARGET_KINDS[command]:
+        raise ValidationError(f"assistant {command} cannot address a {target[0].lower()}")
+    if expected is None and "expected_version" not in unresolved:
+        raise ValidationError("assistant proposal on an existing obligation needs expected_version")
+
+
+def _validate_reminder_fields(payload: dict[str, Any], now: datetime, *, creating: bool) -> None:
+    from student_execution_os.reminders.standalone import DELIVERIES
+    if payload.get("remind_at") is not None and _instant(payload["remind_at"], "remind_at") <= now:
+        raise ValidationError("assistant remind_at must be in the future")
+    if "delivery" in payload and payload["delivery"] not in DELIVERIES:
+        raise ValidationError("assistant delivery must be PUSH, ALARM or PUSH_AND_ALARM")
+    for field in ("wake_check", "raise_volume"):
+        if field in payload and not isinstance(payload[field], bool):
+            raise ValidationError(f"assistant {field} must be a boolean")
+    if creating and (payload.get("wake_check") or payload.get("raise_volume")) and \
+            payload.get("delivery", "PUSH") not in ("ALARM", "PUSH_AND_ALARM"):
+        raise ValidationError("assistant wake_check/raise_volume need an alarm delivery")
+    if payload.get("note") is not None and (not isinstance(payload["note"], str) or len(payload["note"]) > 2000):
+        raise ValidationError("assistant note must be text up to 2000 characters")
 
 
 def _validate_task_fields(payload: dict[str, Any], now: datetime) -> None:
@@ -267,9 +386,15 @@ class SQLiteAssistantService:
     def _context(self, client: dict[str, object]) -> dict[str, object]:
         """Server-owned context: the model only sees what the account already owns."""
         rows = self.canonical.connection.execute(
-            "SELECT id,kind,title,version,lifecycle_status FROM obligations WHERE account_id=? "
-            "AND lifecycle_status IN ('ACTIVE','DRAFT') ORDER BY updated_at DESC LIMIT 60",
-            (self.principal.account_id,),
+            "SELECT o.id,o.kind,o.title,o.version,o.lifecycle_status,t.actual_cutoff_at AS cutoff_at,e.starts_at FROM obligations o "
+            "LEFT JOIN tasks t ON t.obligation_id=o.id LEFT JOIN events e ON e.obligation_id=o.id WHERE o.account_id=? "
+            "AND (o.lifecycle_status IN ('ACTIVE','DRAFT') OR (o.lifecycle_status='COMPLETED' AND o.updated_at>=?)) "
+            "ORDER BY o.updated_at DESC LIMIT 80",
+            (self.principal.account_id, _iso(self.canonical.clock.now() - timedelta(days=14))),
+        ).fetchall()
+        reminder_rows = self.canonical.connection.execute(
+            "SELECT id,title,version,status,remind_at FROM reminders WHERE account_id=? AND status IN ('SCHEDULED','FIRED') "
+            "ORDER BY remind_at LIMIT 40", (self.principal.account_id,),
         ).fetchall()
         from student_execution_os.reminders import ReminderStore
         prefs = ReminderStore(self.canonical).prefs(self.principal.account_id)
@@ -284,58 +409,46 @@ class SQLiteAssistantService:
         context: dict[str, object] = {
             "now": _iso(self.canonical.clock.now()), "timezone": zone,
             "obligations": [{"id": row["id"], "kind": row["kind"], "title": row["title"], "version": int(row["version"]),
-                             "status": row["lifecycle_status"]} for row in rows],
+                             "status": row["lifecycle_status"],
+                             **({"due": row["cutoff_at"]} if row["cutoff_at"] else {}),
+                             **({"starts_at": row["starts_at"]} if row["starts_at"] else {})} for row in rows],
+            "reminders": [{"id": row["id"], "kind": "REMINDER", "title": row["title"], "version": int(row["version"]),
+                           "status": row["status"], "remind_at": row["remind_at"]} for row in reminder_rows],
         }
         if isinstance(client.get("locale"), str):
             context["locale"] = client["locale"][:16]
         return context
 
-    def interpret(self, text: str, context: dict[str, object] | None = None) -> dict[str, object]:
+    def interpret(self, text: str, context: dict[str, object] | None = None, *,
+                  degrade_invalid: bool = False) -> dict[str, object]:
+        """Interpret ``text`` into a stored, expiring preview batch.
+
+        A provider outage (or a refused key, an unsupported model, a non-JSON answer)
+        degrades to the local parser and says so in ``fallback_reason``. With
+        ``degrade_invalid`` a *well-formed but invalid* proposal is handled the same way
+        (reason ``INVALID_PROPOSAL``); without it the call fails. Either way nothing a
+        model got wrong is stored or shown.
+        """
         if not str(text or "").strip():
             raise ValidationError("assistant input text is required")
         if len(str(text)) > 4000:
             raise ValidationError("assistant input is longer than 4000 characters")
         server_context = self._context(context if isinstance(context, dict) else {})
-        provider_name = self.provider.name
-        fallback = False
         self.provider_failure: ProviderUnavailable | None = None
+        local = isinstance(self.provider, DeterministicAssistantParser)
         try:
-            interpretation = self.provider.interpret(text, server_context)
+            provider_name, message, actions = self._propose(self.provider, text, server_context)
         except ProviderUnavailable as exc:
             # Provider outage (or a rejected key) degrades to the local parser instead
             # of failing the user; the reason code tells the client why.
             self.provider_failure = exc
-            local = DeterministicAssistantParser()
-            try:
-                interpretation = local.interpret(text, server_context)
-            except ValidationError:
-                raise ValidationError("the language model is unavailable and the local parser did not understand the input") from None
-            provider_name, fallback = local.name, True
-        if isinstance(interpretation, dict):
-            raw_actions = interpretation.get("actions")
-            assistant_message = str(interpretation.get("message") or "")[:2000]
-        else:
-            raw_actions = interpretation
-            assistant_message = "I prepared a structured preview. Review it before applying."
-        if not isinstance(raw_actions, list):
-            raise ValidationError("assistant provider returned an invalid actions list")
-        if len(raw_actions) > 10:
-            raise ValidationError("assistant proposed too many actions")
-        actions = []
-        for raw in raw_actions:
-            clean = validate_proposal(raw, self.canonical, self.principal.account_id)
-            command = clean["command"]
-            destructive = command in {
-                AgentCommand.COMPLETE_OBLIGATION.value,
-                AgentCommand.CANCEL_OBLIGATION.value,
-            }
-            actions.append({
-                "id": str(uuid4()), **clean,
-                "provenance": {"provider": provider_name, "input": "user-authored-text"},
-                # Trust boundaries are server-owned. A provider cannot downgrade a
-                # destructive command merely by emitting a false flag.
-                "requires_confirmation": destructive or clean["requires_confirmation"],
-            })
+            provider_name, message, actions = self._local(text, server_context)
+        except ValidationError as exc:
+            if local or not degrade_invalid:
+                raise
+            self.provider_failure = ProviderUnavailable(str(exc), "INVALID_PROPOSAL")
+            provider_name, message, actions = self._local(text, server_context)
+        fallback = self.provider_failure is not None
         now = self.canonical.clock.now()
         batch_id = str(uuid4())
         redacted = re.sub(r"\b[\w.+-]+@[\w.-]+\b", "[email]", text)[:2000]
@@ -350,9 +463,45 @@ class SQLiteAssistantService:
                  redacted, json.dumps(actions, sort_keys=True), _iso(now), _iso(now + timedelta(minutes=30))),
             )
         return {"batch_id": batch_id, "provider": provider_name, "fallback": fallback,
+                # Which interpreter produced this preview: the user must be able to see
+                # whether a language model or the local parser read their words.
+                "engine": "LOCAL" if local or fallback else "AI",
+                "model": None if local or fallback else getattr(self.provider, "model", None),
                 "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
-                "message": assistant_message, "actions": actions,
+                "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
+
+    def _local(self, text: str, context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+        try:
+            return self._propose(DeterministicAssistantParser(), text, context)
+        except ValidationError:
+            raise ValidationError("the language model is unavailable and the local parser did not understand the input") from None
+
+    def _propose(self, provider: AssistantProvider, text: str,
+                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+        """Ask one provider and validate every action it proposes (nothing is stored)."""
+        interpretation = provider.interpret(text, context)
+        if isinstance(interpretation, dict):
+            raw_actions = interpretation.get("actions")
+            assistant_message = str(interpretation.get("message") or "")[:2000]
+        else:
+            raw_actions = interpretation
+            assistant_message = "I prepared a structured preview. Review it before applying."
+        if not isinstance(raw_actions, list):
+            raise ValidationError("assistant provider returned an invalid actions list")
+        if len(raw_actions) > 10:
+            raise ValidationError("assistant proposed too many actions")
+        actions = []
+        for raw in raw_actions:
+            clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+            actions.append({
+                "id": str(uuid4()), **clean,
+                "provenance": {"provider": provider.name, "input": "user-authored-text"},
+                # Trust boundaries are server-owned. A provider cannot downgrade a
+                # destructive command merely by emitting a false flag.
+                "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
+            })
+        return provider.name, assistant_message, actions
 
     def apply(self, payload: dict[str, object]) -> dict[str, object]:
         batch_id = str(payload.get("batch_id", ""))
@@ -397,11 +546,13 @@ class SQLiteAssistantService:
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):
             raise AuthorizationDenied("destructive or ambiguous action requires explicit confirmation")
         for action in actions:
-            entity = action["payload"].get("obligation_id")
-            if entity:
-                current = self.canonical.get_obligation(self.principal.account_id, entity)
-                if action["expected_version"] is None or current.version != int(action["expected_version"]):
-                    raise VersionConflict("assistant proposal expected version is stale or missing")
+            if action["command"] not in _TARGET_KINDS:
+                continue
+            target = target_of(self.canonical, self.principal.account_id, action["payload"])
+            if target is None:
+                raise ValidationError("the item this action is about no longer exists")
+            if action["expected_version"] is None or target[2] != int(action["expected_version"]):
+                raise VersionConflict("assistant proposal expected version is stale or missing")
         with self.canonical._tx() as conn:
             results = [self._execute(action) for action in actions]
             result = {"batch_id": batch_id, "results": results, "replayed": False}
@@ -420,9 +571,20 @@ class SQLiteAssistantService:
         """
         if not edit:
             return action
+        edit = dict(edit)
         raw = {key: action[key] for key in _ACTION_KEYS}
-        raw["payload"] = {**action["payload"], **edit}
-        raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit]
+        if "expected_version" in edit:
+            raw["expected_version"] = edit.pop("expected_version")
+        payload = {**action["payload"], **edit}
+        picked = "obligation_id" in edit or "reminder_id" in edit
+        if picked:
+            # The user chose which item the command is about.
+            payload.pop("target_text", None)
+            if "reminder_id" in edit:
+                payload.pop("obligation_id", None)
+        raw["payload"] = payload
+        raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit
+                                    and not (picked and field in {"target", "obligation_id", "reminder_id", "expected_version"})]
         clean = validate_proposal(raw, self.canonical, self.principal.account_id)
         return {**action, **clean, "requires_confirmation": action["requires_confirmation"]}
 
@@ -464,23 +626,58 @@ class SQLiteAssistantService:
                 "action_id": action["id"], "entity_id": event.obligation.id,
                 "version": event.obligation.version, "status": event.obligation.lifecycle_status.value,
             }
-        entity = str(data["obligation_id"])
-        expected = int(action["expected_version"])
         if command is AgentCommand.REFINE_TASK:
-            task = self.canonical.update_task(**common, obligation_id=entity, expected_version=expected,
+            entity = str(data["obligation_id"])
+            task = self.canonical.update_task(**common, obligation_id=entity, expected_version=int(action["expected_version"]),
                 estimated_total_effort_minutes=int(data["estimated_total_effort_minutes"]), activate=bool(data.get("activate", False)))
             return {"action_id": action["id"], "entity_id": entity, "version": task.obligation.version, "status": task.obligation.lifecycle_status.value}
+        # Everything else runs through the same command handlers as the offline sync
+        # queue, so an Assistant action and a button press mean exactly the same thing.
+        from student_execution_os.sync.commands import APPLIED, NOOP, Commands
+        commands = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
+                            now=self.canonical.clock.now())
+        op_type, entity, body = self._operation(command, data, commands)
+        outcome = commands.run(op_type, entity, body)
+        if outcome.status not in (APPLIED, NOOP):
+            raise ValidationError(outcome.message or outcome.code or f"{op_type} was not applied")
+        result = {"action_id": action["id"], "entity_id": entity, "operation": op_type, "outcome": outcome.status,
+                  "entity": outcome.entity}
+        if isinstance(outcome.entity, dict):
+            result.update(version=outcome.entity.get("version"), status=outcome.entity.get("status"))
+        return result
+
+    def _operation(self, command: AgentCommand, data: dict[str, Any], commands) -> tuple[str, str, dict[str, Any]]:
+        """The sync operation (type, entity id, payload) an action stands for."""
+        target = target_of(self.canonical, self.principal.account_id, data)
+        kind, entity = (target[0], target[1]) if target else ("", "")
+        fields = {key: value for key, value in data.items() if key not in _TARGET}
+        if command is AgentCommand.CREATE_REMINDER:
+            return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
+        if command is AgentCommand.UPDATE_TASK:
+            return "task.update", entity, fields
+        if command is AgentCommand.UPDATE_EVENT:
+            return "event.update", entity, fields
+        if command is AgentCommand.UPDATE_REMINDER:
+            return "reminder.update", entity, fields
         if command is AgentCommand.LOG_PROGRESS:
-            task = self.canonical.get_task(self.principal.account_id, entity)
-            minutes = int(data["minutes"])
-            if task.remaining_effort_minutes is None:
-                raise ValidationError("cannot log progress for unknown effort")
-            updated = self.canonical.update_task(**common, obligation_id=entity, expected_version=expected,
-                remaining_effort_minutes=max(0, task.remaining_effort_minutes - minutes),
-                started_at=task.started_at or self.canonical.clock.now(), last_progress_at=self.canonical.clock.now())
+            return "task.progress", entity, {key: fields[key] for key in ("minutes", "count") if fields.get(key) is not None}
+        if command is AgentCommand.SNOOZE:
+            return "reminder.snooze", entity, {"until": fields["until"]}
+        if command is AgentCommand.ARCHIVE_OBLIGATION:
+            return "task.archive", entity, {}
+        if command is AgentCommand.COMPLETE_OBLIGATION:
+            return ("reminder.done" if kind == "REMINDER" else "task.complete"), entity, {}
+        if command is AgentCommand.CANCEL_OBLIGATION:
+            return {"REMINDER": "reminder.cancel", "EVENT": "event.cancel"}.get(kind, "task.cancel"), entity, {}
+        if command is AgentCommand.RESCHEDULE:
             from student_execution_os.reminders import ReminderStore
-            ReminderStore(self.canonical).touch(self.principal.account_id, entity, self.canonical.clock.now())
-            return {"action_id": action["id"], "entity_id": entity, "version": updated.obligation.version, "status": updated.obligation.lifecycle_status.value}
-        method = self.canonical.complete_obligation if command is AgentCommand.COMPLETE_OBLIGATION else self.canonical.cancel_obligation
-        obligation = method(**common, obligation_id=entity, expected_version=expected)
-        return {"action_id": action["id"], "entity_id": entity, "version": obligation.version, "status": obligation.lifecycle_status.value}
+            zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
+            if kind == "REMINDER":
+                current = commands._reminders().get(self.principal.account_id, entity)
+            elif kind == "EVENT":
+                current = commands._event_out(entity).entity
+            else:
+                current = commands._task_out(entity).entity
+            op_type, body = reschedule_change(kind, current, _dt(str(fields["when"])), bool(fields.get("keep_time")), zone)
+            return op_type, entity, body
+        raise ValidationError(f"unsupported assistant command {command.value}")

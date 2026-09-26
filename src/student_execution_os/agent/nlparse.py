@@ -463,10 +463,19 @@ class _Parser:
         return (True, size) if parts else (None, None)
 
     def reminder_cue(self) -> list[tuple[int, int]]:
+        """"напомни", and alarm words ("поставь будильник", "разбуди меня", "wake me up")."""
         spans = []
-        for match in self.scan(r"(?<!\w)(?:напомни(?:те)?(?:\s+мне)?|напомнить(?:\s+мне)?|поставь\s+напоминание|напоминание|remind\s+me(?:\s+to)?|reminder)(?!\w)"):
+        self.alarm = self.wake = self.remind_word = False
+        for match in self.scan(r"(?<!\w)(?:(?:и\s+)?(?:поставь|поставить|заведи|завести|включи)\s+будильник|разбуди(?:те)?(?:\s+меня)?|будильник|(?:and\s+)?set\s+(?:an?\s+)?alarm|wake\s+me(?:\s+up)?|alarm|напомни(?:те)?(?:\s+мне)?|напомнить(?:\s+мне)?|поставь\s+напоминание|напоминание|remind\s+me(?:\s+to)?|reminder)(?!\w)"):
             self.take(match.start(), match.end())
             spans.append((match.start(), match.end()))
+            word = match.group(0)
+            if re.search(r"будильник|alarm", word) or re.search(r"разбуд|wake", word):
+                self.alarm = True
+            if re.search(r"разбуд|wake", word):
+                self.wake = True
+            if re.search(r"напомн|напоминан|remind", word):
+                self.remind_word = True
         return spans
 
     def deadline_words(self) -> bool:
@@ -651,6 +660,11 @@ class NaturalTaskParser:
                     cutoff_date_only = date_only
 
         title = _title(parser, category)
+        if (remind_spans and "remind_at" in fields and effort is None and not has_deadline_words
+                and not {"actual_cutoff", "actionable_from", "target_at"} & set(fields)):
+            # "напомни купить хлеб завтра в 18", "разбуди меня в 7": a moment to get the
+            # user's attention, not work to plan — a standalone reminder.
+            return _reminder(parser, title, fields["remind_at"], description)
         unresolved: list[str] = []
         if not title:
             unresolved.append("title")
@@ -793,6 +807,31 @@ class NaturalTaskParser:
         if start < now:
             start = now.replace(second=0, microsecond=0)
         return "window", (start, at(day, time(23, 59))), True
+
+
+def _reminder(parser: _Parser, title: str, remind_at: datetime, description: str | None) -> dict[str, object]:
+    wake = parser.wake or (parser.alarm and not title)
+    local = remind_at.astimezone(parser.zone)
+    if (wake and local.hour > 12 and not re.search(rf"(?<!\d){local.hour}(?!\d)", parser.low)
+            and not re.search(r"pm|p\.m\.|вечер|дня|ночи", parser.low)):
+        # "разбуди меня в 7" is a morning: the next 7:00, not 19:00.
+        morning = local - timedelta(hours=12)
+        remind_at = morning if morning > parser.now else morning + timedelta(days=1)
+    delivery = "PUSH_AND_ALARM" if parser.alarm and parser.remind_word else "ALARM" if parser.alarm else "PUSH"
+    if not title:
+        russian = bool(re.search(r"[а-яё]", parser.low))
+        title = ("Подъём" if russian else "Wake up") if wake else ("Будильник" if russian else "Alarm") if parser.alarm else ""
+    return {
+        "kind": "REMINDER",
+        "title": title,
+        "note": description,
+        "remind_at": _iso(remind_at),
+        "delivery": delivery,
+        # An alarm the user asked for by name may raise the alarm volume (restored after).
+        "wake_check": bool(wake),
+        "raise_volume": delivery != "PUSH",
+        "unresolved": [] if title else ["title"],
+    }
 
 
 def _title(parser: _Parser, category: str) -> str:

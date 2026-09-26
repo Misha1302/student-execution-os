@@ -50,6 +50,13 @@ from .providers import (
 )
 
 
+def _passed_before(reason: str) -> list[str]:
+    """Steps a failed test still proved (a refused model means the key was accepted)."""
+    reached = {"AUTH": 0, "ENDPOINT": 0, "BLOCKED_URL": 0, "NETWORK": 0, "UPSTREAM": 0, "MALFORMED": 1,
+               "NOT_FOUND": 2, "QUOTA": 1, "RATE_LIMITED": 1, "REJECTED": 2, "FORMAT": 3}.get(reason, 0)
+    return list(CHECKED[:reached])
+
+
 class CredentialSource(str, Enum):
     NONE = "NONE"
     USER_BYOK = "USER_BYOK"
@@ -64,14 +71,21 @@ class CredentialUnreadable(Exception):
 STATUS_BY_REASON = {
     "AUTH": "INVALID_KEY",
     "NOT_FOUND": "MODEL_NOT_FOUND",
+    "ENDPOINT": "ENDPOINT_NOT_FOUND",
     "RATE_LIMITED": "RATE_LIMITED",
+    "QUOTA": "QUOTA_EXCEEDED",
+    "FORMAT": "UNSUPPORTED_FORMAT",
+    "MALFORMED": "MALFORMED_RESPONSE",
     "REJECTED": "REJECTED",
-    "UPSTREAM": "UNREACHABLE",
+    "UPSTREAM": "PROVIDER_ERROR",
     "NETWORK": "UNREACHABLE",
     "BLOCKED_URL": "BLOCKED_URL",
 }
-# Failures that say something lasting about the credential (not a passing outage).
-_STICKY_REASONS = {"AUTH", "NOT_FOUND", "BLOCKED_URL"}
+# Failures that say something lasting about the credential (not a passing outage or
+# one odd answer); the connection test records every outcome.
+_STICKY_REASONS = {"AUTH", "NOT_FOUND", "ENDPOINT", "QUOTA", "BLOCKED_URL"}
+# What a passed connection test has proven, in the order it is proven.
+CHECKED = ("key", "endpoint", "model", "format")
 
 _KEY_SHAPE = re.compile(r"^[\x21-\x7e]{8,512}$")
 _MODEL_SHAPE = re.compile(r"^[\x21-\x7e]{1,200}$")
@@ -349,6 +363,12 @@ class LlmCredentialStore:
             self.record_status(account_id, STATUS_BY_REASON[failure.reason])
 
     def test(self, account_id: str) -> dict[str, Any]:
+        """Smoke-test the saved credential with a real interpret() round trip.
+
+        An HTTP 2xx alone proves nothing: the probe uses the same prompt and request
+        shape as capture and passes only when the model answers with a typed action.
+        The result names the failed step so Settings can say what to fix.
+        """
         if self._row(account_id) is None:
             raise EntityNotFound("no AI key is saved for this account")
         if not TEST_LIMITER.allow(account_id):
@@ -356,18 +376,25 @@ class LlmCredentialStore:
             raise RateLimited("too many connection tests; try again in a minute")
         resolved = self.resolve(account_id)
         if resolved.source is not CredentialSource.USER_BYOK:
-            return {"ok": False, "status": "UNREADABLE", "settings": self.public(account_id)}
+            return {"ok": False, "status": "UNREADABLE", "reason": None, "http_status": None, "checked": [],
+                    "latency_ms": None, "settings": self.public(account_id)}
+        started = time.monotonic()
+        failure: ProviderUnavailable | None = None
         try:
-            resolved.provider.check()
+            resolved.provider.check(_iso(self.repo.clock.now()))
         except ProviderUnavailable as exc:
-            status = STATUS_BY_REASON.get(exc.reason, "UNREACHABLE")
-        else:
-            status = "OK"
+            failure = exc
+        latency = round((time.monotonic() - started) * 1000)
+        status = "OK" if failure is None else STATUS_BY_REASON.get(failure.reason, "UNREACHABLE")
         self.record_status(account_id, status)
         with self.repo._tx() as conn:  # a repeated test refreshes the time even if unchanged
             conn.execute("UPDATE llm_credentials SET last_checked_at=? WHERE account_id=?",
                          (_iso(self.repo.clock.now()), account_id))
-        return {"ok": status == "OK", "status": status, "settings": self.public(account_id)}
+        return {"ok": failure is None, "status": status,
+                "reason": None if failure is None else failure.reason,
+                "http_status": None if failure is None else failure.http_status,
+                "checked": list(CHECKED) if failure is None else _passed_before(failure.reason),
+                "latency_ms": latency, "settings": self.public(account_id)}
 
     # ---- operator actions ----------------------------------------------------------
 

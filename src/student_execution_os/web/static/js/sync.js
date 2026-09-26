@@ -25,7 +25,8 @@ const BACKOFF_MS = [2000, 5000, 15000, 30000, 60000];
 const ACK_KEEP_MS = 24 * 3600 * 1000;
 // Operations whose second copy would change nothing (or is an accidental double tap).
 const IDEMPOTENT = new Set(['task.start', 'task.complete', 'task.cancel', 'task.reopen', 'task.archive', 'task.unarchive',
-  'task.delete', 'event.cancel', 'event.reopen', 'event.delete']);
+  'task.restore', 'task.delete', 'event.cancel', 'event.reopen', 'event.delete',
+  'reminder.done', 'reminder.cancel', 'reminder.reopen', 'reminder.delete']);
 
 let flushing = null;
 let again = false;
@@ -61,9 +62,14 @@ function id(prefix) {
   return `${prefix}-${random}`;
 }
 
+export function lastSyncedAt() {
+  try { return Number(localStorage.getItem(`seos.lastSync.${scope()}`)) || null; } catch { return null; }
+}
+
 export function syncState() {
   const items = readQueue();
   return {
+    lastSyncedAt: lastSyncedAt(),
     pending: items.filter((x) => x.state === 'PENDING').length,
     conflicts: items.filter((x) => x.state === 'CONFLICT' || x.state === 'REJECTED').length,
     items: items.filter((x) => x.state !== 'ACKED'),
@@ -124,6 +130,7 @@ async function flushOnce() {
     throw error;
   }
   attempt = 0;
+  try { localStorage.setItem(`seos.lastSync.${scope()}`, String(Date.now())); } catch { /* storage full */ }
   const byId = new Map((response.results || []).map((result) => [result.op_id, result]));
   const ackedAt = Date.now();
   // Re-read: the user may have queued more while the request was in flight.

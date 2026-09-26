@@ -42,9 +42,16 @@ public final class ReminderNotifications {
         public final List<String> taskIds;
         public final JSONArray actions;
         public final JSONObject labels;
+        /** A standalone reminder ("купить хлеб"), or "" for a reminder about tasks. */
+        public final String reminderId;
 
         Reminder(String messageId, String title, String body, String deepLink, String taskTitle, String tag,
                  List<String> taskIds, JSONArray actions, JSONObject labels) {
+            this(messageId, title, body, deepLink, taskTitle, tag, taskIds, actions, labels, "");
+        }
+
+        Reminder(String messageId, String title, String body, String deepLink, String taskTitle, String tag,
+                 List<String> taskIds, JSONArray actions, JSONObject labels, String reminderId) {
             this.messageId = messageId;
             this.title = title;
             this.body = body;
@@ -54,6 +61,15 @@ public final class ReminderNotifications {
             this.taskIds = taskIds;
             this.actions = actions;
             this.labels = labels;
+            this.reminderId = reminderId == null ? "" : reminderId;
+        }
+
+        /** Whom the buttons act on: the standalone reminder, or the tasks. */
+        public List<String> subjects() {
+            if (reminderId.isEmpty()) return taskIds;
+            List<String> one = new ArrayList<>();
+            one.add(reminderId);
+            return one;
         }
 
         public String label(String key) {
@@ -65,10 +81,11 @@ public final class ReminderNotifications {
         List<String> taskIds = new ArrayList<>();
         JSONArray ids = new JSONArray(orEmpty(data.get("task_ids"), "[]"));
         for (int i = 0; i < ids.length(); i++) taskIds.add(ids.getString(i));
-        String tag = taskIds.size() == 1 ? taskIds.get(0) : "group";
+        String reminderId = orEmpty(data.get("reminder_id"), "");
+        String tag = !reminderId.isEmpty() ? reminderId : taskIds.size() == 1 ? taskIds.get(0) : "group";
         return new Reminder(orEmpty(data.get("message_id"), ""), orEmpty(data.get("title"), ""), orEmpty(data.get("body"), ""),
                 orEmpty(data.get("deep_link"), "/today"), orEmpty(data.get("task_title"), ""), "seos:" + tag, taskIds,
-                new JSONArray(orEmpty(data.get("actions"), "[]")), new JSONObject(orEmpty(data.get("labels"), "{}")));
+                new JSONArray(orEmpty(data.get("actions"), "[]")), new JSONObject(orEmpty(data.get("labels"), "{}")), reminderId);
     }
 
     private static String orEmpty(String value, String fallback) {
@@ -100,6 +117,7 @@ public final class ReminderNotifications {
                 .putExtra(ReminderActionReceiver.EXTRA_ACTION, action)
                 .putExtra(ReminderActionReceiver.EXTRA_MESSAGE_ID, reminder.messageId)
                 .putExtra(ReminderActionReceiver.EXTRA_TASK_IDS, reminder.taskIds.toArray(new String[0]))
+                .putExtra(ReminderActionReceiver.EXTRA_REMINDER_ID, reminder.reminderId)
                 .putExtra(ReminderActionReceiver.EXTRA_TAG, reminder.tag)
                 .putExtra(ReminderActionReceiver.EXTRA_TASK_TITLE, reminder.taskTitle)
                 .putExtra(ReminderActionReceiver.EXTRA_LABELS, reminder.labels.toString());
@@ -126,7 +144,7 @@ public final class ReminderNotifications {
             String id = action.optString("id");
             String label = action.optString("label", id);
             PendingIntent intent;
-            if (ReminderActions.runsInBackground(id) && !reminder.taskIds.isEmpty()) {
+            if (ReminderActions.runsInBackground(id) && !reminder.subjects().isEmpty()) {
                 intent = background(context, reminder, id, base + 1 + i);
             } else if ("RESCHEDULE".equals(id) && firstTask != null) {
                 intent = openApp(context, "/task/" + Uri.encode(firstTask) + "?step=reschedule", base + 1 + i);

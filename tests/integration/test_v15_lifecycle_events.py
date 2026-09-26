@@ -230,7 +230,7 @@ class V15Tests(unittest.TestCase):
         self.assertGreaterEqual(end.astimezone(MOSCOW).date(), datetime(2026, 9, 30).date())
 
     def test_schema_is_v15(self):
-        self.assertEqual(SCHEMA_VERSION, 15)
+        self.assertGreaterEqual(SCHEMA_VERSION, 15)
         with closing(sqlite3.connect(self.db)) as conn:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"deleted_obligations", "event_reminders", "task_progress_counts"} <= tables)

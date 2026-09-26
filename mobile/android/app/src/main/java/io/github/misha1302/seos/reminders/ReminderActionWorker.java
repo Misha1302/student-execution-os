@@ -5,8 +5,16 @@ import android.content.SharedPreferences;
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.work.BackoffPolicy;
+import androidx.work.Constraints;
+import androidx.work.Data;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.NetworkType;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
+import java.util.concurrent.TimeUnit;
 import io.github.misha1302.seos.R;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -33,6 +41,27 @@ public class ReminderActionWorker extends Worker {
     static final String KEY_DEEP_LINK = "deep_link";
     static final String PREFERENCES = "CapacitorStorage";
     static final int MAX_ATTEMPTS = 12;
+
+    /**
+     * Queues sync operations for delivery (survives process death, waits for network).
+     * KEEP: the same unique name while pending (a second tap) changes nothing.
+     */
+    public static void enqueue(Context context, String uniqueName, String operations, String tag, String failedLabel,
+                               String deepLink) {
+        Data input = new Data.Builder()
+                .putString(KEY_OPERATIONS, operations)
+                .putString(KEY_TAG, tag)
+                .putString(KEY_FAILED_LABEL, failedLabel)
+                .putString(KEY_DEEP_LINK, deepLink)
+                .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(ReminderActionWorker.class)
+                .setInputData(input)
+                .setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
+                .addTag("seos-reminder-action")
+                .build();
+        WorkManager.getInstance(context).enqueueUniqueWork(uniqueName, ExistingWorkPolicy.KEEP, request);
+    }
 
     public ReminderActionWorker(@NonNull Context context, @NonNull WorkerParameters params) {
         super(context, params);

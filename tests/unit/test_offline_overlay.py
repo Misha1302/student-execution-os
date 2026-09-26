@@ -166,5 +166,30 @@ console.log(JSON.stringify({{ batches, pending: sync.syncState().pending }}));
         self.assertEqual(out["pending"], 0)
 
 
+    def test_reminders_and_archive_restore_are_projected_offline(self):
+        out = run_node(f"""
+const {{ project }} = await import('file://{JS}/overlay.js');
+const item = (type, entity_id, payload = {{}}, at = '2026-09-23T10:00:00Z') => ({{ state: 'PENDING', queued_at: at, operation: {{ op_id: type + entity_id, type, entity_id, payload }} }});
+const base = [{{ id: 'rem-1', title: 'Хлеб', status: 'FIRED', remind_at: '2026-09-23T09:00:00Z', delivery: 'ALARM', wake_check: true, version: 1 }}];
+const ops = [
+  item('reminder.create', 'rem-new', {{ title: 'Позвонить', remind_at: '2026-09-24T09:00:00Z', delivery: 'PUSH', wake_check: true }}),
+  item('reminder.ack', 'rem-1', {{ stage: 'UP' }}),
+  item('reminder.snooze', 'task-1', {{ until: '2026-09-23T12:00:00Z' }}),
+];
+const reminders = project('/api/v1/reminders', base, ops);
+const tasks = project('/api/v1/tasks', [
+  {{ id: 'a', status: 'ARCHIVED', completed_at: '2026-09-20T10:00:00Z', estimated_total_effort_minutes: 30, remaining_effort_minutes: 0 }},
+  {{ id: 'b', status: 'CANCELLED', completed_at: null, estimated_total_effort_minutes: 30, remaining_effort_minutes: 30 }},
+  {{ id: 'c', status: 'ARCHIVED', completed_at: null, estimated_total_effort_minutes: null }},
+], [item('task.restore', 'a'), item('task.restore', 'b'), item('task.restore', 'c')]);
+console.log(JSON.stringify({{ reminders, tasks: tasks.map((x) => x.status) }}));
+""")
+        by_id = {r["id"]: r for r in out["reminders"]}
+        self.assertEqual(set(by_id), {"rem-1", "rem-new"}, "a task's reminder.snooze is not a standalone reminder")
+        self.assertEqual((by_id["rem-1"]["status"], bool(by_id["rem-1"]["acknowledged_at"])), ("FIRED", True))
+        self.assertEqual((by_id["rem-new"]["status"], by_id["rem-new"]["wake_check"]), ("SCHEDULED", False))
+        self.assertEqual(out["tasks"], ["COMPLETED", "ACTIVE", "DRAFT"])
+
+
 if __name__ == "__main__":
     unittest.main()

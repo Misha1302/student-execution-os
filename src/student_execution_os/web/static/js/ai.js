@@ -1,6 +1,6 @@
 import { api } from './api.js';
 import { invalidate } from './store.js';
-import { t } from './i18n.js';
+import { t, fmtDateTime } from './i18n.js';
 import { esc, icon, chip, kv, openSheet, chipGroup, chipValue, toast, errorMessage, setBusy, confirmSheet } from './ui.js';
 
 // Settings → AI: the account's own LLM key (BYOK). The key is sent once, to the
@@ -8,7 +8,10 @@ import { esc, icon, chip, kv, openSheet, chipGroup, chipValue, toast, errorMessa
 // here is written to device storage.
 
 const MODEL_HINT = { openai: 'gpt-5-mini', anthropic: 'claude-haiku-4-5', 'openai-compatible': 'llama-3.3-70b' };
-const STATUS_TONE = { OK: 'ok', UNTESTED: 'muted', RATE_LIMITED: 'warn', UNREACHABLE: 'warn' };
+const STATUS_TONE = { OK: 'ok', UNTESTED: 'muted', RATE_LIMITED: 'warn', UNREACHABLE: 'warn', PROVIDER_ERROR: 'warn' };
+const STEPS = ['key', 'endpoint', 'model', 'format'];
+// The last connection test of this session: which steps it proved (shown under the status).
+let lastTest = null;
 
 export async function loadAiSettings() {
   try { return await api('/api/v1/settings/llm'); } catch (err) { return { error: err }; }
@@ -34,7 +37,9 @@ export function aiSection(llm) {
         ${c.base_url ? kv(t('ai.baseUrl'), c.base_url) : ''}
         ${kv(t('ai.key'), c.key_hint)}
       </dl>
-      <div class="row static"><span class="row-main"><small>${esc(t(`ai.statusHelp.${c.status}`))}</small></span>${statusChip(c.status)}</div>
+      <div class="row static"><span class="row-main"><small>${esc(t(`ai.statusHelp.${c.status}`))}</small>
+        ${c.last_checked_at ? `<small>${esc(t('ai.checkedAt', { when: fmtDateTime(c.last_checked_at) }))}</small>` : ''}</span>${statusChip(c.status)}</div>
+      ${lastTest && lastTest.status === c.status ? testSteps(lastTest) : ''}
       <div class="button-row">
         <button class="button ghost" data-action="ai-test">${esc(t('ai.test'))}</button>
         <button class="button ghost" data-action="ai-edit">${esc(t('ai.change'))}</button>
@@ -53,6 +58,16 @@ export function aiSection(llm) {
       <div class="section-head"><h2>${esc(t('ai.title'))}</h2></div>
       <div class="card">${body}</div>
     </section>`;
+}
+
+// "Ключ ✓ · Адрес ✓ · Модель ✓ · Формат ответа ✗": what the smoke test proved.
+function testSteps(result) {
+  const passed = new Set(result.checked || []);
+  const failedAt = result.ok ? null : STEPS.find((step) => !passed.has(step));
+  return `<ul class="check-steps">${STEPS.map((step) => {
+    const state = passed.has(step) ? 'ok' : step === failedAt ? 'fail' : 'skip';
+    return `<li class="step-${state}">${icon(state === 'ok' ? 'check' : state === 'fail' ? 'x' : 'question')}<span>${esc(t(`ai.step.${step}`))}</span></li>`;
+  }).join('')}</ul>${result.latency_ms != null && result.ok ? `<p class="help">${esc(t('ai.latency', { ms: result.latency_ms }))}</p>` : ''}`;
 }
 
 function editSheet(llm, onDone) {
@@ -114,7 +129,8 @@ function editSheet(llm, onDone) {
 
 async function runTest() {
   try {
-    const result = await api('/api/v1/settings/llm/test', { method: 'POST', timeoutMs: 45000 });
+    const result = await api('/api/v1/settings/llm/test', { method: 'POST', timeoutMs: 60000 });
+    lastTest = result;
     toast(result.ok ? t('ai.testOk') : t(`ai.statusHelp.${result.status}`), { error: !result.ok });
   } catch (err) {
     toast(errorMessage(err), { error: true });

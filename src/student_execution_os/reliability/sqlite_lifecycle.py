@@ -212,6 +212,8 @@ _DIRECT_ACCOUNT_TABLES = (
     "deleted_obligations",
     "event_reminders",
     "task_progress_counts",
+    "reminders",
+    "deleted_reminders",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

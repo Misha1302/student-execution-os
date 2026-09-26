@@ -29,6 +29,7 @@ class Stage(StrEnum):
     OVERDUE = "OVERDUE"              # deadline passed while the task is still open
     GROUP = "GROUP"                  # several tasks need attention in one tick
     REMINDER = "REMINDER"            # the user asked to be reminded now (snooze end, "напомни …")
+    ESCALATION = "ESCALATION"        # CRITICAL task: 48h → 24h → 12h → 6h → 3h → 1h → 15m before it is due
 
 
 OPEN_STATUSES = {"ACTIVE", "DRAFT"}
@@ -37,8 +38,19 @@ URGENT = {Stage.DEADLINE_2H, Stage.OVERDUE}
 RISK_RANK = {"SAFE": 0, "NOT_APPLICABLE": 0, "UNKNOWN": 0, "START_SOON": 1, "AT_RISK": 2, "CRITICAL": 3, "IMPOSSIBLE": 4, "OVERDUE": 4}
 
 # Priority when several stages apply to one task at the same moment.
-_PRIORITY = [Stage.OVERDUE, Stage.DEADLINE_2H, Stage.RISK_UP, Stage.DONE_CHECK, Stage.START_NOW,
+_PRIORITY = [Stage.OVERDUE, Stage.DEADLINE_2H, Stage.ESCALATION, Stage.RISK_UP, Stage.DONE_CHECK, Stage.START_NOW,
              Stage.CHECK_IN, Stage.DEADLINE_24H, Stage.START_SOON]
+
+# The escalation ladder of a CRITICAL task, as (time left before it is due, label).
+# It replaces the generic 24h/2h deadline prompts for such tasks. Each rung fires at
+# most once per episode (a reschedule starts a new ladder); when several rungs were
+# crossed at once (snoozed, quiet hours, created late) only the latest one is sent.
+ESCALATION_LADDER = (
+    (timedelta(hours=48), "48H"), (timedelta(hours=24), "24H"), (timedelta(hours=12), "12H"),
+    (timedelta(hours=6), "6H"), (timedelta(hours=3), "3H"), (timedelta(hours=1), "1H"),
+    (timedelta(minutes=15), "15M"),
+)
+URGENT_RUNGS = {"ESCALATE_3H", "ESCALATE_1H", "ESCALATE_15M"}
 
 
 @dataclass(frozen=True)
@@ -138,6 +150,7 @@ class TaskFacts:
     # asked for (N minutes before its start); starts_at travels in target_at.
     kind: str = "TASK"
     ends_at: datetime | None = None
+    importance: str = "NORMAL"
 
     @property
     def episode_key(self) -> str:
@@ -276,9 +289,10 @@ def decide(facts: TaskFacts, previous: ReminderState | None, prefs: ReminderPref
                     reason = "WAITING_REPEAT_GAP"
                     continue
         else:
-            if stage.value in state.stages_sent and stage is not Stage.RISK_UP:
-                continue  # one-shot stages fire once per episode
-            if state.last_sent_at is not None and now - state.last_sent_at < MIN_TASK_GAP:
+            if stage.value in state.stages_sent and stage not in (Stage.RISK_UP, Stage.ESCALATION):
+                continue  # one-shot stages fire once per episode (each ladder rung is checked in _candidates)
+            urgent_rung = stage is Stage.ESCALATION and candidates[stage] in URGENT_RUNGS
+            if state.last_sent_at is not None and now - state.last_sent_at < MIN_TASK_GAP and not urgent_rung:
                 next_repeat = _earliest(next_repeat, state.last_sent_at + MIN_TASK_GAP)
                 reason = "WAITING_MIN_GAP"
                 continue
@@ -298,8 +312,13 @@ def _sent(state: ReminderState, chosen: Stage, candidates: dict[Stage, str], wak
           facts: TaskFacts, prefs: ReminderPrefs, now: datetime, unanswered: int) -> ReminderState:
     """State after sending ``chosen`` now."""
     profile = prefs.profile
-    # The prompt that goes out already conveys any informational stage that applies now.
+    # The prompt that goes out already conveys any informational stage that applies now,
+    # including the current escalation rung (and every rung before it).
     covered = {stage.value for stage in candidates if stage in INFORMATIONAL}
+    if Stage.ESCALATION in candidates:
+        rung = candidates[Stage.ESCALATION]
+        labels = [f"ESCALATE_{label}" for _, label in ESCALATION_LADDER]
+        covered |= set(labels[:labels.index(rung) + 1])
     sent = replace(
         state,
         sent_count=state.sent_count + 1,
@@ -329,8 +348,19 @@ def _candidates(facts: TaskFacts, state: ReminderState, prefs: ReminderPrefs, no
     wakeups: list[datetime] = []
 
     cutoff = facts.cutoff_at
+    critical = facts.importance == "CRITICAL" and facts.kind == "TASK"
+    if critical and due is not None and due > now and (remaining is None or remaining > 0):
+        left = due - now
+        crossed = [label for delta, label in ESCALATION_LADDER if left <= delta]
+        if crossed and f"ESCALATE_{crossed[-1]}" not in state.stages_sent:
+            candidates[Stage.ESCALATION] = f"ESCALATE_{crossed[-1]}"
+        ahead = [due - delta for delta, _ in ESCALATION_LADDER if left > delta]
+        if ahead:
+            wakeups.append(ahead[0])
     if cutoff is not None and cutoff <= now:
         candidates[Stage.OVERDUE] = "CUTOFF_PASSED"
+    elif cutoff is not None and critical:
+        wakeups.append(cutoff)  # the ladder replaces the 24h/2h prompts
     elif cutoff is not None:
         left = cutoff - now
         if left <= timedelta(hours=2) and (remaining is None or remaining > 0):
@@ -345,7 +375,9 @@ def _candidates(facts: TaskFacts, state: ReminderState, prefs: ReminderPrefs, no
 
     if remaining == 0:
         candidates[Stage.DONE_CHECK] = "NO_REMAINING_EFFORT"
-    if risk_rank >= RISK_RANK["AT_RISK"] and risk_rank > prev_risk_rank:
+    in_ladder = critical and due is not None and due - now <= ESCALATION_LADDER[0][0]
+    if risk_rank >= RISK_RANK["AT_RISK"] and risk_rank > prev_risk_rank and not in_ladder:
+        # (Inside its ladder a CRITICAL task is escalated by time; a separate risk prompt would repeat it.)
         candidates[Stage.RISK_UP] = f"RISK_{facts.risk_state}"
 
     lss = facts.latest_safe_start
@@ -374,5 +406,5 @@ def _earliest_latest(*values: datetime | None) -> datetime | None:
     return max(present) if present else None
 
 
-def is_urgent(stage: Stage) -> bool:
-    return stage in URGENT
+def is_urgent(stage: Stage, reason: str | None = None) -> bool:
+    return stage in URGENT or (stage is Stage.ESCALATION and reason in URGENT_RUNGS)

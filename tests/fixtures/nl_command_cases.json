@@ -1,0 +1,40 @@
+{
+ "now": "2026-09-23T10:00:00+03:00",
+ "timezone": "Europe/Moscow",
+ "items": [
+  {"id": "task-essay", "kind": "TASK", "title": "Эссе по английскому", "status": "ACTIVE", "version": 3,
+   "actual_cutoff": {"state": "KNOWN", "at": "2026-09-25T15:00:00+00:00"}},
+  {"id": "task-matan", "kind": "TASK", "title": "Решить 10 задач по матану", "status": "ACTIVE", "version": 1,
+   "actual_cutoff": {"state": "ABSENT"}},
+  {"id": "task-lab", "kind": "TASK", "title": "Лаба по физике", "status": "COMPLETED", "version": 5},
+  {"id": "task-report", "kind": "TASK", "title": "Weekly report", "status": "ACTIVE", "version": 2,
+   "actual_cutoff": {"state": "UNKNOWN"}},
+  {"id": "event-call", "kind": "EVENT", "title": "Созвон с научруком", "status": "ACTIVE", "version": 1,
+   "starts_at": "2026-09-23T15:00:00+00:00", "ends_at": "2026-09-23T16:00:00+00:00"},
+  {"id": "rem-bread", "kind": "REMINDER", "title": "Купить хлеб", "status": "SCHEDULED", "version": 1,
+   "remind_at": "2026-09-23T15:00:00+00:00"}
+ ],
+ "cases": [
+  {"text": "готово эссе", "expect": {"command": "COMPLETE_OBLIGATION", "target": "task-essay", "confirm": true}},
+  {"text": "Эссе по английскому — готово", "expect": {"command": "COMPLETE_OBLIGATION", "target": "task-essay", "confirm": true}},
+  {"text": "complete weekly report", "expect": {"command": "COMPLETE_OBLIGATION", "target": "task-report", "confirm": true}},
+  {"text": "сделал: купить хлеб", "expect": {"command": "COMPLETE_OBLIGATION", "target": "rem-bread", "confirm": true}},
+  {"text": "лабу по физике в архив", "expect": {"command": "ARCHIVE_OBLIGATION", "target": "task-lab", "confirm": true}},
+  {"text": "в архив лаба по физике", "expect": {"command": "ARCHIVE_OBLIGATION", "target": "task-lab", "confirm": true}},
+  {"text": "отмени созвон", "expect": {"command": "CANCEL_OBLIGATION", "target": "event-call", "confirm": true}},
+  {"text": "отмени что-то непонятное", "expect": {"command": "CANCEL_OBLIGATION", "target": null, "confirm": true, "target_text": "что-то непонятное"}},
+  {"text": "перенеси эссе на завтра в 18", "expect": {"command": "RESCHEDULE", "target": "task-essay", "when": "2026-09-24 18:00", "keep_time": false}},
+  {"text": "перенеси эссе на понедельник", "expect": {"command": "RESCHEDULE", "target": "task-essay", "keep_time": true}},
+  {"text": "перенеси созвон с научруком на 19:00", "expect": {"command": "RESCHEDULE", "target": "event-call", "when": "2026-09-23 19:00", "keep_time": false}},
+  {"text": "перенеси хлеб на 20:00", "expect": {"command": "RESCHEDULE", "target": "rem-bread", "when": "2026-09-23 20:00", "keep_time": false}},
+  {"text": "напомни про эссе через час", "expect": {"command": "SNOOZE", "target": "task-essay", "until": "2026-09-23 11:00"}},
+  {"text": "отложи купить хлеб на 2 часа", "expect": {"command": "SNOOZE", "target": "rem-bread", "until": "2026-09-23 12:00"}},
+  {"text": "поработал над эссе 30 минут", "expect": {"command": "LOG_PROGRESS", "target": "task-essay", "minutes": 30}},
+  {"text": "потратил полтора часа на матан", "expect": {"command": "LOG_PROGRESS", "target": "task-matan", "minutes": 90}},
+  {"text": "решил 3 задачи по матану", "expect": {"command": "LOG_PROGRESS", "target": "task-matan", "count": 3}},
+  {"text": "напомни про встречу с деканом завтра в 10", "expect": null},
+  {"text": "купить хлеб готово", "expect": {"command": "COMPLETE_OBLIGATION", "target": "rem-bread", "confirm": true}},
+  {"text": "сделать презентацию к пятнице", "expect": null},
+  {"text": "в пятницу к шести сдать лабу", "expect": null}
+ ]
+}

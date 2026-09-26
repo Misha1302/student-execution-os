@@ -4,6 +4,7 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import com.capacitorjs.plugins.pushnotifications.MessagingService;
 import com.google.firebase.messaging.RemoteMessage;
+import io.github.misha1302.seos.alarm.AlarmPush;
 import java.util.Map;
 import org.json.JSONException;
 
@@ -13,15 +14,24 @@ import org.json.JSONException;
  *
  * <p>Reminders marked {@code render=native} arrive as data-only messages; they are
  * delivered here even when the app is in the background or killed, and are rendered
- * with working action buttons. The web layer is still told so an open app refreshes.
+ * with working action buttons. An alarm reminder rings through the alarm package
+ * (and, for PUSH_AND_ALARM, also shows the notification); an "alarm-sync" signal makes
+ * the phone fetch its alarm schedule. The web layer is still told so an open app refreshes.
  */
 public class ReminderMessagingService extends MessagingService {
     @Override
     public void onMessageReceived(@NonNull RemoteMessage message) {
         Map<String, String> data = message.getData();
+        if ("alarm-sync".equals(data.get("type"))) {
+            AlarmPush.sync(this);
+            return;  // a silent signal, nothing for the web layer
+        }
         if ("reminder".equals(data.get("type")) && "native".equals(data.get("render"))) {
             try {
-                ReminderNotifications.show(this, ReminderNotifications.parse(data));
+                boolean rang = AlarmPush.handle(this, data);
+                if (!rang || "PUSH_AND_ALARM".equals(data.get("delivery"))) {
+                    ReminderNotifications.show(this, ReminderNotifications.parse(data));
+                }
             } catch (JSONException malformed) {
                 Log.w("SeosReminders", "reminder push with malformed data was not shown");
             }

@@ -19,6 +19,7 @@ public final class ReminderActions {
     public static final String DONE = "DONE";
     public static final String SNOOZE_30 = "SNOOZE_30";
     public static final String SNOOZE_60 = "SNOOZE_60";
+    public static final String SNOOZE_10 = "SNOOZE_10";
 
     private ReminderActions() {}
 
@@ -28,6 +29,7 @@ public final class ReminderActions {
     }
 
     public static int snoozeMinutes(String action) {
+        if (SNOOZE_10.equals(action)) return 10;
         if (SNOOZE_30.equals(action)) return 30;
         if (SNOOZE_60.equals(action)) return 60;
         return 0;
@@ -74,13 +76,32 @@ public final class ReminderActions {
         return out.append(']').toString();
     }
 
+    /** A button on a standalone reminder ("купить хлеб"): done, or remind me again later. */
+    public static String reminderOperations(String action, String messageId, String reminderId, long pressedAtMillis) {
+        String opId = "push-" + messageId + "-" + action;
+        String type;
+        String payload;
+        if (DONE.equals(action)) {
+            type = "reminder.done";
+            payload = "{\"reminder_message_id\":" + quote(messageId) + "}";
+        } else if (snoozeMinutes(action) > 0) {
+            type = "reminder.snooze";
+            payload = "{\"until\":" + quote(iso(snoozeUntil(action, pressedAtMillis)))
+                    + ",\"reminder_message_id\":" + quote(messageId) + "}";
+        } else {
+            throw new IllegalArgumentException("not a background action for a reminder: " + action);
+        }
+        return "[{\"op_id\":" + quote(opId) + ",\"type\":" + quote(type) + ",\"entity_id\":" + quote(reminderId)
+                + ",\"payload\":" + payload + "}]";
+    }
+
     /** Fills "{title}"/"{time}" placeholders of a server-provided label. */
     public static String fill(String template, String title, String time) {
         if (template == null) return "";
         return template.replace("{title}", title == null ? "" : title).replace("{time}", time == null ? "" : time);
     }
 
-    static String quote(String value) {
+    public static String quote(String value) {
         StringBuilder out = new StringBuilder("\"");
         for (char c : value.toCharArray()) {
             switch (c) {

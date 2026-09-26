@@ -13,6 +13,12 @@ const local = (value) => {
 };
 const results = fixture.cases.map(({ text }) => {
   const r = parseTask(text, now);
+  if (r.kind === 'REMINDER') {
+    return {
+      kind: 'REMINDER', title: r.title, remind_at: local(r.remind_at), delivery: r.delivery,
+      wake_check: r.wake_check, raise_volume: r.raise_volume, unresolved: r.unresolved,
+    };
+  }
   if (r.kind === 'EVENT') {
     return {
       kind: 'EVENT', title: r.title, category: r.category, starts_at: local(r.starts_at), ends_at: local(r.ends_at),

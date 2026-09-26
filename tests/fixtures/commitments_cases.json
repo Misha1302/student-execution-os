@@ -1,0 +1,31 @@
+{
+ "now": "2026-09-23T10:00:00+03:00",
+ "tasks": [
+  {"id": "t-essay", "title": "Эссе по английскому", "description": "глава 2", "status": "ACTIVE", "version": 2, "importance": "HIGH",
+   "actual_cutoff": {"state": "KNOWN", "at": "2026-09-25T15:00:00+00:00"}},
+  {"id": "t-read", "title": "Прочитать статью", "status": "DRAFT", "version": 1, "actual_cutoff": {"state": "UNKNOWN"},
+   "actionable_from": "2026-09-24T06:00:00+00:00"},
+  {"id": "t-milk", "title": "Купить молоко", "status": "ACTIVE", "version": 1, "actual_cutoff": {"state": "UNKNOWN"}},
+  {"id": "t-done", "title": "Лаба по физике", "status": "COMPLETED", "version": 4, "actual_cutoff": {"state": "KNOWN", "at": "2026-09-22T15:00:00+00:00"}},
+  {"id": "t-nope", "title": "Реферат", "status": "CANCELLED", "version": 3, "actual_cutoff": {"state": "ABSENT"}, "target_at": "2026-09-30T20:00:00+00:00"},
+  {"id": "t-arch", "title": "Старое", "status": "ARCHIVED", "version": 5, "actual_cutoff": {"state": "ABSENT"}}
+ ],
+ "events": [
+  {"id": "e-call", "title": "Созвон с научруком", "status": "ACTIVE", "version": 1, "starts_at": "2026-09-23T15:00:00+00:00", "ends_at": "2026-09-23T16:00:00+00:00"},
+  {"id": "e-past", "title": "Лекция", "description": "аудитория 5", "status": "ACTIVE", "version": 1, "starts_at": "2026-09-23T05:00:00+00:00", "ends_at": "2026-09-23T06:30:00+00:00"},
+  {"id": "e-cancel", "title": "Тренировка", "status": "CANCELLED", "version": 2, "starts_at": "2026-09-24T15:00:00+00:00", "ends_at": "2026-09-24T16:00:00+00:00"}
+ ],
+ "reminders": [
+  {"id": "r-bread", "title": "Купить хлеб", "note": "бородинский", "status": "SCHEDULED", "version": 1, "remind_at": "2026-09-23T15:00:00+00:00", "delivery": "PUSH"},
+  {"id": "r-wake", "title": "Подъём", "status": "DONE", "version": 3, "remind_at": "2026-09-23T04:00:00+00:00", "delivery": "ALARM"}
+ ],
+ "queries": [
+  {"place": null, "query": ""},
+  {"place": "open", "query": ""},
+  {"place": "done", "query": ""},
+  {"place": "archive", "query": ""},
+  {"place": null, "query": "купить"},
+  {"place": null, "query": "ГЛАВА 2"},
+  {"place": "open", "query": "аудитория"}
+ ]
+}

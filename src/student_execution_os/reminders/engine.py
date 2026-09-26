@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 
-from .messages import compose
+from .messages import compose, compose_standalone
 from .policy import ACCOUNT_MIN_GAP, OPEN_STATUSES, Decision, ReminderState, Stage, TaskFacts, decide, is_urgent
 from .store import ReminderStore
 
@@ -70,7 +70,7 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
             risk_state=getattr(getattr(risk, "state", None), "value", None),
             remaining_minutes=task.remaining_effort_minutes,
             started_at=task.started_at, last_progress_at=task.last_progress_at,
-            actionable_from=task.actionable_from,
+            actionable_from=task.actionable_from, importance=task.obligation.importance.value,
         ))
     facts.extend(event_facts(repo, account_id, minute))
     return facts
@@ -138,7 +138,7 @@ class ReminderEngine:
             quiet_end = prefs.quiet_until(now)
             last = store.last_message_at(account_id)
             sent_today = store.count_since(account_id, now - timedelta(days=1))
-            urgent = {task_id for task_id, d in sending.items() if is_urgent(d.stage)}
+            urgent = {task_id for task_id, d in sending.items() if is_urgent(d.stage, d.reason)}
             # A reminder the user explicitly asked for goes out at the requested moment,
             # past quiet hours, the account gap and the daily cap.
             requested = {task_id for task_id, d in sending.items() if d.reason == "REMINDER_DUE"}
@@ -166,9 +166,10 @@ class ReminderEngine:
                 state = replace(previous, next_check_at=hold_until)
             store.save_state(account_id, task_id, state)
 
-        messages: list[str] = []
+        messages: list[str] = self._fire_standalone(repo, store, prefs, account_id, now)
         if sending:
-            ordered = sorted(sending, key=lambda tid: (not is_urgent(sending[tid].stage), by_id[tid].due_at or datetime.max.replace(tzinfo=timezone.utc)))
+            ordered = sorted(sending, key=lambda tid: (not is_urgent(sending[tid].stage, sending[tid].reason),
+                                                       by_id[tid].due_at or datetime.max.replace(tzinfo=timezone.utc)))
             if len(ordered) == 1:
                 task_id = ordered[0]
                 decision = sending[task_id]
@@ -191,3 +192,29 @@ class ReminderEngine:
             if message_id:
                 messages.append(message_id)
         return TickResult(account_id, len(decisions), messages, held_reason)
+
+    @staticmethod
+    def _fire_standalone(repo, store: ReminderStore, prefs, account_id: str, now: datetime) -> list[str]:
+        """Standalone reminders whose moment came: one message each, at that moment.
+
+        The user named the moment, so quiet hours, spacing and the daily cap do not
+        hold it (like a snoozed task reminder). A reminder missed for longer than the
+        grace period (the worker was down) is closed without a stale notification.
+        """
+        from .standalone import FIRE_GRACE, SQLiteReminderRepository
+        reminders = SQLiteReminderRepository(repo)
+        sent: list[str] = []
+        for reminder in reminders.due(account_id, now):
+            at = datetime.fromisoformat(reminder["remind_at"])
+            with repo._tx():
+                if now - at <= FIRE_GRACE:
+                    content = compose_standalone(reminder, now=now, timezone_name=prefs.timezone_name, locale=prefs.locale)
+                    message_id = store.add_message(
+                        account_id, stage="REMINDER", task_ids=[], content=content,
+                        dedupe_key=f"standalone:{reminder['id']}:{reminder['remind_at']}", now=now,
+                        reminder_id=reminder["id"], delivery=reminder["delivery"],
+                    )
+                    if message_id:
+                        sent.append(message_id)
+                reminders.mark_fired(account_id, reminder["id"], now)
+        return sent

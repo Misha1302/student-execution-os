@@ -29,7 +29,7 @@ from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 
 from .messages import FOLLOW_UP
-from .store import REMINDER_ACTIONS_CAPABILITY, ReminderStore
+from .store import REMINDER_ACTIONS_CAPABILITY, SERVICE_STAGES, WAKE_ALARM_CAPABILITY, ReminderStore
 
 log = logging.getLogger("student_execution_os.push")
 
@@ -285,6 +285,12 @@ class PushDispatcher:
         created = _dt(row["created_at"])
         if now - created > STALE_AFTER:
             return "STALE"
+        if row["reminder_id"]:
+            reminder = repo.connection.execute(
+                "SELECT status,fired_at FROM reminders WHERE account_id=? AND id=?", (row["account_id"], row["reminder_id"])
+            ).fetchone()
+            if reminder is None or reminder["status"] != "FIRED":
+                return "REMINDER_CLOSED"
         for task_id in json.loads(row["task_ids_json"]):
             ob = repo.connection.execute(
                 "SELECT lifecycle_status FROM obligations WHERE account_id=? AND id=?", (row["account_id"], task_id)
@@ -312,7 +318,8 @@ class PushDispatcher:
         quiet_end = prefs.quiet_until(now)
         # The engine only creates a message inside quiet hours when the user asked for
         # that moment explicitly; such a message is delivered, not held.
-        if quiet_end is not None and prefs.quiet_until(_dt(row["created_at"])) is None:
+        explicit = row["stage"] in SERVICE_STAGES or row["stage"] == "REMINDER" and row["reminder_id"]
+        if quiet_end is not None and not explicit and prefs.quiet_until(_dt(row["created_at"])) is None:
             self._finish(repo, message_id, "PENDING", error="QUIET_HOURS", next_attempt=quiet_end)
             return "retry"
         if not self.provider.configured:
@@ -320,6 +327,9 @@ class PushDispatcher:
             return "no_device"
         store = ReminderStore(repo)
         devices = store.active_tokens(row["account_id"])
+        if row["stage"] == "ALARM_SYNC":
+            # A signal for phones that keep local alarms; nobody else needs it.
+            devices = [d for d in devices if WAKE_ALARM_CAPABILITY in d[2]]
         if not devices:
             self._finish(repo, message_id, "NO_DEVICE", error="NO_ACTIVE_DEVICE")
             return "no_device"
@@ -339,13 +349,31 @@ class PushDispatcher:
             "created_at": row["created_at"], "locale": prefs.locale, "timezone": prefs.timezone_name,
             "labels": FOLLOW_UP[prefs.locale],
         }
+        if row["reminder_id"]:
+            reminder = repo.connection.execute(
+                "SELECT id,title,remind_at,delivery,wake_check,raise_volume FROM reminders WHERE account_id=? AND id=?",
+                (row["account_id"], row["reminder_id"]),
+            ).fetchone()
+            payload.update(reminder_id=row["reminder_id"], delivery=row["delivery"], collapse_key=row["reminder_id"],
+                           task_title=reminder["title"] if reminder else row["title"])
+            if reminder is not None and row["delivery"] in ("ALARM", "PUSH_AND_ALARM"):
+                payload["alarm"] = {"id": reminder["id"], "at": reminder["remind_at"], "title": reminder["title"],
+                                    "wake_check": bool(reminder["wake_check"]), "raise_volume": bool(reminder["raise_volume"])}
+        if row["stage"] in SERVICE_STAGES:
+            payload["type"] = "alarm-sync" if row["stage"] == "ALARM_SYNC" else "reminder"
         attempts = int(row["attempts"]) + 1
         results = []
         for device_id, token, capabilities in devices:
-            if REMINDER_ACTIONS_CAPABILITY in capabilities:
+            alarm_phone = WAKE_ALARM_CAPABILITY in capabilities
+            if row["stage"] == "ALARM_SYNC":
                 result = self.provider.send(token, payload, data_only=True)
+            elif REMINDER_ACTIONS_CAPABILITY in capabilities:
+                # A phone that cannot ring gets an alarm reminder as a notification.
+                message = payload if alarm_phone or "alarm" not in payload else {**payload, "delivery": "PUSH"}
+                result = self.provider.send(token, {k: v for k, v in message.items() if alarm_phone or k != "alarm"},
+                                            data_only=True)
             else:
-                result = self.provider.send(token, payload)
+                result = self.provider.send(token, {k: v for k, v in payload.items() if k != "alarm"})
             if result.token_invalid:
                 store.deactivate_device(device_id)
             results.append(result)

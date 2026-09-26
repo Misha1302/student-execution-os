@@ -6,4 +6,7 @@
     <string name="custom_url_scheme">io.github.misha1302.seos</string>
     <string name="reminder_channel">Напоминания</string>
     <string name="reminder_channel_description">Когда пора начать, дедлайн близко или вы просили напомнить</string>
+    <string name="alarm_channel">Будильник</string>
+    <string name="alarm_channel_description">Звонящий будильник, который вы поставили</string>
+    <string name="alarm_check_channel">Проверка после будильника</string>
 </resources>

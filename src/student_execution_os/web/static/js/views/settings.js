@@ -6,6 +6,8 @@ import { isNative, saveJson, prefGet, prefSet } from '../native.js';
 import { getTheme, setTheme } from '../theme.js';
 import { shell } from '../actions.js';
 import { aiSection, aiActions, loadAiSettings } from '../ai.js';
+import { healthSection, healthActions, loadHealth } from '../health.js';
+import { syncSection, syncActions, loadConnectors } from '../sync-panel.js';
 
 export async function logout() {
   if (session.authMode === 'session') {
@@ -112,26 +114,24 @@ export default {
   detail: true,
   title: () => t('nav.settings'),
   async load({ fresh }) {
-    const [diag, deletion, prefs, llm, profile] = await Promise.all([
+    const [diag, deletion, prefs, llm, profile, health, connectors] = await Promise.all([
       load('/api/v1/settings/diagnostics', { fresh }),
       load('/api/v1/account/deletion-policy', { fresh }),
       load('/api/v1/notification-preferences', { fresh }).catch(() => ({ data: null })),
       loadAiSettings(), // not cached on the device
       load('/api/v1/settings/planning-profile', { fresh }).catch(() => ({ data: null })),
+      loadHealth({ fresh }),
+      loadConnectors(),
     ]);
-    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data }, stale: diag.stale, fetchedAt: diag.fetchedAt };
+    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors }, stale: diag.stale, fetchedAt: diag.fetchedAt };
   },
-  render({ diag, deletion, prefs, llm, profile }) {
+  render({ diag, deletion, prefs, llm, profile, health, connectors }) {
     this._deletion = deletion;
     this._prefs = prefs;
     this._profile = profile;
     const level = prefs ? (prefs.enabled ? prefs.intensity : 'OFF') : 'OFF';
     this._llm = llm;
     const sessionMode = session.authMode === 'session';
-    const connectors = (diag.connector_health || []).map((c) => `<div class="row static">
-      <span class="row-main"><strong>${esc(c.provider)}</strong><small>${esc(t('ev.lastSync'))}: ${esc(fmtDateTime(c.last_successful_complete_sync_at))}</small></span>
-      ${chip(code('health', c.health_status), c.health_status === 'CURRENT' ? 'ok' : 'warn')}
-    </div>`).join('');
     return `
       <section class="section">
         <div class="section-head"><h2>${esc(t('settings.account'))}</h2></div>
@@ -163,6 +163,8 @@ export default {
         </div>
       </section>` : ''}
 
+      ${healthSection(health)}
+
       ${profile ? `<section class="section">
         <div class="section-head"><h2>${esc(t('settings.planning'))}</h2></div>
         <div class="card form">
@@ -193,7 +195,7 @@ export default {
         </div>
       </section>
 
-      ${connectors ? `<section class="section"><div class="section-head"><h2>${esc(t('settings.connections'))}</h2></div><div class="list">${connectors}</div></section>` : ''}
+      ${syncSection(connectors)}
 
       <section class="section">
         <details class="card details" data-advanced>
@@ -254,5 +256,7 @@ export default {
     'save-sleep': (el, ctx) => saveSleep(el, ctx),
     'account-delete-preview': (_el, ctx) => deleteSheet(ctx.view._deletion),
     ...aiActions,
+    ...healthActions,
+    ...syncActions,
   },
 };

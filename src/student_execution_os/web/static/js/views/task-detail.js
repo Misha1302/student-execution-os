@@ -2,7 +2,7 @@ import { load } from '../store.js';
 import { api } from '../api.js';
 import { t, code, fmtDuration, fmtDateTime, fmtRelative, now } from '../i18n.js';
 import { esc, icon, chip, riskChip, kv, empty, setBusy } from '../ui.js';
-import { lifecycle, logProgress, mutate, change } from '../actions.js';
+import { lifecycle, logProgress, mutate, change, taskPlace } from '../actions.js';
 import { editTaskSheet, rescheduleSheet, deadlineText } from '../capture.js';
 
 function fileBase64(file) {
@@ -48,12 +48,13 @@ export default {
       : total ? Math.round(((total - left) / total) * 100) : 0;
     const cutoff = task.actual_cutoff || {};
     const open = task.status === 'ACTIVE' || task.status === 'DRAFT';
+    const place = taskPlace(task);
     const active = task.status === 'ACTIVE';
     const advice = active ? startAdvice(task) : null;
     const conflict = task.cutoff_truth?.state === 'CONFLICT';
     return `
       <section class="detail-head">
-        <div class="chips">${active ? riskChip(task.risk) : chip(code('status', task.status), task.status === 'COMPLETED' ? 'ok' : task.status === 'DRAFT' ? 'warn' : 'muted')}
+        <div class="chips">${active ? riskChip(task.risk) : chip(place === 'archive' ? t('place.archive') : code('status', task.status), task.status === 'COMPLETED' ? 'ok' : task.status === 'DRAFT' ? 'warn' : 'muted')}
           ${task.importance !== 'NORMAL' ? chip(code('importanceShort', task.importance), task.importance === 'LOW' ? 'muted' : 'warn') : ''}
           ${task.category !== 'GENERAL' ? chip(code('category', task.category)) : ''}
           ${task.started_at && open ? chip(t('task.inProgress'), 'accent') : ''}</div>
@@ -96,12 +97,12 @@ export default {
           <button class="button" data-action="detail-reschedule">${icon('calendar')}${esc(t('task.reschedule'))}</button>
           <button class="button" data-action="detail-edit">${esc(t('task.edit'))}</button>
           <button class="button danger ghost" data-action="detail-lifecycle" data-op="cancel">${esc(t('lifecycle.cancel'))}</button>`
-        : task.status === 'ARCHIVED' ? `<button class="button primary" data-action="detail-lifecycle" data-op="unarchive">${icon('repeat')}${esc(t('lifecycle.unarchive'))}</button>`
+        : place === 'archive' ? `<button class="button primary" data-action="detail-lifecycle" data-op="restore">${icon('repeat')}${esc(t(task.status === 'ARCHIVED' && task.completed_at ? 'lifecycle.restoreDone' : 'lifecycle.reopen'))}</button>`
         : `<button class="button primary" data-action="detail-lifecycle" data-op="reopen">${icon('repeat')}${esc(t('lifecycle.reopen'))}</button>
            <button class="button" data-action="detail-lifecycle" data-op="archive">${esc(t('lifecycle.archive'))}</button>`}
         <button class="button danger ghost" data-action="detail-lifecycle" data-op="delete">${esc(t('lifecycle.delete'))}</button>
       </section>
-      <p class="help pad">${esc(t(`lifecycle.help.${open ? 'open' : task.status}`))}</p>
+      <p class="help pad">${esc(t(`lifecycle.help.${open ? 'open' : place === 'archive' ? 'ARCHIVED' : task.status}`))}</p>
 
       <section class="card">
         <h3>${esc(t('task.attachments'))}</h3>
@@ -124,7 +125,7 @@ export default {
       await change('task.update', ctx.data.id, { estimated_total_effort_minutes: minutes, remaining_effort_minutes: minutes }, { success: t('task.inPlan') });
     },
     'attachment-pick'(el) { el.closest('.card').querySelector('[data-attachment-input]').click(); },
-    'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title }); },
+    'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title, from: ctx.data.status }); },
   },
   mount(root, task, ctx) {
     root.querySelector('[data-attachment-input]')?.addEventListener('change', async (event) => {

@@ -206,6 +206,8 @@ export function pushEnabled() {
 }
 
 let pushListeners = null;
+let pushDenied = false;
+export const pushWasDenied = () => pushDenied;
 
 // Safe to call repeatedly (boot, after sign-in, after resume): listeners are
 // installed once and register() re-emits the current token for the signed-in account.
@@ -213,7 +215,8 @@ export async function setupPush(onToken, onDeepLink) {
   const push = plugin('PushNotifications');
   if (!push || !pushEnabled()) return { configured: false };
   const permission = await push.requestPermissions();
-  if (permission.receive !== 'granted') return { configured: false, denied: true };
+  if (permission.receive !== 'granted') { pushDenied = true; return { configured: false, denied: true }; }
+  pushDenied = false;
   if (!pushListeners) pushListeners = installPushListeners(push, onToken, onDeepLink);
   await pushListeners;
   await push.register();
@@ -249,4 +252,50 @@ export async function saveJson(filename, text) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---- device health and alarms (the app's own SeosNative plugin, Android only) -----
+
+const seos = () => plugin('SeosNative');
+
+export const alarmsSupported = () => Boolean(seos());
+
+// What this device can show right now. Browsers report the Notification permission;
+// they never receive reminder pushes (only the Android app does).
+export async function deviceStatus() {
+  const native = seos();
+  if (native) {
+    try { return { native: true, ...(await native.status()) }; } catch { /* older build: fall through */ }
+  }
+  const push = plugin('PushNotifications');
+  if (push) {
+    const permission = await push.checkPermissions().catch(() => null);
+    return { native: true, notifications: permission?.receive === 'granted', permission: permission?.receive || 'unknown' };
+  }
+  if (typeof Notification !== 'undefined') return { native: false, permission: Notification.permission };
+  return { native: false, permission: 'unsupported' };
+}
+
+// Opens the system screen where the user can fix a permission:
+// 'notifications' | 'exact_alarms' | 'full_screen' | 'battery'.
+export async function openDeviceSettings(target) {
+  const native = seos();
+  if (!native) return false;
+  await native.openSettings({ target });
+  return true;
+}
+
+// Hands the device every upcoming alarm of the account. The native side replaces
+// its schedule with this list (AlarmManager alarm clocks, kept across reboots).
+export async function syncAlarms(alarms, labels = {}) {
+  const native = seos();
+  if (!native) return { supported: false };
+  return native.syncAlarms({ alarms, labels });
+}
+
+export async function testAlarm() {
+  const native = seos();
+  if (!native) return false;
+  await native.testAlarm();
+  return true;
 }

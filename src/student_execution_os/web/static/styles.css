@@ -110,6 +110,7 @@ body.bare .main-column { padding-bottom: 0; }
 
 .workspace { padding: 4px 16px 16px; max-width: 760px; margin: 0 auto; outline: none; }
 .view { display: flex; flex-direction: column; gap: 18px; animation: fade-in .18s ease-out; }
+.view.no-enter { animation: none; }
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } }
 .section { display: flex; flex-direction: column; gap: 10px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 2px; }
@@ -556,3 +557,47 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .voice-panel[data-state="processing"] .voice-dot, .voice-panel[data-state="starting"] .voice-dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
 .voice-panel[data-state="error"] { background: var(--danger-soft); color: var(--danger); }
 .voice-panel[data-state="error"] .voice-dot { background: var(--danger); }
+
+/* ---- v16: agenda, reminders, commands, health, sync ------------------------------- */
+
+
+.dot.reminder, .agenda-item.reminder { --tone: var(--warn); --tone-soft: var(--warn-soft); }
+.agenda-item.reminder .agenda-bar { border-radius: 999px; }
+
+.agenda-group + .agenda-group { margin-top: 18px; }
+.group-head { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); margin: 14px 4px 8px; }
+.toolbar .segmented.kinds { margin-top: 6px; }
+.task-top .kind-icon { flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; }
+.task-top .kind-icon .icon { width: 16px; height: 16px; }
+.kind-task { background: var(--accent-soft); color: var(--accent); }
+.kind-event { background: var(--canonical-soft); color: var(--canonical); }
+.kind-reminder { background: var(--warn-soft); color: var(--warn); }
+.task-top .task-title { flex: 1; min-width: 0; }
+.agenda-row { touch-action: pan-y; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.agenda-row[data-swipe="archive"] { position: relative; }
+.agenda-row.swipe-armed { box-shadow: inset -6px 0 0 var(--accent); }
+
+.engine-line { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 8px 2px 0; padding: 6px 10px; border-radius: var(--radius-sm); }
+.engine-line .icon { width: 15px; height: 15px; flex: none; }
+.engine-line.tone-muted { background: transparent; color: var(--text-3); }
+
+.check-steps { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+.check-steps li { display: inline-flex; align-items: center; gap: 4px; }
+.check-steps .icon { width: 14px; height: 14px; }
+.check-steps .step-ok { color: var(--ok); }
+.check-steps .step-fail { color: var(--danger); font-weight: 650; }
+.check-steps .step-skip { color: var(--text-3); }
+
+.reach-warning { margin-top: 10px; }
+.reach-warning .link { padding: 0; margin-top: 2px; color: inherit; text-decoration: underline; }
+
+.command-card .command-list { margin: 8px 0 12px; display: grid; gap: 10px; }
+.command-row { font-weight: 600; overflow-wrap: anywhere; }
+.command-row.destructive > span { color: var(--danger); }
+.command-pick { margin-top: 6px; }
+
+.health-row .row-main .button { margin-top: 6px; align-self: flex-start; }
+.connector-row .button-row { margin-top: 6px; }
+.text-danger { color: var(--danger); }
+.reminder-fields .chip-group + .chip-group { margin-top: 6px; }
+.banner.ok { background: var(--ok-soft); color: var(--ok); }

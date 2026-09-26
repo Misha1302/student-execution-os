@@ -15,6 +15,10 @@ import { mutate, change, shell } from './actions.js';
 import { newEntityId, settled } from './sync.js';
 import { parseTask } from './nlparse.js';
 import { startDictation, voiceSupported } from './native.js';
+import { reachWarning } from './health.js';
+import { parseCommand } from './commands.js';
+import { renderCommands, knownItems, isCommand } from './command-preview.js';
+import { createReminder, deliveryChips, hasAlarm } from './reminders.js';
 import { eventFieldsHtml, readEventFields, bindEventFields, eventWhen, conflictHtml, createEvent, DEFAULT_LEAD, LEADS } from './events.js';
 
 export const CATEGORIES = ['HOMEWORK', 'EXAM', 'LESSON', 'WORK', 'ADMIN', 'ERRAND', 'PERSONAL_APPOINTMENT', 'MEETING', 'GENERAL'];
@@ -22,7 +26,6 @@ export const IMPORTANCE = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'];
 const EFFORT_CHOICES = [15, 30, 60, 120, 180];
 const FIELDS = ['title', 'description', 'category', 'importance', 'estimated_total_effort_minutes', 'actual_cutoff',
   'target_at', 'actionable_from', 'remind_at', 'splittable', 'min_chunk_minutes', 'max_chunk_minutes', 'count_total', 'count_unit'];
-const COMMAND_PREFIX = /^\s*(готово|отмени|complete|cancel)\s+/iu;
 
 export const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
@@ -239,12 +242,27 @@ function answer(kind, value) {
 
 // ---- capabilities (cached; offline → local only) ------------------------------------
 
-async function liveModel() {
+async function capabilities() {
   const cached = peek('/api/v1/ask/capabilities');
-  if (cached) return Boolean(cached.live_llm_provider);
+  if (cached) return cached;
   try {
-    return Boolean((await load('/api/v1/ask/capabilities')).data.live_llm_provider);
-  } catch { return false; }
+    return (await load('/api/v1/ask/capabilities')).data;
+  } catch { return null; }
+}
+
+// Which interpreter read the text is always on screen: a language model, or the
+// on-device parser — and if the model was meant to help but did not, why.
+export function engineLine(state, { model = null, reason = null } = {}) {
+  if (state === 'thinking') return { tone: 'muted', icon: 'spark', text: t('capture.engine.thinking') };
+  if (state === 'ai') return { tone: 'accent', icon: 'spark', text: model ? t('capture.engine.aiModel', { model }) : t('capture.engine.ai') };
+  if (state === 'fallback') {
+    const key = `capture.engine.why.${reason}`;
+    const why = t(key) === key ? t('capture.engine.why.other') : t(key);
+    return { tone: 'warn', icon: 'alert', text: t('capture.engine.fallback', { why }) };
+  }
+  if (state === 'offline') return { tone: 'muted', icon: 'task', text: t('capture.engine.offline') };
+  if (state === 'noai') return { tone: 'muted', icon: 'task', text: t('capture.engine.noAi') };
+  return { tone: 'muted', icon: 'task', text: t('capture.engine.local') };
 }
 
 // Payload for task.create from a card draft; unanswered questions mean "don't know".
@@ -292,13 +310,14 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   let unresolved = [];
   const answered = new Set();
   let assistant = null; // { batch_id, action_id } when the model's proposal is on the card
-  let commands = null;  // non-create proposals (e.g. "готово …") from the server
+  let commands = null;  // a proposal about existing items ("готово …"), local or from the server
   let serverSeq = 0;
   let serverTimer = null;
   let parseTimer = null;
-  let kind = 'TASK';           // what the card will create: 'TASK' | 'EVENT'
+  let kind = 'TASK';           // what the card will create: 'TASK' | 'EVENT' | 'REMINDER'
   let kindChosen = false;      // the user picked the kind; parses no longer switch it
   let eventDraft = null;
+  let reminderDraft = null;   // { title, remind_at, delivery, wake_check, raise_volume, note }
   const eventEdited = new Set(); // event fields the user set by hand
   let dictation = null;
 
@@ -318,6 +337,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       <p class="help" data-capture-hint>${esc(t('capture.hint'))}</p>
       <div data-capture-status class="capture-status" hidden></div>
       <div data-preview class="capture-preview" hidden></div>
+      <p class="engine-line" data-engine hidden></p>
       <div data-commands hidden></div>
       <details class="details" data-more>
         <summary>${icon('settings')} ${esc(t('capture.more'))}</summary>
@@ -342,6 +362,14 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   bindFields(taskDetails);
 
   const showStatus = (message) => { status.hidden = !message; status.textContent = message || ''; };
+  const engineEl = dialog.querySelector('[data-engine]');
+  const showEngine = (state, extra) => {
+    const line = engineLine(state, extra);
+    engineEl.hidden = !String(input.value).trim();
+    engineEl.dataset.engine = state;
+    engineEl.className = `engine-line tone-${line.tone}`;
+    engineEl.innerHTML = `${icon(line.icon)}<span>${esc(line.text)}</span>`;
+  };
 
   function merge(fields, source) {
     for (const key of FIELDS) {
@@ -404,11 +432,43 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       </div>
       <div class="field"><span>${icon('bell')} ${esc(t('event.remind'))}</span>${chipGroup('card-lead', LEADS.map(([v, k]) => [v, t(k)]), lead)}</div>
       ${conflictHtml(eventDraft)}
+      ${eventDraft.remind_before_minutes != null ? reachWarning() : ''}
       <button type="button" class="link" data-switch-kind="TASK">${esc(t('capture.asTask'))}</button>
     </article>`;
   }
 
+  function reminderCardHtml() {
+    const r = reminderDraft;
+    return `<article class="capture-card reminder-card" data-kind="REMINDER">
+      <span class="eyebrow">${icon('bell')} ${esc(t(hasAlarm(r.delivery) ? 'reminder.kindAlarm' : 'reminder.kind'))}</span>
+      <h3 class="capture-title">${esc(r.title || '')}</h3>
+      <div class="capture-facts">
+        <div class="fact static"><span class="fact-icon tone-accent">${icon('clock')}</span>
+          <span class="fact-copy"><small>${esc(t('reminder.when'))}</small><strong>${esc(r.remind_at ? fmtDateTime(r.remind_at) : '—')}</strong></span></div>
+      </div>
+      <div class="field"><span>${esc(t('reminder.how'))}</span>${deliveryChips('card-delivery', r.delivery)}</div>
+      ${hasAlarm(r.delivery) ? `<div class="field"><span>${esc(t('reminder.wake'))}</span>${chipGroup('card-wake', [['false', t('reminder.wake.no')], ['true', t('reminder.wake.yes')]], String(Boolean(r.wake_check)))}</div>` : ''}
+      ${reachWarning({ alarm: hasAlarm(r.delivery) })}
+      <button type="button" class="link" data-switch-kind="TASK">${esc(t('capture.reminderAsTask'))}</button>
+    </article>`;
+  }
+
   function render() {
+    // A command about existing items replaces the creation form entirely.
+    const commandMode = Boolean(commands);
+    createButton.hidden = commandMode;
+    details.hidden = commandMode;
+    dialog.querySelector('.capture-other').hidden = commandMode;
+    if (kind === 'REMINDER' && reminderDraft) {
+      const hasTitle = Boolean(String(reminderDraft.title || '').trim());
+      createButton.disabled = !hasTitle || !reminderDraft.remind_at || Boolean(commands);
+      preview.hidden = !hasTitle || Boolean(commands);
+      dialog.querySelector('[data-capture-hint]').hidden = hasTitle || Boolean(commands);
+      taskDetails.hidden = true;
+      eventDetails.hidden = true;
+      if (hasTitle && !commands) preview.innerHTML = reminderCardHtml();
+      return;
+    }
     const isEvent = kind === 'EVENT' && eventDraft;
     const hasTitle = Boolean(String((isEvent ? eventDraft.title : draft.title) || '').trim());
     createButton.disabled = !hasTitle || Boolean(commands);
@@ -429,47 +489,99 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
         ${factsHtml(draft)}
         ${draft.description ? `<p class="muted">${esc(draft.description)}</p>` : ''}
         ${questionsHtml(open)}
+        ${draft.remind_at ? reachWarning() : ''}
         <button type="button" class="link" data-switch-kind="EVENT">${esc(t('capture.asEvent'))}</button>
+        ${draft.remind_at ? `<button type="button" class="link" data-switch-kind="REMINDER">${esc(t('capture.asReminder'))}</button>` : ''}
       </article>`;
     }
     writeFields(taskDetails, draft);
+  }
+
+  function adoptReminder(parsed) {
+    reminderDraft = {
+      title: parsed.title, remind_at: parsed.remind_at, note: parsed.note ?? null,
+      delivery: reminderDraft?.deliveryChosen ? reminderDraft.delivery : parsed.delivery || 'PUSH',
+      deliveryChosen: reminderDraft?.deliveryChosen || false,
+      wake_check: Boolean(parsed.wake_check), raise_volume: parsed.raise_volume !== false,
+    };
+    if (!kindChosen) kind = 'REMINDER';
+    // The same moment as a task's reminder, if the user says "это задача".
+    merge({ title: parsed.title, remind_at: parsed.remind_at, actual_cutoff: { state: 'ABSENT' } }, 'reminder');
+  }
+
+  function showLocalCommand(action) {
+    commands = { source: 'local', actions: [action] };
+    renderCommands(dialog.querySelector('[data-commands]'), commands, { onDone: () => dialog.close('applied') });
+    showEngine('local');
+    render();
   }
 
   function parseLocal() {
     const raw = input.value;
     commands = null;
     dialog.querySelector('[data-commands]').hidden = true;
-    const parsed = parseTask(raw, now());
     assistant = null;
+    // "готово эссе", "перенеси созвон на 19:00": about something the user already has.
+    const command = parseCommand(raw, now(), knownItems());
+    if (command) { showLocalCommand(command); return; }
+    const parsed = parseTask(raw, now());
     unresolved = parsed.unresolved || [];
     if (parsed.kind === 'EVENT') {
       unresolved = [];
       adoptEvent(parsed);
+    } else if (parsed.kind === 'REMINDER') {
+      unresolved = [];
+      adoptReminder(parsed);
     } else {
       if (!kindChosen) kind = 'TASK';
       merge(parsed, 'local');
     }
+    showEngine('local');
     render();
   }
 
   async function enrich() {
     const raw = input.value.trim();
-    const command = COMMAND_PREFIX.test(raw);
-    if (!raw || (!command && !(await liveModel()))) return;
+    const command = Boolean(parseCommand(raw, now(), knownItems()));
+    if (!raw) return;
+    const caps = await capabilities();
+    if (!command && !caps?.live_llm_provider) {
+      // No model for this account (or no server answer): the device's parse stands.
+      if (caps && caps.credential_status && caps.credential_status !== 'OK' && caps.credential_status !== 'UNTESTED') showEngine('fallback', { reason: caps.credential_status });
+      else showEngine(caps ? 'noai' : 'offline');
+      return;
+    }
     const seq = ++serverSeq;
-    showStatus(t('capture.thinking'));
+    showEngine('thinking');
     let result;
     try {
       result = await api('/api/v1/assistant/interpret', { method: 'POST', body: { text: raw, context: { timezone: deviceTimeZone(), locale: getLocale() } } });
     } catch (err) {
-      if (seq === serverSeq) showStatus(err.code === 'NETWORK' ? '' : (command ? errorMessage(err) : ''));
+      if (seq !== serverSeq) return;
+      showEngine(err.code === 'NETWORK' ? 'offline' : 'fallback', { reason: err.code === 'NETWORK' ? null : 'SERVER' });
+      if (command && err.code !== 'NETWORK') showStatus(errorMessage(err));
       return; // the local card stays; creating still works offline
     }
     if (seq !== serverSeq || input.value.trim() !== raw) return;
-    // The account's own AI key was refused: the card still comes from the local
-    // parser, but the user should know why the AI did not help.
-    showStatus(result.fallback && ['AUTH', 'NOT_FOUND'].includes(result.fallback_reason) ? t('capture.aiKeyProblem') : '');
+    showStatus('');
+    if (result.engine === 'AI') showEngine('ai', { model: result.model });
+    else if (result.fallback) showEngine('fallback', { reason: result.fallback_reason });
+    else showEngine(caps?.live_llm_provider ? 'local' : 'noai');
     const actions = result.actions || [];
+    if (actions.some(isCommand)) {
+      commands = { source: 'server', batchId: result.batch_id, actions };
+      renderCommands(dialog.querySelector('[data-commands]'), commands, { onDone: () => dialog.close('applied') });
+      render();
+      return;
+    }
+    const reminder = actions.length === 1 && actions[0].command === 'CREATE_REMINDER' ? actions[0] : null;
+    if (reminder) {
+      assistant = { batch_id: result.batch_id, action_id: reminder.id };
+      unresolved = [];
+      adoptReminder(reminder.payload);
+      render();
+      return;
+    }
     const create = actions.length === 1 && actions[0].command === 'CREATE_TASK' ? actions[0] : null;
     const event = actions.length === 1 && actions[0].command === 'CREATE_EVENT' && actions[0].payload?.starts_at && actions[0].payload?.ends_at ? actions[0] : null;
     if (event) {
@@ -484,34 +596,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       unresolved = create.unresolved_fields || [];
       merge(create.payload, 'assistant');
       render();
-    } else if (actions.length) {
-      showCommands(result);
     }
-  }
-
-  function showCommands(result) {
-    commands = result;
-    const box = dialog.querySelector('[data-commands]');
-    const items = result.actions.map((a) => {
-      const target = (peek('/api/v1/tasks') || []).find((x) => x.id === a.payload.obligation_id);
-      const name = target?.title || a.payload.title || '';
-      return `<li>${esc(t(`command.${a.command}`, { title: name, minutes: a.payload.minutes ?? '' }))}</li>`;
-    }).join('');
-    const blocked = result.actions.some((a) => a.unresolved_fields.length);
-    box.innerHTML = `<article class="capture-card"><strong>${esc(t('capture.commandTitle'))}</strong><ul class="plain">${items}</ul>
-      ${blocked ? `<p class="help">${esc(t('capture.commandUnclear'))}</p>` : `<button type="button" class="button primary wide" data-apply-commands>${esc(t('capture.commandApply'))}</button>`}</article>`;
-    box.hidden = false;
-    render();
-    box.querySelector('[data-apply-commands]')?.addEventListener('click', async (e) => {
-      const button = e.currentTarget;
-      setBusy(button, true);
-      const applied = await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body: {
-        batch_id: result.batch_id, action_ids: result.actions.map((a) => a.id),
-        confirmed_action_ids: result.actions.filter((a) => a.requires_confirmation).map((a) => a.id),
-        idempotency_key: `assistant-${result.batch_id}`,
-      } }), { success: t('capture.commandDone') });
-      if (applied) dialog.close('applied'); else setBusy(button, false);
-    });
   }
 
   input.addEventListener('input', () => {
@@ -529,6 +614,15 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   });
 
   preview.addEventListener('chipchange', (e) => {
+    if (e.detail.name === 'card-delivery' && reminderDraft) {
+      reminderDraft = { ...reminderDraft, delivery: e.detail.value, deliveryChosen: true };
+      render();
+      return;
+    }
+    if (e.detail.name === 'card-wake' && reminderDraft) {
+      reminderDraft = { ...reminderDraft, wake_check: e.detail.value === 'true' };
+      return;
+    }
     if (e.detail.name !== 'card-lead' || !eventDraft) return;
     eventDraft.remind_before_minutes = e.detail.value === '' ? null : Number(e.detail.value);
     eventEdited.add('remind_before_minutes');
@@ -541,6 +635,9 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       kindChosen = true;
       kind = switcher.dataset.switchKind;
       if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
+      if (kind === 'REMINDER' && !reminderDraft) {
+        reminderDraft = { title: draft.title, remind_at: draft.remind_at, delivery: 'PUSH', wake_check: false, raise_volume: true };
+      }
       if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
       render();
       return;
@@ -630,6 +727,12 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   }));
 
   createButton.addEventListener('click', async (e) => {
+    if (kind === 'REMINDER' && reminderDraft) {
+      const fields = { ...reminderDraft, title: String(reminderDraft.title || '').trim() };
+      if (assistant) fields.assistant_batch_id = assistant.batch_id;
+      if (await createReminder(fields)) dialog.close('saved');
+      return;
+    }
     if (kind === 'EVENT' && eventDraft) {
       if (details.open) fromEventDetails();
       const fields = { ...eventDraft, title: String(eventDraft.title || '').trim() };

@@ -1,7 +1,8 @@
 import { api, session, restoreSession, refreshHealth, onUnauthenticated } from './js/api.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
-import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, onAppLink } from './js/native.js';
+import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, prefGet, onAppLink, alarmsSupported } from './js/native.js';
+import { refreshLocalStatus } from './js/health.js';
 import { applyTheme } from './js/theme.js';
 import { peek, load, invalidate, setCacheFirst } from './js/store.js';
 import { shell, change, mutate } from './js/actions.js';
@@ -21,8 +22,12 @@ import evidence from './js/views/evidence.js';
 import places from './js/views/places.js';
 import settings from './js/views/settings.js';
 import welcome from './js/views/welcome.js';
+import reminder from './js/views/reminder.js';
+import { installQuickActions } from './js/quick.js';
+import { openSearch } from './js/search.js';
+import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 
-const VIEWS = { today, plan, tasks, task, more, calendar, notifications, evidence, places, settings, welcome };
+const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, settings, welcome };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -70,6 +75,7 @@ function relabel() {
   document.documentElement.lang = getLocale();
   $('#back-button').setAttribute('aria-label', t('common.back'));
   $('#refresh-button').setAttribute('aria-label', t('common.refresh'));
+  $('#search-button').setAttribute('aria-label', t('search.title'));
 }
 
 function updateChrome(view) {
@@ -82,7 +88,7 @@ function updateChrome(view) {
   $('#page-subtitle').textContent = subtitle;
   $('#page-subtitle').hidden = !subtitle;
   document.title = `${view.title()} · ${t('app.name')}`;
-  const active = view.id === 'task' ? 'tasks' : view.id;
+  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id;
   document.querySelectorAll('#tabbar [data-nav]').forEach((b) => {
     const on = b.dataset.nav === active || (b.classList.contains('mobile-only') && view.tab === 'more' && b.dataset.nav === 'more');
     b.classList.toggle('active', on);
@@ -108,8 +114,48 @@ function skeleton() {
 
 // ---- render ------------------------------------------------------------------------
 
+// ---- viewport keeping ---------------------------------------------------------------
+//
+// Refreshing the current screen (pull, the refresh button, a sync result, a change
+// made here) must not throw the user back to the top. The first item visible under
+// the app bar is the anchor: after the redraw the same item is put back at the same
+// offset, so rows inserted or removed above it do not move what the user reads.
+// Only real navigation (another screen or another item) starts at the top.
+
+let renderedRoute = null;
+const routeKey = () => `${route.name}/${route.params.join('/')}?${route.query.step || ''}`;
+
+function captureViewport() {
+  const top = ($('.appbar')?.getBoundingClientRect().bottom || 0) + 1;
+  const anchors = document.querySelectorAll('#workspace [data-id], #workspace [data-anchor]');
+  for (const el of anchors) {
+    const rect = el.getBoundingClientRect();
+    if (rect.bottom > top && rect.height) {
+      return { key: el.dataset.anchor || `${el.dataset.action || ''}:${el.dataset.id}`, offset: rect.top, y: window.scrollY };
+    }
+  }
+  return { key: null, offset: 0, y: window.scrollY };
+}
+
+function restoreViewport(saved) {
+  if (!saved) return;
+  if (saved.key) {
+    const [action, ...rest] = saved.key.split(':');
+    const id = rest.join(':');
+    const match = [...document.querySelectorAll('#workspace [data-id], #workspace [data-anchor]')].find((el) =>
+      (el.dataset.anchor && el.dataset.anchor === saved.key) || (el.dataset.id === id && (el.dataset.action || '') === action));
+    if (match) {
+      window.scrollBy(0, match.getBoundingClientRect().top - saved.offset);
+      return;
+    }
+  }
+  window.scrollTo(0, Math.min(saved.y, document.documentElement.scrollHeight));
+}
+
 async function render({ fresh = false, reuse = false, keepScroll = false } = {}) {
   const seq = ++renderSeq;
+  const navigation = renderedRoute !== routeKey();
+  const viewport = navigation ? null : captureViewport();
   const view = VIEWS[route.name] || today;
   if (!view.bare && needsLogin()) { go('welcome', { replace: true }); return; }
   const workspace = $('#workspace');
@@ -138,16 +184,22 @@ async function render({ fresh = false, reuse = false, keepScroll = false } = {})
   current = { view, ...result };
   const ctx = context();
   const container = document.createElement('div');
-  container.className = 'view';
+  // A refresh of the same screen appears in place (no entrance animation, no jump).
+  container.className = navigation ? 'view' : 'view no-enter';
   container.dataset.for = view.id;
   container.innerHTML = view.render(result.data, route.params.length ? route.params : route.query, ctx);
   applyDynamicStyles(container);
+  // The saved position is taken again right before the swap: the user may have
+  // scrolled while the refresh was loading.
+  const latest = navigation ? null : captureViewport();
   workspace.replaceChildren(container);
   view.mount?.(container, result.data, ctx);
   setOffline(result.stale, result.fetchedAt);
   workspace.dataset.viewState = 'ready';
   workspace.setAttribute('aria-busy', 'false');
-  if (!reuse && !keepScroll) window.scrollTo(0, 0);
+  renderedRoute = routeKey();
+  if (navigation && !keepScroll) window.scrollTo(0, 0);
+  else restoreViewport(latest || viewport);
 }
 
 // The CSP forbids inline style attributes, so sizes travel as data-* and are applied via CSSOM.
@@ -227,6 +279,12 @@ const GLOBAL_ACTIONS = {
   'compose-voice': () => openCapture({ listen: true }),
   'open-task': (el) => go('task', { params: [el.dataset.id] }),
   'open-event': (el) => openEvent(el.dataset.id),
+  'open-reminder': async (el) => {
+    let found = (peek('/api/v1/reminders') || []).find((r) => r.id === el.dataset.id);
+    if (!found) found = (await load('/api/v1/reminders').catch(() => ({ data: [] }))).data.find((r) => r.id === el.dataset.id);
+    if (found) reminderSheet(found);
+  },
+  search: () => openSearch(),
   // "Optional event collides with another one" → the user decides.
   'event-attend': (el) => change('event.update', el.dataset.id, { attendance_policy: 'REQUIRED' }, { success: t('status.attending') }),
   'allow-skip-optional': () => mutate(async () => {
@@ -297,13 +355,14 @@ function handleBack() {
 
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
-const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar'];
+const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
+  '/api/v1/reminders', '/api/v1/notifications/health'];
 let lastPrefetch = 0;
 function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
   lastPrefetch = Date.now();
   // Not fresh: what is already in memory (just loaded, not invalidated) is kept.
-  PREFETCH.forEach((path) => load(path).catch(() => {}));
+  Promise.all(PREFETCH.map((path) => load(path).catch(() => {}))).then(() => syncDeviceAlarms());
 }
 
 // Registers this device's FCM token with the signed-in account (no-op in browsers
@@ -312,10 +371,31 @@ function registerPush() {
   if (!isNative() || !session.token) return;
   setupPush(async (token) => {
     if (!session.token) return;
-    // This build renders reminder notifications itself, with working action buttons.
-    const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Android', capabilities: ['reminder-actions-v1'] } });
+    // This build renders reminder notifications itself, with working action buttons,
+    // and (with the SeosNative plugin) rings real alarms. It also says what it can
+    // show right now, so the server never promises what this phone cannot deliver.
+    const capabilities = ['reminder-actions-v1', ...(alarmsSupported() ? ['wake-alarm-v1'] : [])];
+    const device = await api('/api/v1/mobile/devices', { method: 'POST', body: { token, label: 'Android', capabilities, status: await deviceReport() } });
     await prefSet('seos.pushDevice', JSON.stringify({ id: device.id, version: device.version }));
   }, (deepLink) => openRoute(deepLink || '/today')).catch((err) => console.warn('push setup failed', err));
+}
+
+async function deviceReport() {
+  const status = await refreshLocalStatus();
+  if (!status?.native) return undefined;
+  const out = {};
+  for (const key of ['notifications', 'exact_alarms', 'full_screen', 'battery_optimized']) if (typeof status[key] === 'boolean') out[key] = status[key];
+  return out;
+}
+
+// Permissions change outside the app (system settings): report on every return.
+async function reportDeviceStatus() {
+  if (!isNative() || !session.token) return;
+  try {
+    const device = JSON.parse((await prefGet('seos.pushDevice')) || 'null');
+    const status = await deviceReport();
+    if (device && status) await api(`/api/v1/mobile/devices/${encodeURIComponent(device.id)}/status`, { method: 'POST', body: { status } });
+  } catch { /* offline: next resume */ }
 }
 
 // Reminder texts, quiet hours and "в 18:00" in typed tasks all use the account's
@@ -347,11 +427,14 @@ async function boot() {
   await restoreSession();
   $('#back-button').addEventListener('click', handleBack);
   $('#refresh-button').addEventListener('click', () => render({ fresh: true }));
+  $('#search-button').addEventListener('click', () => openSearch());
+  installQuickActions();
   window.addEventListener('hashchange', () => { route = parseHash(); closeAllSheets(); render(); });
   onBackButton(handleBack);
   onUnauthenticated(() => { toast(t('err.unauth'), { error: true }); go('welcome'); });
   onResume(() => {
     flushSync().catch(() => {});
+    reportDeviceStatus();
     if (!current || current.view.bare || document.querySelector('dialog[open]')) return;
     // Notification buttons change tasks while the app is in the background.
     if (Date.now() - (current.fetchedAt || 0) > 5000) { invalidate(); render({ fresh: true, keepScroll: true }); }
@@ -375,11 +458,12 @@ async function boot() {
     invalidate();
     lastPrefetch = 0;
     if (current && !current.view.bare) render({ fresh: true, keepScroll: true }).then(() => setTimeout(prefetch, 500));
+    else setTimeout(prefetch, 500);
   });
   window.addEventListener('seos-push-received', (event) => {
     invalidate();
     toast(event.detail?.title || t('nav.notifications'));
-    if (current && !current.view.bare) render({ fresh: true });
+    if (current && !current.view.bare) render({ fresh: true, keepScroll: true });
   });
 
   if (/^#\/?assistant/.test(location.hash)) history.replaceState(null, '', '#/today');

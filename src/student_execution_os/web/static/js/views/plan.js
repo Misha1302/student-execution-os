@@ -35,6 +35,11 @@ function outlookView(data) {
 
 export function agendaItems(plan) {
   const items = [];
+  for (const r of plan.reminders || []) {
+    if (r.status !== 'SCHEDULED' && r.status !== 'FIRED') continue;
+    items.push({ kind: 'REMINDER', cls: 'reminder', ownership: 'CANONICAL', starts_at: r.remind_at, ends_at: r.remind_at,
+      label: r.title, detail: t(r.delivery === 'PUSH' ? 'reminder.kind' : 'reminder.kindAlarm'), ref: r });
+  }
   for (const e of plan.canonical_events || []) {
     items.push({ kind: 'EVENT', cls: 'canonical', ownership: 'CANONICAL', starts_at: e.starts_at, ends_at: e.ends_at, label: e.title, detail: code('attendance', e.attendance_policy), ref: e });
   }
@@ -56,6 +61,7 @@ export function agendaItems(plan) {
 
 function openItem(item) {
   if (item.kind === 'EVENT') { import('../events.js').then(({ eventSheet }) => eventSheet(item.ref)); return; }
+  if (item.kind === 'REMINDER') { import('../reminders.js').then(({ reminderSheet }) => reminderSheet(item.ref)); return; }
   const b = item.ref;
   const derived = item.ownership === 'DERIVED';
   openSheet({
@@ -102,15 +108,16 @@ export default {
   async load({ fresh, query }) {
     const range = query?.step;
     if (range === 'week' || range === 'month') return load(`/api/v1/outlook?range=${range}`, { fresh });
+    const reminders = (await load('/api/v1/reminders', { fresh }).catch(() => ({ data: [] }))).data || [];
     try {
       const result = await load('/api/v1/plan/agenda?days=7', { fresh });
       setServerNow(result.data.now);
-      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: result.data.days } };
+      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: result.data.days, reminders } };
     } catch (err) {
       // Offline with only Today cached (or an older server): show what Today knows.
       const result = await load('/api/v1/today', { fresh });
       setServerNow(result.data.now);
-      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: 2 } };
+      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: 2, reminders } };
     }
   },
   render(plan) {
@@ -131,12 +138,12 @@ export default {
         nowPlaced = true;
         marker = `<div class="now-line"><span>${esc(t('plan.now', { time: fmtTime(cur) }))}</span></div>`;
       }
-      const minutes = Math.max(5, (new Date(item.ends_at) - new Date(item.starts_at)) / 60000);
+      const minutes = Math.max(item.kind === 'REMINDER' ? 0 : 5, (new Date(item.ends_at) - new Date(item.starts_at)) / 60000);
       const clipped = Math.max(5, (Math.min(new Date(item.ends_at), dayEnd) - Math.max(new Date(item.starts_at), dayStart)) / 60000);
       return `${marker}<button class="agenda-item ${item.cls}" data-action="plan-item" data-index="${index}" data-span="${Math.min(6, 1 + clipped / 60).toFixed(2)}">
         <span class="agenda-time"><strong>${esc(fmtTime(item.starts_at))}</strong><small>${esc(fmtTime(item.ends_at))}</small></span>
         <span class="agenda-bar" aria-hidden="true"></span>
-        <span class="agenda-copy"><strong>${esc(item.label)}</strong><small>${esc(item.detail)} · ${esc(fmtDuration(minutes))}</small></span>
+        <span class="agenda-copy"><strong>${esc(item.label)}</strong><small>${esc(item.detail)}${minutes ? ` · ${esc(fmtDuration(minutes))}` : ''}</small></span>
       </button>`;
     }).join('');
     this._visible = visible;
@@ -156,6 +163,7 @@ export default {
           <span><i class="dot constraint"></i>${esc(t('legend.constraint'))}</span>
           <span><i class="dot sleep"></i>${esc(t('legend.sleep'))}</span>
           <span><i class="dot travel"></i>${esc(t('legend.travel'))}</span>
+          <span><i class="dot reminder"></i>${esc(t('legend.reminder'))}</span>
         </div>
         <div class="agenda mobile-agenda" data-swipe-days>${rows || empty(t('plan.emptyDay'), t('plan.emptyDayHint'), 'plan')}${!nowPlaced ? `<div class="now-line"><span>${esc(t('plan.now', { time: fmtTime(cur) }))}</span></div>` : ''}</div>
         <p class="help pad">${esc(t('plan.swipeHint'))}</p>

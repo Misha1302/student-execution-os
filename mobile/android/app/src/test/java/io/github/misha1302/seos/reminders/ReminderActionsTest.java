@@ -60,4 +60,15 @@ public class ReminderActionsTest {
         JSONObject op = new JSONArray(ReminderActions.operations("DONE", "r\"1", Collections.singletonList("t\\1"), PRESSED)).getJSONObject(0);
         assertEquals("t\\1", op.getString("entity_id"));
     }
+
+    @Test
+    public void standaloneReminderButtonsActOnTheReminder() throws Exception {
+        JSONObject done = new JSONArray(ReminderActions.reminderOperations("DONE", "rem-9", "reminder-bread", PRESSED)).getJSONObject(0);
+        assertEquals("reminder.done", done.getString("type"));
+        assertEquals("reminder-bread", done.getString("entity_id"));
+        assertEquals("push-rem-9-DONE", done.getString("op_id"));
+        JSONObject later = new JSONArray(ReminderActions.reminderOperations("SNOOZE_10", "rem-9", "reminder-bread", PRESSED)).getJSONObject(0);
+        assertEquals("reminder.snooze", later.getString("type"));
+        assertEquals("2026-09-24T16:10:00Z", later.getJSONObject("payload").getString("until"));
+    }
 }

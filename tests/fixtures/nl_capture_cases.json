@@ -52,18 +52,13 @@
   {
    "text": "Напомни завтра вечером отправить отчёт",
    "expect": {
+    "kind": "REMINDER",
     "title": "Отправить отчёт",
-    "estimated_total_effort_minutes": null,
-    "importance": "NORMAL",
-    "category": "WORK",
-    "cutoff": "ABSENT",
-    "target_at": null,
-    "actionable_from": null,
     "remind_at": "2026-09-24 19:00",
-    "splittable": false,
-    "unresolved": [
-     "estimated_total_effort_minutes"
-    ]
+    "delivery": "PUSH",
+    "wake_check": false,
+    "raise_volume": false,
+    "unresolved": []
    }
   },
   {
@@ -84,18 +79,13 @@
   {
    "text": "Remind me tomorrow morning to call the dentist",
    "expect": {
+    "kind": "REMINDER",
     "title": "Call the dentist",
-    "estimated_total_effort_minutes": null,
-    "importance": "NORMAL",
-    "category": "PERSONAL_APPOINTMENT",
-    "cutoff": "ABSENT",
-    "target_at": null,
-    "actionable_from": null,
     "remind_at": "2026-09-24 09:00",
-    "splittable": false,
-    "unresolved": [
-     "estimated_total_effort_minutes"
-    ]
+    "delivery": "PUSH",
+    "wake_check": false,
+    "raise_volume": false,
+    "unresolved": []
    }
   },
   {
@@ -328,18 +318,13 @@
   {
    "text": "Remind me at 8pm to take out the trash",
    "expect": {
+    "kind": "REMINDER",
     "title": "Take out the trash",
-    "estimated_total_effort_minutes": null,
-    "importance": "NORMAL",
-    "category": "GENERAL",
-    "cutoff": "ABSENT",
-    "target_at": null,
-    "actionable_from": null,
     "remind_at": "2026-09-23 20:00",
-    "splittable": false,
-    "unresolved": [
-     "estimated_total_effort_minutes"
-    ]
+    "delivery": "PUSH",
+    "wake_check": false,
+    "raise_volume": false,
+    "unresolved": []
    }
   },
   {
@@ -790,6 +775,78 @@
     "starts_at": "2026-09-23 17:00",
     "ends_at": "2026-09-23 18:00",
     "duration_minutes": 60,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "напомни купить хлеб завтра в 18",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Купить хлеб",
+    "remind_at": "2026-09-24 18:00",
+    "delivery": "PUSH",
+    "wake_check": false,
+    "raise_volume": false,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "разбуди меня в 7",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Подъём",
+    "remind_at": "2026-09-24 07:00",
+    "delivery": "ALARM",
+    "wake_check": true,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "поставь будильник на 7:30",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Подъём",
+    "remind_at": "2026-09-24 07:30",
+    "delivery": "ALARM",
+    "wake_check": true,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "напомни позвонить маме в 20:00 и поставь будильник",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Позвонить маме",
+    "remind_at": "2026-09-23 20:00",
+    "delivery": "PUSH_AND_ALARM",
+    "wake_check": false,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "wake me up at 6:45",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Wake up",
+    "remind_at": "2026-09-24 06:45",
+    "delivery": "ALARM",
+    "wake_check": true,
+    "raise_volume": true,
+    "unresolved": []
+   }
+  },
+  {
+   "text": "напомни через 10 минут выключить плиту",
+   "expect": {
+    "kind": "REMINDER",
+    "title": "Выключить плиту",
+    "remind_at": "2026-09-23 10:10",
+    "delivery": "PUSH",
+    "wake_check": false,
+    "raise_volume": false,
     "unresolved": []
    }
   }

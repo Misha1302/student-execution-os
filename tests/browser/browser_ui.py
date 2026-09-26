@@ -615,7 +615,9 @@ class BrowserUiTest(unittest.TestCase):
         self.assertFalse(sent["splittable"])
         page.close()
 
+        # The agenda is tasks, events and reminders together: empty means none of them.
         self.responses["/api/v1/tasks"] = []
+        self.responses["/api/v1/events"] = []
         page = self._open(hash_="#/tasks")
         self._ready(page, "tasks")
         self.assertIn("No obligations yet", self._text(page))
@@ -745,6 +747,133 @@ class BrowserUiTest(unittest.TestCase):
         self.assertEqual(page.evaluate("window.Capacitor.Plugins.Preferences.get({ key: 'seos.server' })"), {"value": ORIGIN})
         self.assertIn(("/api/v1/auth/register", {"login": "newbie", "password": "correct horse", "device_label": "android"}), self.posts)
         self.assertEqual(self.page_errors, [])
+        page.close()
+
+
+    # ---- v16 interactions --------------------------------------------------------------
+
+    def _queued(self, page):
+        return page.evaluate("Object.entries(localStorage).filter(([k]) => k.startsWith('seos.ops.'))"
+                             ".flatMap(([, v]) => JSON.parse(v)).map((x) => x.operation)")
+
+    def _many_tasks(self, n=30):
+        base = self.responses["/api/v1/tasks"][0]
+        tasks = []
+        for i in range(n):
+            task = copy.deepcopy(base)
+            task.update(id=f"bulk-task-{i:03d}", title=f"Bulk task {i:03d}", status="ACTIVE",
+                        actual_cutoff={"state": "KNOWN", "at": f"2026-10-{1 + i % 27:02d}T12:00:00+00:00"})
+            tasks.append(task)
+        self.responses["/api/v1/tasks"] = tasks + self.responses["/api/v1/tasks"]
+
+    def test_refresh_keeps_the_viewport_and_navigation_starts_at_the_top(self):
+        self._many_tasks()
+        page = self._open(width=390, height=700, hash_="#/tasks")
+        self._ready(page, "tasks")
+        anchor = page.locator('.task-card[data-id="bulk-task-015"]')
+        anchor.scroll_into_view_if_needed()
+        page.evaluate("window.scrollBy(0, 120)")
+        before = anchor.bounding_box()["y"]
+        page.locator("#refresh-button").click()
+        page.wait_for_timeout(300)
+        self._ready(page, "tasks")
+        self.assertGreater(page.evaluate("window.scrollY"), 300)
+        self.assertLess(abs(page.locator('.task-card[data-id="bulk-task-015"]').bounding_box()["y"] - before), 4)
+        self._go(page, "today")
+        self.assertEqual(page.evaluate("window.scrollY"), 0)
+        page.close()
+
+    def test_right_click_quick_actions_and_swipe_to_archive_with_undo(self):
+        done = copy.deepcopy(self.responses["/api/v1/tasks"][0])
+        done.update(id="done-task-0001", title="Finished essay", status="COMPLETED", completed_at="2026-09-22T10:00:00+00:00")
+        self.responses["/api/v1/tasks"] = [done] + self.responses["/api/v1/tasks"]
+        open_task = next(t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE")
+        page = self._open(width=1200, height=900, hash_="#/tasks")
+        self._ready(page, "tasks")
+        page.locator(f'.task-card[data-id="{open_task["id"]}"]').click(button="right")
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.wait_for()
+        labels = sheet.locator(".menu-row strong").all_inner_texts()
+        self.assertIn("Done", labels)
+        self.assertIn("Reschedule", labels)
+        self.assertNotIn("Restore", " ".join(labels))
+        sheet.locator('[data-choice="complete"]').click()
+        self._wait_sync(page)
+        self.assertIn(("task.complete", open_task["id"]), [(o["type"], o["entity_id"]) for o in self._queued(page)])
+        page.close()
+
+        page = self._open(width=390, height=844, hash_="#/tasks")
+        self._ready(page, "tasks")
+        page.locator('[data-chip-group="task-filter"] [data-value="done"]').click()
+        row = page.locator('[data-swipe="archive"][data-id="done-task-0001"]')
+        row.wait_for()
+        page.evaluate("""(id) => {
+          const el = document.querySelector(`[data-swipe="archive"][data-id="${id}"]`);
+          const r = el.getBoundingClientRect();
+          const at = (x) => new Touch({ identifier: 1, target: el, clientX: x, clientY: r.top + 10 });
+          const fire = (type, x) => el.dispatchEvent(new TouchEvent(type, { bubbles: true, touches: type === 'touchend' ? [] : [at(x)], changedTouches: [at(x)] }));
+          fire('touchstart', r.right - 10); fire('touchmove', r.right - 60); fire('touchmove', r.left + 20); fire('touchend', r.left + 20);
+        }""", "done-task-0001")
+        toast = page.locator(".toast", has_text="archived")
+        toast.wait_for()
+        ops = [(o["type"], o["entity_id"]) for o in self._queued(page)]
+        self.assertIn(("task.archive", "done-task-0001"), ops)
+        toast.locator(".toast-action").click()
+        page.wait_for_timeout(200)
+        self.assertIn(("task.unarchive", "done-task-0001"), [(o["type"], o["entity_id"]) for o in self._queued(page)])
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_capture_turns_words_into_commands_and_reminders(self):
+        task = next(t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE")
+        page = self._open(locale="en")
+        self._ready(page, "today")
+        self._go(page, "tasks")  # the device knows the user's tasks
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill(f"done {task['title']}")
+        card = sheet.locator(".command-card")
+        card.wait_for()
+        self.assertIn(task["title"], card.inner_text())
+        self.assertIn("Read on this device", sheet.locator("[data-engine]").inner_text())
+        card.locator("[data-run]").click()
+        self._wait_sync(page)
+        self.assertIn(("task.complete", task["id"]), [(o["type"], o["entity_id"]) for o in self._queued(page)])
+
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("remind me tomorrow at 6pm to buy bread and set an alarm")
+        sheet.locator(".reminder-card").wait_for()
+        sheet.locator("[data-create]").click()
+        self._wait_sync(page)
+        created = [o for o in self._queued(page) if o["type"] == "reminder.create"]
+        self.assertEqual(len(created), 1)
+        self.assertEqual((created[0]["payload"]["title"], created[0]["payload"]["delivery"]), ("Buy bread", "PUSH_AND_ALARM"))
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_settings_show_delivery_health_ai_steps_and_sync(self):
+        self.responses["/api/v1/notifications/health"] = {
+            "reach": "IN_APP", "alarm": "NONE", "problems": ["PUSH_UNCONFIGURED", "NO_DEVICE"], "reminders_enabled": True,
+            "worker": {"state": "RUNNING", "last_beat_at": "2026-09-23T09:00:00+00:00", "push_configured": False},
+            "push_configured": False, "devices": [], "recent": {"sent": 0, "no_device": 2, "failed": 0, "last_sent_at": None},
+            "checked_at": "2026-09-23T09:00:00+00:00"}
+        self.responses["/api/v1/connectors"] = [{"id": "gcal", "provider": "GOOGLE_CALENDAR", "health": "UNAVAILABLE",
+                                                 "last_successful_sync_at": None, "last_attempt_at": "2026-09-23T08:00:00+00:00",
+                                                 "last_attempt_status": "FAILED", "error": "AUTH_REQUIRED", "can_sync": True, "version": 1}]
+        page = self._open(locale="en", hash_="#/settings")
+        self._ready(page, "settings")
+        text = self._text(page)
+        self.assertIn("Reminders will only be visible inside the app", text)
+        self.assertIn("push is not configured on the server", text)
+        self.assertIn("Changes from this device", text)
+        self.assertIn("Google Calendar", text)
+        self.assertIn("calendar access is not set up on the server", text)
+        self.overrides[("POST", "/api/v1/connectors/gcal/sync")] = (200, {
+            "ok": False, "connector": self.responses["/api/v1/connectors"][0], "synced_at": "2026-09-23T09:00:00+00:00"})
+        page.locator('[data-action="connector-sync"]').click()
+        page.locator(".toast.error").wait_for()
+        self.assertIn(("/api/v1/connectors/gcal/sync", {}), self.posts)
         page.close()
 
 

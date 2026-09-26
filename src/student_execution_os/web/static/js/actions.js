@@ -4,6 +4,8 @@ import { toast, errorMessage, confirmSheet, openSheet, chipGroup, chipValue, esc
 import { haptic } from './native.js';
 import { queueOperation } from './sync.js';
 
+export const UNDO_MS = 10000;
+
 // Hooks the shell installs so mutations can re-render without importing the router.
 export const shell = { rerender: async () => {}, go: () => {} };
 
@@ -39,13 +41,25 @@ export async function change(type, entityId, payload = {}, { success, undo } = {
     return null;
   }
   haptic('LIGHT');
-  if (success && !result.duplicate) toast(success, undo ? { action: { label: t('common.undo'), run: undo } } : {});
+  // Undo stays offered for 10 seconds; it queues the inverse operation (same queue).
+  if (success && !result.duplicate) toast(success, undo ? { action: { label: t('common.undo'), run: undo }, duration: UNDO_MS } : {});
   await shell.rerender(false);
   return result;
 }
 
-export function lifecycle(id, _version, action, { title, kind = 'task' } = {}) {
-  const undoOf = { complete: 'reopen', cancel: 'reopen', archive: 'unarchive' }[action];
+// For the user a task is in one of three places: in work, «Выполнено» or «Архив»
+// («не буду делать» and archived both live in the archive). This is the label.
+export function taskPlace(task) {
+  if (!task) return 'open';
+  if (task.status === 'ACTIVE' || task.status === 'DRAFT') return 'open';
+  if (task.status === 'COMPLETED') return 'done';
+  return 'archive';
+}
+
+export function lifecycle(id, _version, action, { title, kind = 'task', from = null } = {}) {
+  // Undo puts the item back where it was: an archived open task returns to work.
+  const undoOf = { complete: 'reopen', cancel: 'reopen', archive: from && from !== 'COMPLETED' ? 'restore' : 'unarchive',
+    restore: from === 'ARCHIVED' ? 'archive' : from === 'CANCELLED' ? 'cancel' : null }[action];
   const run = () => change(`${kind}.${action}`, id, {}, {
     success: t(`lifecycle.done.${action}`),
     undo: undoOf ? () => change(`${kind}.${undoOf}`, id, {}) : null,

@@ -151,6 +151,10 @@ export function applyTaskOp(task, item) {
     case 'task.unarchive':
       next.status = task.completed_at ? 'COMPLETED' : 'CANCELLED';
       return next;
+    case 'task.restore':
+      if (OPEN.has(task.status) || task.status === 'COMPLETED') return task;
+      if (task.status === 'ARCHIVED' && task.completed_at) { next.status = 'COMPLETED'; return next; }
+      return applyTaskOp(task, { ...item, operation: { ...op, type: 'task.reopen' } });
     default:
       return task;
   }
@@ -175,6 +179,67 @@ export function applyEventOp(event, item) {
     case 'event.cancel': next.status = 'CANCELLED'; return next;
     case 'event.reopen': next.status = 'ACTIVE'; return next;
     default: return event;
+  }
+}
+
+function newReminder(id, payload, at) {
+  const alarm = payload.delivery === 'ALARM' || payload.delivery === 'PUSH_AND_ALARM';
+  return {
+    kind: 'REMINDER',
+    id,
+    title: String(payload.title || '').trim(),
+    note: payload.note ?? null,
+    remind_at: payload.remind_at,
+    delivery: payload.delivery || 'PUSH',
+    wake_check: alarm && Boolean(payload.wake_check),
+    raise_volume: alarm && Boolean(payload.raise_volume),
+    obligation_id: payload.obligation_id ?? null,
+    status: 'SCHEDULED',
+    fired_at: null,
+    acknowledged_at: null,
+    awake_confirmed_at: null,
+    completed_at: null,
+    snooze_count: 0,
+    created_at: at,
+    updated_at: at,
+    version: 1,
+    _pending: true,
+  };
+}
+
+// One queued operation applied to one standalone reminder (see reminders/standalone.py).
+export function applyReminderOp(reminder, item) {
+  const op = item.operation;
+  const p = op.payload || {};
+  const at = item.queued_at || new Date().toISOString();
+  if (op.type === 'reminder.create') return reminder || newReminder(op.entity_id, p, at);
+  if (!reminder) return reminder;
+  if (op.type === 'reminder.delete') return null;
+  const open = reminder.status === 'SCHEDULED' || reminder.status === 'FIRED';
+  const next = { ...reminder, updated_at: at, _pending: true };
+  switch (op.type) {
+    case 'reminder.update':
+      for (const key of ['title', 'note', 'delivery', 'wake_check', 'raise_volume']) if (key in p) next[key] = p[key];
+      if (next.delivery === 'PUSH') { next.wake_check = false; next.raise_volume = false; }
+      if ('remind_at' in p) Object.assign(next, { remind_at: p.remind_at, status: 'SCHEDULED', fired_at: null, acknowledged_at: null, completed_at: null });
+      return next;
+    case 'reminder.snooze': {
+      if (!open) return reminder;
+      const until = p.until || new Date(new Date(at).getTime() + Number(p.minutes || 0) * 60000).toISOString();
+      return { ...next, remind_at: until, status: 'SCHEDULED', fired_at: null, acknowledged_at: null, snooze_count: (reminder.snooze_count || 0) + 1 };
+    }
+    case 'reminder.done':
+      return open ? { ...next, status: 'DONE', completed_at: at } : reminder;
+    case 'reminder.ack':
+      if (!open) return reminder;
+      if (p.stage === 'AWAKE' || !reminder.wake_check) return { ...next, status: 'DONE', acknowledged_at: reminder.acknowledged_at || at, completed_at: at };
+      return { ...next, status: 'FIRED', acknowledged_at: reminder.acknowledged_at || at };
+    case 'reminder.cancel':
+      return { ...next, status: 'CANCELLED' };
+    case 'reminder.reopen':
+      return open ? reminder : { ...next, status: 'SCHEDULED', completed_at: null };
+    default:
+      return reminder;
   }
 }
 
@@ -211,6 +276,13 @@ function projectList(list, ops, prefix, apply) {
 
 export const projectTasks = (list, ops) => projectList(list, ops, 'task.', applyTaskOp);
 export const projectEvents = (list, ops) => projectList(list, ops, 'event.', applyEventOp);
+// reminder.snooze also snoozes a task's reminder: only ids already known as standalone
+// reminders (or created as one) are projected here.
+export function projectReminders(list, ops) {
+  const known = new Set((list || []).map((x) => x.id));
+  for (const x of ops) if (x.operation?.type === 'reminder.create') known.add(x.operation.entity_id);
+  return projectList(list, ops.filter((x) => known.has(x.operation?.entity_id)), 'reminder.', applyReminderOp);
+}
 
 // A task the plan should not currently schedule.
 function unschedulable(task, now) {
@@ -269,9 +341,11 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/events') return projectEvents(base, eventOps(ops));
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
+  if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/notifications' && Array.isArray(base)) {
     // A reminder answered from the app (or its notification) shows as answered.
-    const acted = { 'task.start': 'START', 'task.complete': 'DONE', 'reminder.snooze': 'SNOOZE', 'task.defer': 'RESCHEDULE' };
+    const acted = { 'task.start': 'START', 'task.complete': 'DONE', 'reminder.snooze': 'SNOOZE', 'task.defer': 'RESCHEDULE',
+      'reminder.done': 'DONE', 'reminder.ack': 'DONE' };
     return base.map((n) => {
       const hit = ops.find((x) => x.operation?.payload?.reminder_message_id === n.id);
       return hit && !n.acted_at ? { ...n, acted_at: hit.queued_at, acted_action: acted[hit.operation.type] || 'SEEN' } : n;

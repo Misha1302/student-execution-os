@@ -3,6 +3,7 @@ import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, 
 import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead } from '../ui.js';
 import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../capture.js';
+import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
 
 export function parseWhyNow(value) {
   const out = {};
@@ -171,14 +172,32 @@ function fallbackNowCard(item) {
   </article>`;
 }
 
+// Standalone reminders due today (and ones that rang and still wait for an answer).
+function todayReminders(reminders = [], cur = now()) {
+  const list = reminders.filter((r) => isOpen(r) && (sameDay(new Date(r.remind_at), cur) || r.status === 'FIRED'))
+    .sort((a, b) => new Date(a.remind_at) - new Date(b.remind_at));
+  if (!list.length) return '';
+  return `<section class="section">
+    ${sectionHead(t('today.reminders'), `<button class="link" data-nav="tasks">${esc(t('nav.tasks'))}</button>`)}
+    <div class="list">${list.map((r) => `<button class="row" data-action="open-reminder" data-kind="REMINDER" data-id="${esc(r.id)}">
+      <span class="row-time"><strong>${esc(fmtTime(r.remind_at))}</strong><small>${icon(hasAlarm(r.delivery) ? 'clock' : 'bell')}</small></span>
+      <span class="row-main"><strong>${esc(r.title)}</strong>${r.note ? `<small>${esc(r.note)}</small>` : ''}</span>
+      ${reminderStatusChip(r)}
+    </button>`).join('')}</div>
+  </section>`;
+}
+
 export default {
   id: 'today',
   tab: 'today',
   title: () => t('nav.today'),
   async load({ fresh }) {
-    const result = await load('/api/v1/today', { fresh });
+    const [result, reminders] = await Promise.all([
+      load('/api/v1/today', { fresh }),
+      load('/api/v1/reminders', { fresh }).catch(() => ({ data: [] })),
+    ]);
     setServerNow(result.data.now);
-    return result;
+    return { ...result, data: { ...result.data, reminders: reminders.data || [] } };
   },
   render(data) {
     const plan = data.plan;
@@ -251,6 +270,8 @@ export default {
           ${riskChip(x.risk)}
         </button>`).join('')}</div>
       </section>` : ''}
+
+      ${todayReminders(data.reminders, cur)}
 
       <section class="section">
         ${sectionHead(t('today.events'), `<button class="link" data-nav="calendar">${esc(t('nav.calendar'))}</button>`)}

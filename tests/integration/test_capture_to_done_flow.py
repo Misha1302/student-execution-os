@@ -235,7 +235,7 @@ class CaptureToDoneFlowTests(unittest.TestCase):
         self.ok(self.client.post("/api/v1/mobile/devices", json={
             "token": "device-new", "label": "phone", "capabilities": ["reminder-actions-v1", "unknown-cap"]}), 201)
         self.ok(self.client.post("/api/v1/mobile/devices", json={"token": "device-old", "label": "old"}), 201)
-        captured = self.capture("Напомни сегодня в 23:15 отправить отчёт", estimated_total_effort_minutes=None)
+        captured = self.capture("Напомни сегодня в 23:15 отправить отчёт, 15 минут", estimated_total_effort_minutes=None)
         task = captured["task"]
         self.assertEqual(task["remind_at"], "2026-09-23T20:15:00+00:00")
         self.assertEqual(task["actual_cutoff"]["state"], "ABSENT")
@@ -270,7 +270,7 @@ class CaptureToDoneFlowTests(unittest.TestCase):
         self.assertEqual((stats["sent"], stats["retry"]), (0, 1))
 
     def test_rescheduling_after_a_fired_reminder_does_not_fire_it_again(self):
-        captured = self.capture("Напомни сегодня в 12:00 позвонить в деканат", estimated_total_effort_minutes=15)
+        captured = self.capture("Напомни сегодня в 12:00 позвонить в деканат, 15 минут", estimated_total_effort_minutes=15)
         task_id = captured["task"]["id"]
         noon = datetime(2026, 9, 23, 9, 0, tzinfo=timezone.utc)
         self.assertEqual(len(self.tick(noon)), 1)
