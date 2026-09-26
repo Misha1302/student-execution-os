@@ -131,5 +131,28 @@ class ExecutionFeedbackTest(unittest.TestCase):
             self.assertGreaterEqual(active["actual_work_seconds"], 7 * 60)
 
 
+    def test_offline_batch_keeps_user_reported_execution_times(self):
+        replayed_at = NOW + timedelta(hours=4)
+        with SQLiteCanonicalRepository(self.db, clock=FrozenClock(replayed_at)) as repo:
+            repo.initialize()
+            service = SyncService(repo, account_id="a", principal_id="u", now=replayed_at)
+            results = service.apply_batch([
+                {"op_id": "op-offline-start", "type": "execution.start", "entity_id": "execution-offline",
+                 "payload": {"task_id": "task-execution-1", "occurred_at": NOW.isoformat()}},
+                {"op_id": "op-offline-pause", "type": "execution.pause", "entity_id": "execution-offline",
+                 "payload": {"occurred_at": (NOW + timedelta(minutes=30)).isoformat()}},
+                {"op_id": "op-offline-resume", "type": "execution.resume", "entity_id": "execution-offline",
+                 "payload": {"occurred_at": (NOW + timedelta(minutes=60)).isoformat()}},
+                {"op_id": "op-offline-finish", "type": "execution.finish", "entity_id": "execution-offline",
+                 "payload": {"task_id": "task-execution-1", "outcome": "KEEP_REMAINING",
+                             "occurred_at": (NOW + timedelta(minutes=105)).isoformat()}},
+            ])
+            self.assertTrue(all(item["status"] == "APPLIED" for item in results))
+            session = SQLiteExecutionStore(repo).payload("a", "execution-offline", replayed_at)
+            self.assertEqual(session["actual_work_seconds"], 75 * 60)
+            self.assertEqual(session["started_at"], NOW.isoformat())
+            self.assertEqual(session["finished_at"], (NOW + timedelta(minutes=105)).isoformat())
+
+
 if __name__ == "__main__":
     unittest.main()
