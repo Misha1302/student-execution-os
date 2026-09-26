@@ -554,14 +554,17 @@ class Commands:
         return self._task_out(task_id)
 
     def task_cancel(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("task.cancel only accepts occurred_at")
         current = self._task(task_id).obligation
         if current.completed_at is not None:
             return self._task_out(task_id, CONFLICT, "TASK_COMPLETED", "task was completed; reopen it first")
         if current.lifecycle_status not in OPEN:  # cancelled, or archived after cancelling
             return self._task_out(task_id, NOOP, "ALREADY_CANCELLED")
+        occurred_at = self._execution_moment(payload)
         active_execution = self._execution().active(self.account_id, self.now)
         if active_execution is not None and active_execution["task_id"] == task_id:
-            self._execution().cancel(self.account_id, active_execution["id"], self.now, self.actor)
+            self._execution().cancel(self.account_id, active_execution["id"], occurred_at, self.actor)
         self._transition(task_id, "cancel")
         self._touch(task_id)
         return self._task_out(task_id)
@@ -592,14 +595,17 @@ class Commands:
         return self._task_out(task_id)
 
     def task_archive(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("task.archive only accepts occurred_at")
         status = self._task(task_id).obligation.lifecycle_status
         if status is LifecycleStatus.ARCHIVED:
             return self._task_out(task_id, NOOP, "ALREADY_ARCHIVED")
         if status in OPEN:
             # Put away something still open: stop actual execution before closing it.
+            occurred_at = self._execution_moment(payload)
             active_execution = self._execution().active(self.account_id, self.now)
             if active_execution is not None and active_execution["task_id"] == task_id:
-                self._execution().cancel(self.account_id, active_execution["id"], self.now, self.actor)
+                self._execution().cancel(self.account_id, active_execution["id"], occurred_at, self.actor)
             self._transition(task_id, "cancel")
         self._transition(task_id, "archive")
         return self._task_out(task_id)
