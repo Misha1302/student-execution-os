@@ -316,3 +316,23 @@ export async function testAlarm() {
   await native.testAlarm();
   return true;
 }
+
+export async function showExecutionNotification(session, title) {
+  const native = seos();
+  if (!native?.showExecution || !session) return false;
+  await native.showExecution({
+    id: session.id,
+    title: title || session.task_title || 'Execution OS',
+    state: session.state,
+    started_at_ms: new Date(session.current_segment_started_at || session.started_at).getTime(),
+    actual_work_seconds: Math.max(0, Number(session.actual_work_seconds || 0)),
+  });
+  return true;
+}
+
+export async function clearExecutionNotification() {
+  const native = seos();
+  if (!native?.clearExecution) return false;
+  await native.clearExecution();
+  return true;
+}
