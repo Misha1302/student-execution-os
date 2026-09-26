@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v15**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v18**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -98,6 +98,21 @@ Schema v15 makes the app **offline-first** and adds fixed-time events (ADR 0018)
   days with swipe; Today never hides open tasks; reasons are plain sentences.
 
 The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
+
+Schema v18 closes the first actual-execution loop (ADR 0021):
+
+- starting a Task creates a canonical Execution Session rather than treating a single
+  `started_at` timestamp as the work history;
+- pause/resume creates active segments, so pause time is never counted as work;
+- actual work, planned work and remaining effort stay separate — finishing a session
+  asks the user whether the Task is done, how much remains, or whether the estimate
+  should stay unchanged;
+- execution lifecycle commands use the same durable offline queue / exactly-once sync
+  boundary as Tasks and Events, including explicit cross-device conflicts;
+- Today gives an active session priority, Task detail shows execution history, and
+  active execution is cached for offline restart;
+- execution history participates in account export/deletion and is covered by Python
+  and device-side projection regressions.
 
 ## Run the current implementation locally
 
@@ -186,6 +201,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Daily product surfaces and schema v11 ADR](docs/adr/0016-daily-product-surfaces.md)
 - [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
 - [Offline-first client, events and lifecycle (v15) ADR](docs/adr/0018-offline-first-events-and-lifecycle.md)
+- [Actual execution sessions and feedback loop (v18) ADR](docs/adr/0021-execution-feedback-loop.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
