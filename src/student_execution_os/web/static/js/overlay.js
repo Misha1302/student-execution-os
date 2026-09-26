@@ -160,6 +160,75 @@ export function applyTaskOp(task, item) {
   }
 }
 
+function executionTaskId(item) {
+  const op = item.operation || {};
+  return op.type === 'execution.start' || op.type === 'execution.finish' ? op.payload?.task_id : null;
+}
+
+function applyExecutionTaskOp(task, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  if (!task || executionTaskId(item) !== task.id) return task;
+  const at = item.queued_at || new Date().toISOString();
+  const next = { ...task, updated_at: at, _pending: true };
+  if (op.type === 'execution.start') {
+    next.started_at = task.started_at || at;
+    next.last_progress_at = at;
+    return next;
+  }
+  if (op.type === 'execution.finish') {
+    next.last_progress_at = at;
+    if (p.outcome === 'COMPLETE') {
+      next.status = 'COMPLETED';
+      next.completed_at = task.completed_at || at;
+    } else if (p.outcome === 'UPDATE_REMAINING') {
+      next.remaining_effort_minutes = Math.max(0, Number(p.remaining_effort_minutes || 0));
+      if (next.remaining_effort_minutes > Number(next.estimated_total_effort_minutes || 0)) {
+        next.estimated_total_effort_minutes = next.remaining_effort_minutes;
+      }
+      next.remaining_effort_low_minutes = null;
+      next.remaining_effort_high_minutes = null;
+    }
+    return next;
+  }
+  return task;
+}
+
+function segmentElapsed(session, at) {
+  if (!session?.current_segment_started_at) return Number(session?.actual_work_seconds || 0);
+  const extra = Math.max(0, Math.floor((new Date(at) - new Date(session.current_segment_started_at)) / 1000));
+  return Number(session.actual_work_seconds || 0) + extra;
+}
+
+export function projectExecution(session, ops) {
+  let current = session ? { ...session } : null;
+  for (const item of ops) {
+    const op = item.operation || {};
+    const at = item.queued_at || new Date().toISOString();
+    if (!op.type?.startsWith('execution.')) continue;
+    if (op.type === 'execution.start') {
+      if (current && current.id !== op.entity_id) continue;
+      if (!current) current = {
+        id: op.entity_id, task_id: op.payload?.task_id, task_title: null, state: 'ACTIVE',
+        started_at: at, finished_at: null, planning_snapshot_id: op.payload?.planning_snapshot_id || null,
+        source_plan_block_id: op.payload?.source_plan_block_id || null, actual_work_seconds: 0,
+        actual_work_minutes: 0, current_segment_started_at: at, created_at: at, updated_at: at, version: 1, _pending: true,
+      };
+      continue;
+    }
+    if (!current || current.id !== op.entity_id) continue;
+    if (op.type === 'execution.pause' && current.state === 'ACTIVE') {
+      const seconds = segmentElapsed(current, at);
+      current = { ...current, state: 'PAUSED', actual_work_seconds: seconds, actual_work_minutes: Math.floor(seconds / 60), current_segment_started_at: null, updated_at: at, _pending: true };
+    } else if (op.type === 'execution.resume' && current.state === 'PAUSED') {
+      current = { ...current, state: 'ACTIVE', current_segment_started_at: at, updated_at: at, _pending: true };
+    } else if (op.type === 'execution.finish' || op.type === 'execution.cancel') {
+      current = null;
+    }
+  }
+  return current;
+}
+
 export function applyEventOp(event, item) {
   const op = item.operation;
   const p = op.payload || {};
@@ -274,7 +343,13 @@ function projectList(list, ops, prefix, apply) {
   return order.filter((id, i) => byId.has(id) && order.indexOf(id) === i).map((id) => byId.get(id));
 }
 
-export const projectTasks = (list, ops) => projectList(list, ops, 'task.', applyTaskOp);
+export function projectTasks(list, ops) {
+  let projected = projectList(list, ops, 'task.', applyTaskOp);
+  const execution = (ops || []).filter((x) => executionTaskId(x));
+  if (!execution.length) return projected;
+  projected = projected || [];
+  return projected.map((task) => execution.reduce((value, item) => applyExecutionTaskOp(value, item), task));
+}
 export const projectEvents = (list, ops) => projectList(list, ops, 'event.', applyEventOp);
 // reminder.snooze also snoozes a task's reminder: only ids already known as standalone
 // reminders (or created as one) are projected here.
@@ -304,17 +379,20 @@ function projectPlan(plan, tasksById, eventOps, now) {
 
 function taskOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('task.')); }
 function eventOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('event.')); }
+function executionOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('execution.')); }
 
 // Today-shaped models: /api/v1/today and /api/v1/plan/agenda.
 function projectDay(data, ops, now) {
   const tOps = taskOps(ops);
   const eOps = eventOps(ops);
+  const xOps = executionOps(ops);
   const out = { ...data };
+  out.active_execution = projectExecution(data.active_execution || null, xOps);
   // Today lists active tasks in `tasks` and drafts in `needs_refinement`; a queued
   // change can move a task between the two or out of both.
   const known = [...(data.tasks || []), ...(data.needs_refinement || [])];
-  const touched = new Set(tOps.map((x) => x.operation.entity_id));
-  const projected = projectTasks(known, tOps) || [];
+  const touched = new Set([...tOps.map((x) => x.operation.entity_id), ...xOps.map(executionTaskId).filter(Boolean)]);
+  const projected = projectTasks(known, ops) || [];
   const byId = new Map(projected.map((task) => [task.id, task]));
   if (tOps.length) {
     out.tasks = projected.filter((task) => task.status === 'ACTIVE');
@@ -337,11 +415,12 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (!ops.length || data == null) return data;
   const route = String(path).split('?')[0];
   const base = clone(data);
-  if (route === '/api/v1/tasks') return projectTasks(base, taskOps(ops));
+  if (route === '/api/v1/tasks') return projectTasks(base, ops);
   if (route === '/api/v1/events') return projectEvents(base, eventOps(ops));
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
+  if (route === '/api/v1/execution/active') return { ...base, session: projectExecution(base.session || null, executionOps(ops)) };
   if (route === '/api/v1/notifications' && Array.isArray(base)) {
     // A reminder answered from the app (or its notification) shows as answered.
     const acted = { 'task.start': 'START', 'task.complete': 'DONE', 'reminder.snooze': 'SNOOZE', 'task.defer': 'RESCHEDULE',
