@@ -10,6 +10,44 @@ const REMINDER_PLACE = { SCHEDULED: 'open', FIRED: 'open', DONE: 'done', CANCELL
 
 const fold = (text) => String(text || '').toLowerCase().replaceAll('ё', 'е').split(/\s+/u).filter(Boolean).join(' ');
 
+// Group items (schema v18) from /api/v1/me/shared keep their own typed fields: attendance
+// for events, criticality for events and deadlines, announcement_importance for
+// announcements (no time of their own). An annotation of an event the member imported
+// is attached to that EVENT, never a second row.
+function annotationOf(item) {
+  return { id: item.id, title: item.title, event_kind: item.event_kind, group_name: item.group_name,
+    criticality: item.criticality.effective, attendance: item.attendance.effective, status: item.status };
+}
+
+export function sharedCommitment(item, now = new Date()) {
+  const kind = item.kind;
+  const personal = item.personal || {};
+  let at = null; let atKind = null; let endsAt = null; let place; let extra; let text;
+  if (kind === 'SHARED_EVENT') {
+    at = item.starts_at; atKind = 'starts'; endsAt = item.ends_at;
+    place = item.status !== 'PUBLISHED' ? 'archive' : new Date(endsAt) <= now ? 'done' : 'open';
+    extra = { attendance: item.attendance.effective, criticality: item.criticality.effective };
+    text = [item.title, item.description, item.location];
+  } else if (kind === 'SHARED_OBLIGATION') {
+    at = item.deadline; atKind = 'due';
+    const task = personal.personal_task || {};
+    place = item.status !== 'PUBLISHED' || personal.acceptance_state === 'DECLINED' ? 'archive'
+      : task.status === 'COMPLETED' ? 'done' : 'open';
+    extra = { criticality: item.criticality.effective };
+    text = [item.title, item.description];
+  } else {
+    place = item.status !== 'PUBLISHED' || personal.dismissed ? 'archive' : 'open';
+    extra = { announcement_importance: item.importance };
+    text = [item.title, item.body];
+  }
+  return {
+    kind, id: item.id, title: item.title, status: item.status, place, at, at_kind: atKind, ends_at: endsAt,
+    importance: null, version: item.version ?? null, source_label: item.group_name ?? null, ...extra,
+    search_text: fold([...text, item.group_name].filter(Boolean).join(' ')),
+    entity: item,
+  };
+}
+
 export function commitmentOf(kind, entity, now = new Date()) {
   let at = null;
   let atKind = null;
@@ -52,12 +90,23 @@ function order(items, place) {
   return [...timed, ...untimed];
 }
 
-export function commitments({ tasks = [], events = [], reminders = [] } = {}, { now = new Date(), place = null, query = '' } = {}) {
+export function commitments({ tasks = [], events = [], reminders = [], shared = [] } = {}, { now = new Date(), place = null, query = '' } = {}) {
   let items = [
     ...tasks.map((x) => commitmentOf('TASK', x, now)),
     ...events.map((x) => commitmentOf('EVENT', x, now)),
     ...reminders.map((x) => commitmentOf('REMINDER', x, now)),
   ];
+  const localEvents = new Map(items.filter((x) => x.kind === 'EVENT').map((x) => [x.id, x]));
+  for (const entry of shared || []) {
+    if (!entry.visible_in_agenda) continue;
+    const local = localEvents.get(entry.external?.local_event_id || '');
+    if (entry.kind === 'SHARED_EVENT' && local) {
+      (local.annotations ||= []).push(annotationOf(entry));
+      local.search_text = [local.search_text, fold(`${entry.title} ${entry.group_name}`)].filter(Boolean).join(' ');
+      continue;
+    }
+    items.push(sharedCommitment(entry, now));
+  }
   const words = fold(query).split(' ').filter(Boolean);
   if (words.length) items = items.filter((x) => words.every((w) => x.search_text.includes(w)));
   if (place) items = items.filter((x) => x.place === place);

@@ -608,3 +608,18 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .text-danger { color: var(--danger); }
 .reminder-fields .chip-group + .chip-group { margin-top: 6px; }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }
+
+/* ---- collaborative groups (schema v18) ---- */
+.text-warn { color: var(--warn); }
+.menu-section { margin: 14px 4px 6px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted, inherit); opacity: .8; }
+.menu-section:first-child { margin-top: 0; }
+.kind-shared { color: var(--accent); background: var(--accent-soft); }
+.shared-row.is-cancelled .task-title { text-decoration: line-through; opacity: .7; }
+.annotation { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 8px; border-radius: 10px;
+  background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+.annotation .icon { width: 16px; height: 16px; }
+label.check { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.field-row.wrap { flex-wrap: wrap; }
+.invite-value { width: 100%; margin: 6px 0; font-family: ui-monospace, monospace; }
+.announcement-body { white-space: pre-wrap; }
+.group-head p { margin: 4px 0; }

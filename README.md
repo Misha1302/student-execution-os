@@ -97,6 +97,14 @@ Schema v15 makes the app **offline-first** and adds fixed-time events (ADR 0018)
 - Sleep hours (Settings) keep work out of the night and reminders quiet; Plan shows seven
   days with swipe; Today never hides open tasks; reasons are plain sentences.
 
+Schema v18 adds **collaborative academic groups** (ADR 0021): a group publishes what is
+happening (classes, control works, deadlines, announcements); each member decides for
+themselves what to do about it (attendance, personal criticality, a private preparation
+task, reminders). Members suggest, moderators approve; every group change is versioned,
+audited and sent as a diff («Контрольная перенесена: чт 12:10 → пт 10:30»). Group facts
+appear in the same «Дела» agenda, planner and reminder engine; personal choices work
+offline, group-wide changes need the network. Invites by link or code, revocable.
+
 The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
 
 ## Run the current implementation locally
@@ -186,6 +194,9 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Daily product surfaces and schema v11 ADR](docs/adr/0016-daily-product-surfaces.md)
 - [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
 - [Offline-first client, events and lifecycle (v15) ADR](docs/adr/0018-offline-first-events-and-lifecycle.md)
+- [Reminders, alarms, commands and one agenda (v16) ADR](docs/adr/0019-reminders-alarms-commands-and-agenda.md)
+- [Signed Android updates ADR](docs/adr/0020-signed-android-updates.md)
+- [Collaborative academic groups (v18) ADR](docs/adr/0021-collaborative-groups.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
@@ -207,6 +218,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 8. Offline task-operation replication and execution reminders. **Implemented for the MVP; external FCM/LLM/routing/OAuth providers remain configuration-dependent.**
 9. Per-account AI keys (BYOK). **Implemented in schema v14.** Paid/managed AI: see [docs/ROADMAP.md](docs/ROADMAP.md).
 10. Offline-first client, fixed-time events, task lifecycle, sleep hours. **Implemented in schema v15.**
+11. Collaborative academic groups. **Implemented in schema v18.**
 
 ## License
 

@@ -20,6 +20,8 @@ import httpx
 from student_execution_os.domain.errors import ValidationError
 
 
+from student_execution_os.groups.assistant import PROMPT as _GROUP_PROMPT  # noqa: E402
+
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
 {"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
 Never claim an action was executed; every action is only a proposal the user reviews.
@@ -68,7 +70,8 @@ context.now in context.timezone and output instants with that zone's offset. "к
 "by"/"due"/"сдать" describe a deadline; a bare time describes when to do it
 (actionable_from/target_at). If effort or deadline of a new task is not stated, leave it
 out and list "estimated_total_effort_minutes" / "actual_cutoff" in unresolved_fields.
-Do not invent identifiers, versions, dates, or locations."""
+Do not invent identifiers, versions, dates, or locations.
+""" + _GROUP_PROMPT
 
 
 class ProviderUnavailable(ValidationError):

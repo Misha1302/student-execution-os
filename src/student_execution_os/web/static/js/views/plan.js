@@ -46,6 +46,9 @@ export function agendaItems(plan) {
   for (const c of plan.constraints || []) {
     items.push({ kind: c.type, cls: 'constraint', ownership: 'CANONICAL', starts_at: c.starts_at, ends_at: c.ends_at, label: code('constraint', c.type), detail: c.reason || '', ref: c });
   }
+  for (const s of plan.shared_events || []) {
+    items.push({ kind: 'SHARED_EVENT', cls: 'canonical', ownership: 'CANONICAL', starts_at: s.starts_at, ends_at: s.ends_at, label: s.label, detail: t('groups.fromGroup'), ref: s });
+  }
   for (const o of plan.off_hours || []) {
     items.push({ kind: 'OFF_HOURS', cls: 'sleep', ownership: 'CANONICAL', starts_at: o.starts_at, ends_at: o.ends_at, label: t('plan.offHours'), detail: t('plan.offHoursHelp'), ref: o });
   }

@@ -4,16 +4,27 @@
 
 ## Current architecture
 
-- Schema: v16 (v13: explicit `remind_at` reminder requests, device capabilities, retention
+- Schema: v18 (v13: explicit `remind_at` reminder requests, device capabilities, retention
   indexes; v14: per-account encrypted LLM credentials and the platform-managed entitlement seam;
   v15: delete tombstones, event reminder leads, counted progress — ADR 0018; v16: standalone
-  reminders and wake alarms, device health, AI test failure states — ADR 0019).
+  reminders and wake alarms, device health, AI test failure states — ADR 0019; v17: LLM
+  `BLOCKED_URL` status; v18: collaborative groups — ADR 0021).
 - v16 (ADR 0019): `reminders/standalone.py` + `reminder.*` sync ops; CRITICAL escalation ladder
   in `reminders/policy.py`; `/notifications/health`, `/notifications/test`; RU/EN command
   grammar `agent/commands.py` ⇄ `js/commands.js` (fixture `nl_command_cases.json`) and typed
   Assistant actions executed through `sync.commands`; `Commitment` projection
   `web/commitments.py` ⇄ `js/agenda.js` («Дела», search); `task.restore`; Android `alarm/`
   package (AlarmManager alarm clocks, ringing service, awake check, `SeosNative` plugin).
+- v18 (ADR 0021): `groups/` package — `model.py` (entities, capabilities, state machines,
+  payload tagged union), `repository.py`, `commands.py` (group ops registered in
+  `sync.commands.Commands`, so one `SyncService.apply` path), `projection.py`
+  (`/api/v1/me/shared` → agenda, planner `shared:*` constraints, reminder facts),
+  `fanout.py` (reschedule/cancel → prep task cutoff, reminders, alarms, diff notices),
+  `external.py` + `reconcile.py` (source-agnostic external binding, worker tick),
+  `assistant.py` (typed group actions). Web: `/api/v1/groups/...`, `/api/v1/me/...`
+  (Idempotency-Key, If-Match). Client: `js/groups.js`, `js/views/groups.js`.
+  Tests: `tests/integration/test_collaborative_groups.py`, `tests/unit/test_group_model.py`,
+  `tests/web/test_groups_api.py`, `tests/browser/groups_e2e.py`.
 - Client is offline-first: `js/sync.js` (durable queue, background delivery, backoff,
   duplicate-tap collapse) + `js/overlay.js` (pure projection of queued/acked operations onto
   cached read models, applied by `js/store.js` on every read). No task/event change awaits

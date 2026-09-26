@@ -331,6 +331,91 @@ function projectDay(data, ops, now) {
   return out;
 }
 
+// ---- collaborative groups: the member's own overlay on /api/v1/me/shared -------------
+//
+// Only personal changes are queued (shared_event_state / shared_obligation_state /
+// announcement_state / group_preferences, and a preparation task linked with
+// task.create {prepares}); group-wide changes are never shown before the server
+// confirmed them.
+const ASSESSMENT_KINDS = new Set(['QUIZ', 'TEST', 'CONTROL_WORK', 'COLLOQUIUM', 'EXAM']);
+const CLASS_KINDS = new Set(['CLASS', 'LECTURE', 'SEMINAR', 'PRACTICE', 'LAB', 'CONSULTATION']);
+
+function shows(prefs, item) {
+  if (!prefs) return true;
+  if (item.kind === 'SHARED_EVENT') {
+    if (ASSESSMENT_KINDS.has(item.event_kind)) return prefs.show_assessments !== false;
+    if (CLASS_KINDS.has(item.event_kind)) return prefs.show_regular_classes !== false;
+    return true;
+  }
+  if (item.kind === 'SHARED_OBLIGATION') return prefs.show_deadlines !== false;
+  return prefs.show_announcements !== false;
+}
+
+function visibleInAgenda(item, prefs) {
+  const p = item.personal || {};
+  if (item.kind === 'ANNOUNCEMENT') {
+    return item.status === 'PUBLISHED' && shows(prefs, item) && Boolean(prefs?.announcements_in_agenda) && !p.dismissed;
+  }
+  if (item.kind === 'SHARED_OBLIGATION' && p.acceptance_state === 'DECLINED') return false;
+  return !p.hidden && shows(prefs, item);
+}
+
+function overridden(value, groupValue) {
+  return value == null ? { group: groupValue, effective: groupValue, overridden: false }
+    : { group: groupValue, effective: value, overridden: true };
+}
+
+export function applySharedOp(item, queued) {
+  const op = queued.operation;
+  const p = op.payload || {};
+  const next = { ...item, personal: { ...(item.personal || {}) }, _pending: queued.state === 'PENDING' || item._pending };
+  if ('attendance_override' in p && next.attendance) next.attendance = overridden(p.attendance_override, next.attendance.group);
+  if ('criticality_override' in p && next.criticality) next.criticality = overridden(p.criticality_override, next.criticality.group);
+  for (const key of ['remind_before_minutes', 'alarm_before_minutes', 'acceptance_state', 'dismissed']) {
+    if (key in p) next.personal[key] = p[key];
+  }
+  if ('muted' in p) next.personal.hidden = Boolean(p.muted);
+  if ('last_seen_version' in p) {
+    next.personal.last_seen_version = Math.max(Number(next.personal.last_seen_version || 0), Number(p.last_seen_version));
+    if (next.change && Number(next.change.new_version) <= next.personal.last_seen_version) next.change = null;
+  }
+  if (p.dismiss_stale_preparation) next.personal.preparation_deadline_stale = false;
+  if (p.dismiss_stale_deadline) next.personal.deadline_stale = false;
+  return next;
+}
+
+function projectShared(data, ops) {
+  if (!data || !Array.isArray(data.items)) return data;
+  const out = { ...data, groups: (data.groups || []).map((g) => ({ ...g })), items: data.items.map((x) => ({ ...x })) };
+  const groups = new Map(out.groups.map((g) => [g.id, g]));
+  const stateOps = { 'shared_event_state.update': 'SHARED_EVENT', 'shared_obligation_state.update': 'SHARED_OBLIGATION',
+    'announcement_state.update': 'ANNOUNCEMENT' };
+  for (const queued of ops) {
+    const op = queued.operation || {};
+    if (op.type === 'group_preferences.update' && groups.has(op.entity_id)) {
+      const g = groups.get(op.entity_id);
+      g.preferences = { ...(g.preferences || {}), ...(op.payload || {}) };
+      continue;
+    }
+    if (op.type === 'task.create' && op.payload?.prepares) {
+      const { kind, id } = op.payload.prepares;
+      out.items = out.items.map((x) => {
+        if (x.id !== id || x.kind !== kind) return x;
+        const task = { id: op.entity_id, title: op.payload.title, status: 'ACTIVE', open: true, deadline: op.payload.actual_cutoff?.at || null };
+        const personal = { ...(x.personal || {}), ...(kind === 'SHARED_EVENT' ? { preparation_task: task }
+          : { personal_task: task, acceptance_state: 'ACCEPTED' }) };
+        return { ...x, personal, available_actions: (x.available_actions || []).filter((a) => a !== 'prepare' && a !== 'take_on') };
+      });
+      continue;
+    }
+    const kind = stateOps[op.type];
+    if (!kind) continue;
+    out.items = out.items.map((x) => (x.id === op.entity_id && x.kind === kind ? applySharedOp(x, queued) : x));
+  }
+  out.items = out.items.map((x) => ({ ...x, visible_in_agenda: visibleInAgenda(x, groups.get(x.group_id)?.preferences) }));
+  return out;
+}
+
 // Entry point used by store.load(). `data` is never modified.
 export function project(path, data, items, { fetchedAt = 0, now = new Date() } = {}) {
   const ops = relevantOps(items, fetchedAt);
@@ -342,6 +427,7 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
+  if (route === '/api/v1/me/shared') return projectShared(base, ops);
   if (route === '/api/v1/notifications' && Array.isArray(base)) {
     // A reminder answered from the app (or its notification) shows as answered.
     const acted = { 'task.start': 'START', 'task.complete': 'DONE', 'reminder.snooze': 'SNOOZE', 'task.defer': 'RESCHEDULE',

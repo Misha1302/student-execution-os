@@ -8,10 +8,13 @@ import { esc, icon, chip, riskChip, empty, chipGroup } from '../ui.js';
 import { commitments, dayOf } from '../agenda.js';
 import { reminderStatusChip, hasAlarm, reminderSheet, syncDeviceAlarms } from '../reminders.js';
 import { eventSheet } from '../events.js';
+import { SHARED_PATH, sharedRow, criticalityChip } from '../groups.js';
+
+const SHARED_KINDS = new Set(['SHARED_EVENT', 'SHARED_OBLIGATION', 'ANNOUNCEMENT']);
 
 const RISKY = new Set(['START_SOON', 'AT_RISK', 'CRITICAL', 'IMPOSSIBLE', 'OVERDUE']);
 const PLACES = ['open', 'done', 'archive'];
-const KINDS = ['ALL', 'TASK', 'EVENT', 'REMINDER'];
+const KINDS = ['ALL', 'TASK', 'EVENT', 'REMINDER', 'GROUP'];
 
 let place = 'open';
 let kind = 'ALL';
@@ -62,6 +65,8 @@ function eventRow(e, item) {
     <span class="task-meta"><span>${icon('calendar')}${esc(fmtDay(e.starts_at))}, ${esc(span)}</span>
       ${e.remind_before_minutes != null ? `<span>${icon('bell')}${esc(t('event.remindShort', { n: e.remind_before_minutes }))}</span>` : ''}
       ${e._pending ? `<small class="muted">${icon('clock')}${esc(t('sync.pendingShort'))}</small>` : ''}</span>
+    ${(item.annotations || []).map((a) => `<span class="annotation" data-action="open-shared" data-kind="SHARED_EVENT" data-id="${esc(a.id)}">
+      ${icon('flag')}<strong>${esc(a.title)}</strong> · ${esc(code('eventKind', a.event_kind))} · ${esc(a.group_name)} ${criticalityChip(a.criticality)}</span>`).join('')}
   </button>`;
 }
 
@@ -75,6 +80,7 @@ function reminderRow(r) {
 }
 
 export function commitmentRow(item) {
+  if (SHARED_KINDS.has(item.kind)) return sharedRow(item.entity);
   if (item.kind === 'EVENT') return eventRow(item.entity, item);
   if (item.kind === 'REMINDER') return reminderRow(item.entity);
   // A finished task can be swiped into the archive.
@@ -108,19 +114,20 @@ export default {
   tab: 'tasks',
   title: () => t('nav.tasks'),
   async load({ fresh }) {
-    const [tasks, events, reminders] = await Promise.all([
+    const [tasks, events, reminders, shared] = await Promise.all([
       load('/api/v1/tasks', { fresh }),
       load('/api/v1/events', { fresh }).catch(() => ({ data: [] })),
       load('/api/v1/reminders', { fresh }).catch(() => ({ data: [] })),
+      load(SHARED_PATH, { fresh }).catch(() => ({ data: { items: [] } })),
     ]);
     syncDeviceAlarms();
-    return { data: { tasks: tasks.data || [], events: events.data || [], reminders: reminders.data || [] },
+    return { data: { tasks: tasks.data || [], events: events.data || [], reminders: reminders.data || [], shared: shared.data?.items || [] },
       stale: tasks.stale || events.stale || reminders.stale, fetchedAt: tasks.fetchedAt };
   },
   render(data) {
     this._data = data;
     const all = commitments(data, { now: now() });
-    const byKind = (x) => kind === 'ALL' || x.kind === kind;
+    const byKind = (x) => kind === 'ALL' || x.kind === kind || (kind === 'GROUP' && SHARED_KINDS.has(x.kind));
     const counts = Object.fromEntries(PLACES.map((p) => [p, all.filter((x) => x.place === p && byKind(x)).length]));
     const list = commitments(data, { now: now(), place, query }).filter(byKind);
     const atRisk = place === 'open' ? list.filter((x) => x.kind === 'TASK' && RISKY.has(x.entity.risk?.state)).length : 0;

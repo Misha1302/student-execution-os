@@ -51,6 +51,9 @@ ESCALATION_LADDER = (
     (timedelta(minutes=15), "15M"),
 )
 URGENT_RUNGS = {"ESCALATE_3H", "ESCALATE_1H", "ESCALATE_15M"}
+# What the ladder applies to: a CRITICAL task, and a shared event/deadline that is
+# CRITICAL for the member who opted into escalation (groups/projection.py).
+LADDER_KINDS = frozenset({"TASK", "SHARED_EVENT", "SHARED_OBLIGATION"})
 
 
 @dataclass(frozen=True)
@@ -348,7 +351,7 @@ def _candidates(facts: TaskFacts, state: ReminderState, prefs: ReminderPrefs, no
     wakeups: list[datetime] = []
 
     cutoff = facts.cutoff_at
-    critical = facts.importance == "CRITICAL" and facts.kind == "TASK"
+    critical = facts.importance == "CRITICAL" and facts.kind in LADDER_KINDS
     if critical and due is not None and due > now and (remaining is None or remaining > 0):
         left = due - now
         crossed = [label for delta, label in ESCALATION_LADDER if left <= delta]

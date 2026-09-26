@@ -30,7 +30,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from student_execution_os.domain.errors import DomainError, EntityNotFound, ValidationError, VersionConflict
+from student_execution_os.domain.errors import (
+    AuthorizationDenied,
+    DomainError,
+    EntityNotFound,
+    ValidationError,
+    VersionConflict,
+)
 from student_execution_os.domain.model import (
     ActorCategory,
     AttendancePolicy,
@@ -45,6 +51,8 @@ from student_execution_os.domain.model import (
     ObligationCategory,
     TemporalPrecision,
 )
+from student_execution_os.groups.errors import ExternalOwnedField, GroupRateLimited
+from student_execution_os.groups.model import IllegalTransition
 from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
 
@@ -65,6 +73,9 @@ class Outcome:
     entity: dict[str, Any] | None = None
     code: str | None = None
     message: str | None = None
+    # Returned to the caller once and never stored in the operation log (an invite
+    # link's secret token, for example).
+    transient: dict[str, Any] | None = None
 
 
 def parse_instant(value: Any, field: str) -> datetime | None:
@@ -162,11 +173,19 @@ class Commands:
             "reminder.reopen": self.reminder_reopen,
             "reminder.delete": self.reminder_delete,
         }
+        # Collaborative groups (schema v18) share this pipeline: the same op log,
+        # transaction and replay semantics (groups/commands.py).
+        from student_execution_os.groups.commands import GroupCommands
+        self.groups = GroupCommands(repo, account_id=account_id, now=now)
+        self.handlers.update(self.groups.handlers)
 
-    def run(self, op_type: str, entity_id: str, payload: dict[str, Any]) -> Outcome:
+    def run(self, op_type: str, entity_id: str, payload: dict[str, Any], *, mutation_id: str | None = None) -> Outcome:
         handler = self.handlers.get(op_type)
         if handler is None:
             raise ValidationError(f"unknown operation type {op_type}")
+        if op_type in self.groups.handlers:
+            self.groups.mutation_id = mutation_id
+            return handler(entity_id, payload)
         if op_type.startswith("reminder.") and entity_id and self._reminders().is_deleted(self.account_id, entity_id):
             return Outcome(NOOP, {"kind": "REMINDER", "id": entity_id, "deleted": True}, "DELETED", "reminder was deleted")
         if entity_id and self.repo.is_deleted_obligation(self.account_id, entity_id):
@@ -253,6 +272,21 @@ class Commands:
         effort = _minutes(payload.get("estimated_total_effort_minutes"), "estimated_total_effort_minutes", allow_none=True)
         splittable = bool(payload.get("splittable", False))
         remind = self._remind_at(payload)
+        prepares = None
+        if payload.get("prepares"):
+            # "Create preparation" for a shared assessment / "take on" a shared deadline:
+            # an ordinary personal task, linked in the member's private overlay only.
+            from student_execution_os.groups.commands import validate_link
+            prepares = validate_link(payload["prepares"])
+            if payload.get("actual_cutoff") is None:
+                payload = {**payload, "actual_cutoff": self._shared_due(*prepares)}
+            if not payload.get("importance"):
+                # A preparation inherits how critical the assessment is *for this member*.
+                from student_execution_os.groups.projection import PersonalProjection
+                from student_execution_os.groups.model import Criticality, TASK_IMPORTANCE
+                item = PersonalProjection(self.repo, self.account_id, self.now).item(*prepares)
+                if item is not None and "criticality" in item:
+                    payload = {**payload, "importance": TASK_IMPORTANCE[Criticality(item["criticality"]["effective"])]}
         task = self.repo.create_task(
             account_id=self.account_id, obligation_id=task_id,
             title=_title(payload.get("title")), description=_description(payload.get("description")),
@@ -271,7 +305,19 @@ class Commands:
         if changed and count is not None:
             self._save_count(task_id, count)
         self._touch(task_id, remind_at=remind)
+        if prepares is not None:
+            self.groups.link_personal_task(*prepares, task.obligation.id)
         return self._task_out(task.obligation.id)
+
+    def _shared_due(self, kind, entity_id: str) -> dict[str, Any]:
+        """The deadline of a preparation task: the assessment's start / the shared deadline."""
+        from student_execution_os.groups.model import SharedKind
+        from student_execution_os.groups.projection import official_interval
+        row = self.groups.groups.entity(kind, entity_id)
+        if row is None:
+            raise EntityNotFound("shared item not found")
+        at = official_interval(self.repo, row)[0] if kind is SharedKind.SHARED_EVENT else datetime.fromisoformat(row["deadline"])
+        return {"state": "KNOWN", "at": at.isoformat(), "boundary": "EXCLUSIVE"}
 
     def _capture_actor(self, payload: dict[str, Any]) -> ActorCategory:
         """A task confirmed from an Assistant preview keeps its LLM provenance.
@@ -520,6 +566,12 @@ class Commands:
             until = self.now + timedelta(minutes=minutes)
         if self._reminders().exists(self.account_id, task_id):
             return self._snooze_reminder(task_id, until)
+        if task_id.startswith(("shared-event:", "shared-obligation:")):
+            # A reminder about a group's event/deadline: only the member's own reminder state moves.
+            if until <= self.now:
+                return Outcome(NOOP, {"kind": "SHARED", "id": task_id}, "SNOOZE_EXPIRED")
+            self._touch(task_id, snooze_until=until, remind_at=until)
+            return Outcome(APPLIED, {"kind": "SHARED", "id": task_id, "snoozed_until": until.isoformat()})
         current = self._task(task_id)
         if current.obligation.lifecycle_status not in OPEN:
             return self._task_out(task_id, NOOP, "TASK_CLOSED")
@@ -777,7 +829,11 @@ class Commands:
 
 class SyncService:
     def __init__(self, repo: SQLiteCanonicalRepository, *, account_id: str, principal_id: str,
-                 actor: ActorCategory = ActorCategory.USER_UI, now: datetime | None = None) -> None:
+                 actor: ActorCategory = ActorCategory.USER_UI, now: datetime | None = None,
+                 channel: str = "direct") -> None:
+        # channel "offline-queue": /api/v1/sync. Group-wide changes need the server's
+        # confirmation, so they are not accepted from the replayed offline queue.
+        self.channel = channel
         self.repo = repo
         self.account_id = account_id
         self.principal_id = principal_id
@@ -801,6 +857,11 @@ class SyncService:
         if not isinstance(payload, dict):
             raise ValidationError("payload must be an object")
         request_hash = self._hash(op_type, entity_id, payload)
+        from student_execution_os.groups.commands import GROUP_WIDE_OPS
+        if self.channel == "offline-queue" and op_type in GROUP_WIDE_OPS:
+            return {"op_id": op_id, "type": op_type, "entity_id": entity_id, "status": REJECTED, "code": "ONLINE_ONLY",
+                    "message": "group-wide changes are sent directly and need the server's confirmation",
+                    "entity": None, "replayed": False}
         with self.repo._tx() as conn:
             previous = conn.execute(
                 "SELECT request_hash,result_json FROM client_operations WHERE account_id=? AND op_id=?",
@@ -817,9 +878,10 @@ class SyncService:
             # reminder so it is recorded as answered; the hash above still covers it.
             payload = dict(payload)
             reminder_id = payload.pop("reminder_message_id", None)
+            current_version = None
             try:
                 with self.repo._tx():  # savepoint: a failing command leaves no partial writes
-                    outcome = self.commands.run(op_type, entity_id, payload)
+                    outcome = self.commands.run(op_type, entity_id, payload, mutation_id=op_id)
                     if reminder_id and outcome.status in (APPLIED, NOOP) and op_type in _REMINDER_ACTIONS:
                         from student_execution_os.reminders.store import ReminderStore
                         ReminderStore(self.repo).mark_acted(self.account_id, str(reminder_id)[:64],
@@ -829,6 +891,15 @@ class SyncService:
             except VersionConflict as exc:
                 # A race with another writer is a conflict to reconcile, not invalid input.
                 outcome = Outcome(CONFLICT, None, "VERSION_CONFLICT", str(exc))
+                current_version = getattr(exc, "current_version", None)
+            except GroupRateLimited:
+                raise  # not recorded: the same mutation may be retried later
+            except AuthorizationDenied as exc:
+                outcome = Outcome(REJECTED, None, "FORBIDDEN", str(exc))
+            except IllegalTransition as exc:
+                outcome = Outcome(CONFLICT, None, "ILLEGAL_TRANSITION", str(exc))
+            except ExternalOwnedField as exc:
+                outcome = Outcome(REJECTED, None, "EXTERNAL_OWNED", str(exc))
             except (DomainError, ValueError, KeyError, TypeError) as exc:
                 outcome = Outcome(REJECTED, None, "VALIDATION_ERROR", str(exc) or type(exc).__name__)
             result = {
@@ -836,12 +907,16 @@ class SyncService:
                 "code": outcome.code, "message": outcome.message, "entity": outcome.entity,
                 "server_revision": self.repo.get_server_revision(self.account_id), "replayed": False,
             }
+            if current_version is not None:
+                result["current_version"] = current_version
             conn.execute(
                 "INSERT INTO client_operations(account_id,op_id,op_type,request_hash,status,result_json,principal_id,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (self.account_id, op_id, op_type, request_hash, outcome.status, json.dumps(result, sort_keys=True),
                  self.principal_id, _iso(self.now)),
             )
+            if outcome.transient:
+                return {**result, "entity": {**(result["entity"] or {}), **outcome.transient}}
             return result
 
     def apply_batch(self, ops: list[dict[str, Any]]) -> list[dict[str, Any]]:

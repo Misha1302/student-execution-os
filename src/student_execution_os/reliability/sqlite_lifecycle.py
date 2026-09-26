@@ -214,7 +214,27 @@ _DIRECT_ACCOUNT_TABLES = (
     "task_progress_counts",
     "reminders",
     "deleted_reminders",
+    # v18: the member's own side of collaborative groups (membership and private overlays).
+    "group_memberships",
+    "user_group_preferences",
+    "user_shared_event_states",
+    "user_shared_obligation_states",
+    "user_announcement_states",
 )
+
+# v18: group-owned facts span accounts. They are not part of one member's export and
+# are not deleted with one member; the member's authorship in them is pseudonymised.
+_SHARED_GROUP_TABLES = (
+    "groups",
+    "group_invites",
+    "shared_events",
+    "shared_obligations",
+    "shared_announcements",
+    "group_proposals",
+    "external_event_bindings",
+    "group_audit",
+)
+DELETED_MEMBER = "deleted-account"
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
     "tasks": (
@@ -267,7 +287,43 @@ _KNOWN_DATABASE_TABLES = {
     *_DIRECT_ACCOUNT_TABLES,
     *_ACCOUNT_CREDENTIAL_TABLES,
     *_CHILD_TABLE_QUERIES.keys(),
+    *_SHARED_GROUP_TABLES,
 }
+
+
+def _release_group_ties(connection: sqlite3.Connection, account_id: str, now: str) -> None:
+    """Before an account disappears: hand its groups to a successor and pseudonymise its authorship.
+
+    The successor is the longest-standing active admin, then scheduler, then member
+    (an explicit order, not a role ranking). A group nobody else is in is deleted
+    (tombstoned).
+    """
+    for row in connection.execute(
+        "SELECT id FROM groups WHERE owner_account_id=? AND status!='DELETED'", (account_id,)
+    ).fetchall():
+        group_id = row[0]
+        successor = connection.execute(
+            "SELECT account_id FROM group_memberships WHERE group_id=? AND account_id!=? AND status='ACTIVE' "
+            "ORDER BY CASE role WHEN 'ADMIN' THEN 0 WHEN 'SCHEDULER' THEN 1 ELSE 2 END, joined_at, account_id LIMIT 1",
+            (group_id, account_id),
+        ).fetchone()
+        connection.execute("UPDATE group_memberships SET status='LEFT',role='MEMBER',version=version+1,updated_at=? "
+                           "WHERE group_id=? AND account_id=?", (now, group_id, account_id))
+        if successor is None:
+            connection.execute("UPDATE groups SET status='DELETED',deleted_at=?,owner_account_id=?,version=version+1,"
+                               "updated_at=? WHERE id=?", (now, DELETED_MEMBER, now, group_id))
+            connection.execute("UPDATE group_invites SET status='REVOKED',revoked_at=?,version=version+1 "
+                               "WHERE group_id=? AND status='ACTIVE'", (now, group_id))
+            continue
+        connection.execute("UPDATE group_memberships SET role='OWNER',version=version+1,updated_at=? "
+                           "WHERE group_id=? AND account_id=?", (now, group_id, successor[0]))
+        connection.execute("UPDATE groups SET owner_account_id=?,version=version+1,updated_at=? WHERE id=?",
+                           (successor[0], now, group_id))
+    for table, column in (("shared_events", "author_account_id"), ("shared_obligations", "author_account_id"),
+                          ("shared_announcements", "author_account_id"), ("group_proposals", "author_account_id"),
+                          ("group_proposals", "reviewer_account_id"), ("group_audit", "actor_account_id"),
+                          ("group_invites", "created_by_account_id"), ("external_event_bindings", "bound_by_account_id")):
+        connection.execute(f"UPDATE {table} SET {column}=? WHERE {column}=?", (DELETED_MEMBER, account_id))
 
 
 def _assert_lifecycle_schema_known(connection: sqlite3.Connection) -> None:
@@ -531,6 +587,7 @@ class SQLiteDataLifecycle:
                 )
                 connection.execute(f"DELETE FROM {table} WHERE account_id=?", (account_id,))
 
+            _release_group_ties(connection, account_id, _iso(now))
             connection.execute(
                 "INSERT INTO account_deletion_tombstones("
                 "account_id,deletion_id,deleted_at,purge_after,policy_version,retained_reason"

@@ -201,6 +201,9 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     payload = raw["payload"]
     if command not in COMMANDS or not isinstance(payload, dict):
         raise ValidationError("assistant provider returned an unknown action")
+    from student_execution_os.groups import assistant as group_actions
+    if command in group_actions.GROUP_COMMANDS:
+        return _validate_group_proposal(raw, command, payload, canonical, account_id)
     unresolved = raw["unresolved_fields"]
     if not isinstance(unresolved, list) or not all(isinstance(item, str) for item in unresolved):
         raise ValidationError("assistant unresolved_fields must be a list of field names")
@@ -292,6 +295,27 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     return {"command": command, "payload": payload, "confidence": confidence,
             "unresolved_fields": list(unresolved), "expected_version": expected,
             "requires_confirmation": raw["requires_confirmation"]}
+
+
+def _validate_group_proposal(raw: dict[str, Any], command: str, payload: dict[str, Any],
+                             canonical: SQLiteCanonicalRepository, account_id: str) -> dict[str, Any]:
+    """A group action: validated against the caller's memberships; group-wide ones always need confirmation."""
+    from student_execution_os.groups import assistant as group_actions
+    unresolved = raw["unresolved_fields"]
+    if not isinstance(unresolved, list) or not all(isinstance(item, str) for item in unresolved):
+        raise ValidationError("assistant unresolved_fields must be a list of field names")
+    try:
+        confidence = float(raw["confidence"])
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("assistant confidence must be a number") from exc
+    if not 0 <= confidence <= 1 or not isinstance(raw["requires_confirmation"], bool):
+        raise ValidationError("assistant proposal has invalid confidence/confirmation")
+    expected = raw["expected_version"]
+    if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
+        raise ValidationError("assistant expected_version must be an integer")
+    group_wide = group_actions.validate(command, payload, unresolved, expected, canonical, account_id)
+    return {"command": command, "payload": payload, "confidence": confidence, "unresolved_fields": list(unresolved),
+            "expected_version": expected, "requires_confirmation": group_wide or raw["requires_confirmation"]}
 
 
 def _instant(value: object, field: str) -> datetime:
@@ -419,6 +443,8 @@ class SQLiteAssistantService:
         }
         if isinstance(client.get("locale"), str):
             context["locale"] = client["locale"][:16]
+        from student_execution_os.groups import assistant as group_actions
+        context.update(group_actions.context(self.canonical, self.principal.account_id, self.canonical.clock.now()))
         return context
 
     def interpret(self, text: str, context: dict[str, object] | None = None, *,
@@ -650,10 +676,15 @@ class SQLiteAssistantService:
         # Everything else runs through the same command handlers as the offline sync
         # queue, so an Assistant action and a button press mean exactly the same thing.
         from student_execution_os.sync.commands import APPLIED, NOOP, Commands
+        from student_execution_os.groups import assistant as group_actions
         commands = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
                             now=self.canonical.clock.now())
-        op_type, entity, body = self._operation(command, data, commands)
-        outcome = commands.run(op_type, entity, body)
+        if command.value in group_actions.GROUP_COMMANDS:
+            op_type, entity, body = group_actions.operation(command.value, dict(data), action.get("expected_version"),
+                                                            str(action["id"]), self.canonical)
+        else:
+            op_type, entity, body = self._operation(command, data, commands)
+        outcome = commands.run(op_type, entity, body, mutation_id=f"assistant:{action['id']}")
         if outcome.status not in (APPLIED, NOOP):
             raise ValidationError(outcome.message or outcome.code or f"{op_type} was not applied")
         result = {"action_id": action["id"], "entity_id": entity, "operation": op_type, "outcome": outcome.status,

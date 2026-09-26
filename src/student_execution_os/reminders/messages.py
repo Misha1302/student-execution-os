@@ -129,8 +129,11 @@ def compose(stage: Stage, facts: list[TaskFacts], *, repeat: bool, now: datetime
             "actions": actions,
         }
     item = facts[0]
-    if item.kind == "EVENT":
-        return _event_reminder(item, labels, now=now, zone=zone, locale=locale)
+    if item.kind in ("EVENT", "SHARED_EVENT") and stage is not Stage.ESCALATION:
+        content = _event_reminder(item, labels, now=now, zone=zone, locale=locale)
+        return {**content, "deep_link": "/tasks"} if item.kind == "SHARED_EVENT" else content
+    if item.kind in ("SHARED_EVENT", "SHARED_OBLIGATION"):
+        return _shared_reminder(stage, item, labels, now=now, zone=zone, locale=locale)
     started = item.started_at is not None or item.last_progress_at is not None
     if stage is Stage.ESCALATION and started:
         # Already in progress: finishing is the useful button, not "start".
@@ -183,6 +186,24 @@ def _event_reminder(item: TaskFacts, labels: dict[str, str], *, now: datetime, z
         body = f"{_when(starts, now, zone, locale)}" + (f" ({span})" if span else "") + (f", in {minutes} min" if minutes else "")
     return {"title": head, "body": body, "deep_link": "/today",
             "actions": [{"id": "OPEN", "label": labels["OPEN"], **ACTIONS["OPEN"]}]}
+
+
+def _shared_reminder(stage: Stage, item: TaskFacts, labels: dict[str, str], *, now: datetime, zone: ZoneInfo,
+                     locale: str) -> dict:
+    """A group's critical event/deadline: "«Контрольная» — через 24 ч" (ladder) or the requested reminder."""
+    title = item.title if len(item.title) <= 60 else item.title[:57] + "…"
+    due = item.target_at or now
+    left = max(1, round((due - now).total_seconds() / 60))
+    left_text = _effort(left, locale) if left < 48 * 60 else ("2 дня" if locale == "ru" else "2 days")
+    event = item.kind == "SHARED_EVENT"
+    if locale == "ru":
+        head = f"«{title}» — через {left_text}" if stage is Stage.ESCALATION else f"Напоминаю: «{title}»"
+        body = ("Начало " if event else "Срок ") + _when(due, now, zone, locale)
+    else:
+        head = f"“{title}” in {left_text}" if stage is Stage.ESCALATION else f"Reminder: “{title}”"
+        body = ("Starts " if event else "Due ") + _when(due, now, zone, locale)
+    return {"title": head, "body": body, "deep_link": "/tasks",
+            "actions": [{"id": a, "label": labels[a], **ACTIONS[a]} for a in ("OPEN", "SNOOZE_60")]}
 
 
 def test_message(locale: str) -> dict:

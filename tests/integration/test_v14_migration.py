@@ -33,6 +33,16 @@ def build_v13(path: str) -> None:
     conn.close()
 
 
+# ADR 0021: rolling schema v18 (collaborative groups) back.
+V18_ROLLBACK = (
+    "DROP TABLE user_announcement_states; DROP TABLE user_shared_obligation_states; "
+    "DROP TABLE user_shared_event_states; DROP TABLE user_group_preferences; DROP TABLE group_audit; "
+    "DROP TABLE external_event_bindings; DROP TABLE group_proposals; DROP TABLE shared_announcements; "
+    "DROP TABLE shared_obligations; DROP TABLE shared_events; DROP TABLE group_invites; "
+    "DROP TABLE group_memberships; DROP TABLE groups; DELETE FROM schema_migrations WHERE version=18;"
+)
+
+
 class V14MigrationTest(unittest.TestCase):
     def test_populated_v13_database_upgrades_and_keeps_working(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +87,7 @@ class V14MigrationTest(unittest.TestCase):
                 repo.create_account("a")
             conn = sqlite3.connect(db)
             # Newer releases are rolled back first (see their ADRs), then v14.
+            conn.executescript(V18_ROLLBACK)
             conn.executescript("DROP TABLE reminders; DROP TABLE deleted_reminders; "
                                "DELETE FROM schema_migrations WHERE version=16;")
             conn.executescript("DROP TABLE deleted_obligations; DROP TABLE event_reminders; "

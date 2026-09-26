@@ -211,7 +211,10 @@ export function actionSheet({ title, items }) {
     let chosen = null;
     const dialog = openSheet({
       title,
-      body: `<div class="menu-list">${items.map((it) => `
+      // Items may carry a `section` ("Для меня" / "Для группы"): shown as a heading so a
+      // personal change can never be mistaken for a change for everyone.
+      body: `<div class="menu-list">${items.map((it, i) => `${it.section && it.section !== items[i - 1]?.section
+        ? `<h3 class="menu-section">${esc(it.section)}</h3>` : ''}
         <button type="button" class="menu-row" data-choice="${esc(it.id)}">
           <span class="menu-icon tone-${esc(it.tone || 'accent')}">${icon(it.icon)}</span>
           <span class="menu-copy"><strong>${esc(it.label)}</strong>${it.hint ? `<small>${esc(it.hint)}</small>` : ''}</span>

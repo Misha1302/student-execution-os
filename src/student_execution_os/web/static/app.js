@@ -23,12 +23,15 @@ import places from './js/views/places.js';
 import settings from './js/views/settings.js';
 import welcome from './js/views/welcome.js';
 import reminder from './js/views/reminder.js';
+import { groupsView, groupView, joinView } from './js/views/groups.js';
+import { SHARED_PATH, findShared, sharedSheet } from './js/groups.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, settings, welcome };
+const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, settings, welcome,
+  groups: groupsView, group: groupView, join: joinView };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -89,7 +92,7 @@ function updateChrome(view) {
   $('#page-subtitle').textContent = subtitle;
   $('#page-subtitle').hidden = !subtitle;
   document.title = `${view.title()} · ${t('app.name')}`;
-  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id;
+  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id === 'group' || view.id === 'join' ? 'groups' : view.id;
   document.querySelectorAll('#tabbar [data-nav]').forEach((b) => {
     const on = b.dataset.nav === active || (b.classList.contains('mobile-only') && view.tab === 'more' && b.dataset.nav === 'more');
     b.classList.toggle('active', on);
@@ -290,6 +293,11 @@ const GLOBAL_ACTIONS = {
     if (found) reminderSheet(found);
   },
   search: () => openSearch(),
+  'open-shared': async (el) => {
+    let item = findShared(el.dataset.id);
+    if (!item) item = ((await load(SHARED_PATH).catch(() => ({ data: {} }))).data.items || []).find((x) => x.id === el.dataset.id);
+    if (item) sharedSheet(item);
+  },
   // "Optional event collides with another one" → the user decides.
   'event-attend': (el) => change('event.update', el.dataset.id, { attendance_policy: 'REQUIRED' }, { success: t('status.attending') }),
   'allow-skip-optional': () => mutate(async () => {
@@ -361,7 +369,7 @@ function handleBack() {
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
 const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
-  '/api/v1/reminders', '/api/v1/notifications/health'];
+  '/api/v1/reminders', '/api/v1/notifications/health', SHARED_PATH];
 let lastPrefetch = 0;
 function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
@@ -497,6 +505,9 @@ async function boot() {
   });
 
   if (/^#\/?assistant/.test(location.hash)) history.replaceState(null, '', '#/today');
+  // An invite link https://<host>/join/<token> opens the join screen of the app.
+  const invite = location.pathname.match(/^\/join\/([A-Za-z0-9_-]+)$/);
+  if (invite) history.replaceState(null, '', `/#/join/${invite[1]}`);
   route = parseHash();
   if (!(isNative() && !session.server)) {
     try {

@@ -39,7 +39,7 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
     """Open tasks with the planner's risk and latest-safe-start where available."""
     from student_execution_os.planning import PlanningService, SQLitePlanningStateSource, build_planning_snapshot
     from student_execution_os.planning.model import PlanningPolicy
-    from student_execution_os.planning.outlook import SQLitePlanningProfileRepository, off_hours_constraints
+    from student_execution_os.planning.outlook import SQLitePlanningProfileRepository
 
     source = SQLitePlanningStateSource(repo)
     tasks = [task for task in source.list_tasks(account_id) if task.obligation.lifecycle_status.value in {"ACTIVE", "DRAFT"}]
@@ -53,7 +53,7 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
             plan_output_horizon_end=minute + timedelta(hours=36),
             policy=PlanningPolicy(version=f"reminders-v1:{profile.version}:{profile.optional_event_policy}",
                                   optional_event_policy=profile.optional_event_policy),
-            derived_constraints=lambda start, end: off_hours_constraints(profile, account_id, start, end),
+            derived_constraints=derived_availability(repo, profile, account_id, minute),
             assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
         risks = {risk.task_id: risk for risk in PlanningService().build(snapshot, now=minute).risks}
@@ -73,7 +73,20 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
             actionable_from=task.actionable_from, importance=task.obligation.importance.value,
         ))
     facts.extend(event_facts(repo, account_id, minute))
+    try:
+        from student_execution_os.groups.projection import PersonalProjection
+        facts.extend(PersonalProjection(repo, account_id, minute).reminder_facts())
+    except Exception:  # a group problem must not silence the member's own reminders
+        log.exception("shared reminder facts failed for account %s", account_id)
     return facts
+
+
+def derived_availability(repo: SQLiteCanonicalRepository, profile, account_id: str, now: datetime):
+    """Sleep/off hours plus the shared events the member attends, as derived busy time."""
+    from student_execution_os.groups.projection import shared_busy
+    from student_execution_os.planning.outlook import off_hours_constraints
+    shared = shared_busy(repo, account_id, now)
+    return lambda start, end: (*off_hours_constraints(profile, account_id, start, end), *shared(start, end))
 
 
 def event_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) -> list[TaskFacts]:
@@ -100,6 +113,12 @@ class ReminderEngine:
     def tick_all(self, now: datetime) -> list[TickResult]:
         with SQLiteCanonicalRepository(self.database, clock=FrozenClock(now)) as repo:
             repo.initialize()
+            try:
+                # Official times of external calendars flow into bound group annotations.
+                from student_execution_os.groups.reconcile import reconcile_external_bindings
+                reconcile_external_bindings(repo, now)
+            except Exception:
+                log.exception("external binding reconciliation failed")
             accounts = [row[0] for row in repo.connection.execute("SELECT id FROM accounts ORDER BY id")]
         results = []
         for account_id in accounts:

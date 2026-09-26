@@ -193,3 +193,38 @@ console.log(JSON.stringify({{ reminders, tasks: tasks.map((x) => x.status) }}));
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class SharedOverlayTests(unittest.TestCase):
+    """Personal changes to group items (queued offline) show at once on /api/v1/me/shared."""
+
+    def test_personal_overrides_and_preparation_are_projected_without_touching_the_cache(self):
+        out = run_node(f"""
+const {{ project }} = await import('file://{JS}/overlay.js');
+const event = {{ kind: 'SHARED_EVENT', id: 'sev-1', group_id: 'g', title: 'КР', status: 'PUBLISHED', version: 2, event_kind: 'CONTROL_WORK',
+  attendance: {{ group: 'REQUIRED', effective: 'REQUIRED', overridden: false }},
+  criticality: {{ group: 'CRITICAL', effective: 'CRITICAL', overridden: false }},
+  change: {{ action: 'UPDATE', new_version: 2 }}, personal: {{ last_seen_version: 0 }}, visible_in_agenda: true,
+  available_actions: ['set_attendance', 'prepare'] }};
+const lecture = {{ ...event, id: 'sev-2', event_kind: 'LECTURE', change: null }};
+const news = {{ kind: 'ANNOUNCEMENT', id: 'san-1', group_id: 'g', title: 'Zoom', status: 'PUBLISHED', version: 1, personal: {{}}, visible_in_agenda: false }};
+const data = {{ groups: [{{ id: 'g', preferences: {{ show_regular_classes: true, announcements_in_agenda: false }} }}], items: [event, lecture, news] }};
+const frozen = JSON.stringify(data);
+const op = (type, entity_id, payload, state = 'PENDING') => ({{ operation: {{ op_id: type + entity_id, type, entity_id, payload }}, state, queued_at: '2026-09-23T10:00:00Z' }});
+const view = project('/api/v1/me/shared', data, [
+  op('shared_event_state.update', 'sev-1', {{ criticality_override: 'IMPORTANT', last_seen_version: 2 }}),
+  op('task.create', 'task-p', {{ title: 'Подготовка', prepares: {{ kind: 'SHARED_EVENT', id: 'sev-1' }} }}),
+  op('group_preferences.update', 'g', {{ show_regular_classes: false, announcements_in_agenda: true }}),
+  op('shared_event_state.update', 'sev-1', {{ attendance_override: 'SKIP' }}, 'REJECTED'),
+]);
+assert(JSON.stringify(data) === frozen, 'the cached response was modified');
+const [kr, lec, ann] = view.items;
+console.log(JSON.stringify({{ crit: kr.criticality, att: kr.attendance.effective, change: kr.change, prep: kr.personal.preparation_task?.id,
+  actions: kr.available_actions, pending: kr._pending, lecture: lec.visible_in_agenda, news: ann.visible_in_agenda }}));
+""")
+        self.assertEqual(out["crit"], {"group": "CRITICAL", "effective": "IMPORTANT", "overridden": True})
+        self.assertEqual(out["att"], "REQUIRED")  # a refused change is not shown
+        self.assertIsNone(out["change"])  # seen
+        self.assertEqual((out["prep"], out["actions"], out["pending"]), ("task-p", ["set_attendance"], True))
+        self.assertEqual((out["lecture"], out["news"]), (False, True))

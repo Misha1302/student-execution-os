@@ -4,6 +4,7 @@ import { peek } from '../store.js';
 
 // Sources/evidence diagnostics live under Settings → Advanced.
 export const MORE_ITEMS = [
+  ['groups', 'tasks', 'more.groupsHint'],
   ['calendar', 'calendar', 'more.calendarHint'],
   ['notifications', 'bell', 'more.notificationsHint'],
   ['places', 'place', 'more.placesHint'],

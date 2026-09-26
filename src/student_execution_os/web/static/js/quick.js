@@ -13,6 +13,9 @@ import { haptic } from './native.js';
 import { rescheduleSheet, editTaskSheet } from './capture.js';
 import { eventSheet } from './events.js';
 import { reminderSheet, reminderAction, snoozeChoices, remindAboutSheet, isOpen } from './reminders.js';
+import { findShared, openSharedActions, annotateExternalSheet } from './groups.js';
+
+const SHARED_KINDS = new Set(['SHARED_EVENT', 'SHARED_OBLIGATION', 'ANNOUNCEMENT']);
 
 // The entity an element stands for: explicit data-kind, or the existing open actions.
 export function entityRef(el) {
@@ -23,6 +26,7 @@ export function entityRef(el) {
 }
 
 export function findEntity(kind, id) {
+  if (SHARED_KINDS.has(kind)) return findShared(id);
   const lists = kind === 'TASK' ? [peek('/api/v1/tasks'), peek('/api/v1/today')?.tasks, peek('/api/v1/today')?.needs_refinement]
     : kind === 'EVENT' ? [peek('/api/v1/events'), peek('/api/v1/today')?.plan?.canonical_events, peek('/api/v1/plan/agenda?days=7')?.plan?.canonical_events]
       : [peek('/api/v1/reminders')];
@@ -59,6 +63,8 @@ export function quickActionsFor(kind, e) {
     if (e.status === 'ACTIVE') {
       add('editEvent', 'calendar', () => eventSheet(e));
       add('remind', 'bell', () => remindAboutSheet({ ...e, kind: 'EVENT' }));
+      // An imported class can be marked for a group ("на этой паре — контрольная").
+      if (e.imported) add('annotateForGroup', 'flag', () => annotateExternalSheet(e));
       add('cancelEvent', 'x', () => lifecycle(e.id, e.version, 'cancel', { title: e.title, kind: 'event' }), 'muted');
     } else {
       add('restoreEvent', 'repeat', () => lifecycle(e.id, e.version, 'reopen', { kind: 'event' }));
@@ -96,6 +102,7 @@ export function openQuickActions(kind, id) {
   return singleFlightQuickAction(kind, id, async () => {
     const entity = findEntity(kind, id);
     if (!entity) return;
+    if (SHARED_KINDS.has(kind)) { await openSharedActions(entity); return; }
     const items = quickActionsFor(kind, entity);
     haptic('MEDIUM');
     const chosen = await actionSheet({ title: entity.title, items });

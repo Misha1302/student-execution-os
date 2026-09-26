@@ -28,13 +28,16 @@ from student_execution_os.domain.errors import (
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 
+from student_execution_os.groups.errors import GroupRateLimited
+
 from .auth import AuthConfig, RateLimited, Session, SQLiteAuthStore, Unauthenticated
-from .queries import UiService
+from .queries import GroupMutationRefused, UiService
 
 
 _ERROR_MAP: tuple[tuple[type[Exception], str, int], ...] = (
     (Unauthenticated, "UNAUTHENTICATED", 401),
     (RateLimited, "RATE_LIMITED", 429),
+    (GroupRateLimited, "RATE_LIMITED", 429),
     (EntityNotFound, "NOT_FOUND", 404),
     (VersionConflict, "VERSION_CONFLICT", 409),
     (IdempotencyConflict, "IDEMPOTENCY_CONFLICT", 409),
@@ -47,6 +50,9 @@ _ERROR_MAP: tuple[tuple[type[Exception], str, int], ...] = (
 
 
 def _error(exc: Exception) -> JSONResponse:
+    if isinstance(exc, GroupMutationRefused):
+        return JSONResponse(status_code=exc.http_status, content={"error": {
+            "code": exc.code, "message": str(exc), "retryable": False, **exc.details()}})
     for cls, code, status in _ERROR_MAP:
         if isinstance(exc, cls):
             return JSONResponse(
@@ -69,6 +75,177 @@ def _error(exc: Exception) -> JSONResponse:
             }
         },
     )
+
+
+def _mutation_id(request: Request, payload: dict[str, Any]) -> str | None:
+    return request.headers.get("idempotency-key") or payload.get("mutation_id")
+
+
+def _install_group_routes(app: FastAPI, current_service) -> None:
+    """Collaborative groups (schema v18, ADR 0021). Group-wide changes and personal
+    overlay changes are separate routes and separate operation types."""
+    from student_execution_os.groups.model import SharedKind
+
+    def mutate(service: UiService, request: Request, op: str, entity_id: str, payload: dict[str, Any], scope=None):
+        return service.group_mutation(op, entity_id, payload, _mutation_id(request, payload),
+                                      if_match=request.headers.get("if-match"), scope=scope)
+
+    @app.get("/api/v1/groups")
+    async def list_groups(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return {"items": service.group_read("me_shared")["groups"], "next_cursor": None}
+
+    @app.post("/api/v1/groups", status_code=201)
+    async def create_group(request: Request, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)):
+        body = dict(payload)
+        return mutate(service, request, "group.create", str(body.pop("id", "") or ""), body)
+
+    @app.post("/api/v1/groups/join")
+    async def join_group(request: Request, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)):
+        return mutate(service, request, "group.join", "", payload)
+
+    @app.get("/api/v1/groups/{group_id}")
+    async def get_group(group_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("group", group_id)
+
+    @app.patch("/api/v1/groups/{group_id}")
+    async def update_group(group_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                           service: UiService = Depends(current_service)):
+        return mutate(service, request, "group.update", group_id, payload)
+
+    for action in ("archive", "unarchive", "delete", "leave", "join"):
+        def make(action=action):
+            async def route(group_id: str, request: Request, payload: dict[str, Any] = Body(default={}),
+                            service: UiService = Depends(current_service)):
+                return mutate(service, request, f"group.{action}", "" if action == "join" else group_id, payload)
+            return route
+        app.post(f"/api/v1/groups/{{group_id}}/{action}", name=f"group_{action}")(make())
+
+    @app.get("/api/v1/groups/{group_id}/members")
+    async def group_members(group_id: str, include: str = "active", cursor: str | None = None, limit: int | None = None,
+                            service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("members", group_id, include=include, cursor=cursor, limit=limit)
+
+    @app.patch("/api/v1/groups/{group_id}/members/{account_id}")
+    async def update_member(group_id: str, account_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                            service: UiService = Depends(current_service)):
+        return mutate(service, request, "membership.update", group_id, {**payload, "account_id": account_id})
+
+    @app.get("/api/v1/groups/{group_id}/invites")
+    async def group_invites(group_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("invites", group_id)
+
+    @app.post("/api/v1/groups/{group_id}/invites", status_code=201)
+    async def create_invite(group_id: str, request: Request, payload: dict[str, Any] = Body(default={}),
+                            service: UiService = Depends(current_service)):
+        return mutate(service, request, "invite.create", group_id, payload)
+
+    @app.post("/api/v1/groups/{group_id}/invites/{invite_id}/revoke")
+    async def revoke_invite(group_id: str, invite_id: str, request: Request, payload: dict[str, Any] = Body(default={}),
+                            service: UiService = Depends(current_service)):
+        return mutate(service, request, "invite.revoke", invite_id, payload, scope=("INVITE", group_id))
+
+    @app.get("/api/v1/groups/{group_id}/audit")
+    async def group_audit(group_id: str, entity_id: str | None = None,
+                          service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("audit", group_id, entity_id)
+
+    shared = (("events", SharedKind.SHARED_EVENT, "shared_event", "cancel"),
+              ("obligations", SharedKind.SHARED_OBLIGATION, "shared_obligation", "cancel"),
+              ("announcements", SharedKind.SHARED_ANNOUNCEMENT, "announcement", "retract"))
+    for path, kind, op, close in shared:
+        def install(path=path, kind=kind, op=op, close=close):
+            @app.get(f"/api/v1/groups/{{group_id}}/{path}", name=f"list_{path}")
+            async def list_entities(group_id: str, status: str = "all", cursor: str | None = None, limit: int | None = None,
+                                    service: UiService = Depends(current_service)) -> dict[str, Any]:
+                return service.group_read("entities", kind, group_id, status=status, cursor=cursor, limit=limit)
+
+            @app.post(f"/api/v1/groups/{{group_id}}/{path}", status_code=201, name=f"create_{path}")
+            async def create_entity(group_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                                    service: UiService = Depends(current_service)):
+                body = dict(payload)
+                entity_id = str(body.pop("id", "") or "")
+                return mutate(service, request, f"{op}.create", entity_id, {**body, "group_id": group_id})
+
+            @app.get(f"/api/v1/groups/{{group_id}}/{path}/{{entity_id}}", name=f"get_{path}")
+            async def get_entity(group_id: str, entity_id: str, service: UiService = Depends(current_service)):
+                result = service.group_read("entity", kind, entity_id)
+                if result["group_id"] != group_id:
+                    raise EntityNotFound("not found")
+                return result
+
+            @app.patch(f"/api/v1/groups/{{group_id}}/{path}/{{entity_id}}", name=f"update_{path}")
+            async def update_entity(group_id: str, entity_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                                    service: UiService = Depends(current_service)):
+                return mutate(service, request, f"{op}.update", entity_id, payload, scope=(kind.value, group_id))
+
+            @app.post(f"/api/v1/groups/{{group_id}}/{path}/{{entity_id}}/{close}", name=f"{close}_{path}")
+            async def close_entity(group_id: str, entity_id: str, request: Request, payload: dict[str, Any] = Body(default={}),
+                                   service: UiService = Depends(current_service)):
+                return mutate(service, request, f"{op}.{close}", entity_id, payload, scope=(kind.value, group_id))
+        install()
+
+    @app.post("/api/v1/groups/{group_id}/events/{event_id}/external-binding")
+    async def bind_external(group_id: str, event_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                            service: UiService = Depends(current_service)):
+        return mutate(service, request, "shared_event.bind_external", event_id, payload,
+                      scope=(SharedKind.SHARED_EVENT.value, group_id))
+
+    @app.delete("/api/v1/groups/{group_id}/events/{event_id}/external-binding")
+    async def detach_external(group_id: str, event_id: str, request: Request, expected_version: int | None = None,
+                              mutation_id: str | None = None, service: UiService = Depends(current_service)):
+        payload = {} if expected_version is None else {"expected_version": expected_version}
+        if mutation_id:
+            payload["mutation_id"] = mutation_id
+        return mutate(service, request, "shared_event.detach_external", event_id, payload,
+                      scope=(SharedKind.SHARED_EVENT.value, group_id))
+
+    @app.get("/api/v1/groups/{group_id}/proposals")
+    async def list_proposals(group_id: str, status: str = "pending", cursor: str | None = None, limit: int | None = None,
+                             service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("proposals", group_id, status=status, cursor=cursor, limit=limit)
+
+    @app.post("/api/v1/groups/{group_id}/proposals", status_code=201)
+    async def create_proposal(group_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                              service: UiService = Depends(current_service)):
+        body = dict(payload)
+        entity_id = str(body.pop("id", "") or "")
+        return mutate(service, request, "proposal.create", entity_id, {**body, "group_id": group_id})
+
+    for action in ("approve", "reject", "withdraw"):
+        def make_review(action=action):
+            async def route(group_id: str, proposal_id: str, request: Request, payload: dict[str, Any] = Body(default={}),
+                            service: UiService = Depends(current_service)):
+                return mutate(service, request, f"proposal.{action}", proposal_id, payload, scope=("PROPOSAL", group_id))
+            return route
+        app.post(f"/api/v1/groups/{{group_id}}/proposals/{{proposal_id}}/{action}", name=f"proposal_{action}")(make_review())
+
+    # ---- personal overlay: only the caller's own, never through a group route ----
+    @app.get("/api/v1/me/shared")
+    async def me_shared(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("me_shared")
+
+    for path, kind, op in (("shared-events", SharedKind.SHARED_EVENT, "shared_event_state"),
+                           ("shared-obligations", SharedKind.SHARED_OBLIGATION, "shared_obligation_state"),
+                           ("announcements", SharedKind.SHARED_ANNOUNCEMENT, "announcement_state")):
+        def install_state(path=path, kind=kind, op=op):
+            @app.get(f"/api/v1/me/{path}/{{entity_id}}/state", name=f"me_{op}")
+            async def get_state(entity_id: str, service: UiService = Depends(current_service)):
+                return service.group_read("me_state", kind, entity_id)
+
+            @app.patch(f"/api/v1/me/{path}/{{entity_id}}/state", name=f"me_{op}_update")
+            async def update_state(entity_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                                   service: UiService = Depends(current_service)):
+                return mutate(service, request, f"{op}.update", entity_id, payload)
+        install_state()
+
+    @app.get("/api/v1/me/groups/{group_id}/preferences")
+    async def my_group_preferences(group_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.group_read("me_preferences", group_id)
+
+    @app.patch("/api/v1/me/groups/{group_id}/preferences")
+    async def update_my_group_preferences(group_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                                          service: UiService = Depends(current_service)):
+        return mutate(service, request, "group_preferences.update", group_id, payload)
 
 
 def _bearer(request: Request) -> str | None:
@@ -538,6 +715,8 @@ def create_app(
             str(payload["intent_id"]),
             payload.get("idempotency_key"),
         )
+
+    _install_group_routes(app, current_service)
 
     static_root = Path(__file__).with_name("static")
     @app.get("/assets/{asset_path:path}")

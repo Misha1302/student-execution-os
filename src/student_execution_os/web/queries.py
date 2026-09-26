@@ -20,7 +20,7 @@ from student_execution_os.agent import (
 )
 from student_execution_os.connectors.model import ConnectorHealth
 from student_execution_os.domain.clock import FrozenClock
-from student_execution_os.domain.errors import EntityNotFound, ValidationError
+from student_execution_os.domain.errors import DomainError, EntityNotFound, ValidationError
 from student_execution_os.domain.model import (
     ActorCategory,
     AttendancePolicy,
@@ -52,13 +52,14 @@ from student_execution_os.planning.model import PlanningPolicy
 from student_execution_os.planning.outlook import (
     OFF_HOURS_PREFIX,
     SQLitePlanningProfileRepository,
-    off_hours_constraints,
     overlap_minutes,
     planning_intervals,
 )
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
 from student_execution_os.sync.commands import SyncService
+from student_execution_os.reminders.engine import derived_availability
+from student_execution_os.groups.projection import SHARED_CONSTRAINT_PREFIX
 
 
 class _AccountLimiter:
@@ -136,6 +137,28 @@ def _cutoff(payload: dict[str, Any] | None) -> HardCutoff:
     return HardCutoff.known(at, boundary)
 
 
+class GroupMutationRefused(DomainError):
+    """A recorded REJECTED/CONFLICT result of a group mutation, returned as an HTTP error."""
+
+    STATUS = {"NOT_FOUND": 404, "FORBIDDEN": 403, "VERSION_CONFLICT": 409, "ILLEGAL_TRANSITION": 409,
+              "ENTITY_CANCELLED": 409, "ENTITY_RETRACTED": 409, "PROPOSAL_CLOSED": 409, "OP_ID_REUSED": 409,
+              "POSSIBLE_DUPLICATE": 409}
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__(result.get("message") or result.get("code") or "refused")
+        self.result = result
+        self.code = result.get("code") or "VALIDATION_ERROR"
+        self.http_status = self.STATUS.get(self.code, 409 if result.get("status") == "CONFLICT" else 422)
+
+    def details(self) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        if self.result.get("current_version") is not None:
+            extra["current_version"] = self.result["current_version"]
+        if self.result.get("entity"):
+            extra["entity"] = self.result["entity"]
+        return extra
+
+
 class UiService:
     """Revision-bound UI/query/application façade.
 
@@ -188,7 +211,7 @@ class UiService:
                 version=f"daily-product-v1:{profile.version}:{profile.optional_event_policy}",
                 optional_event_policy=profile.optional_event_policy,
             ),
-            derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
+            derived_constraints=derived_availability(repo, profile, self.account_id, now),
             assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
 
@@ -241,13 +264,13 @@ class UiService:
                     version=f"outlook-v1:{profile.version}:{profile.optional_event_policy}",
                     optional_event_policy=profile.optional_event_policy,
                 ),
-                derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
+                derived_constraints=derived_availability(repo, profile, self.account_id, self._now()),
                 assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
             )
             outcome = PlanningService().build(snapshot, now=self._now())
             windows = planning_intervals(profile, start_date, days)
             blocks = list(outcome.plan.blocks)
-            constraints = [c for c in snapshot.constraints if not c.id.startswith(OFF_HOURS_PREFIX)]
+            constraints = [c for c in snapshot.constraints if not c.id.startswith((OFF_HOURS_PREFIX, SHARED_CONSTRAINT_PREFIX))]
             risks = {risk.task_id: risk for risk in outcome.risks}
             day_rows = []
             for index in range(days):
@@ -407,7 +430,11 @@ class UiService:
         events = [repo.get_event(self.account_id, e.obligation.id) if e.obligation.id in stored else e for e in events]
         leads = extras.event_leads(repo, self.account_id)
         reminders = ReminderStore(repo).pending_reminders(self.account_id)
-        return [self._event(e, lead=leads.get(e.obligation.id), remind_at=reminders.get(e.obligation.id)) for e in events]
+        # Imported from an external calendar: the group can annotate it (never rewrite it).
+        imported = {row[0] for row in repo.connection.execute(
+            "SELECT local_entity_id FROM source_bindings WHERE account_id=? AND state='ACTIVE'", (self.account_id,))}
+        return [{**self._event(e, lead=leads.get(e.obligation.id), remind_at=reminders.get(e.obligation.id)),
+                 "imported": e.obligation.id in imported} for e in events]
 
     def today(self) -> dict[str, Any]:
         with self._repo() as repo:
@@ -577,7 +604,14 @@ class UiService:
                 "reason": c.reason,
                 "version": c.version,
                 "ownership": "CANONICAL",
-            } for c in constraints if not c.id.startswith(OFF_HOURS_PREFIX)],
+            } for c in constraints if not c.id.startswith((OFF_HOURS_PREFIX, SHARED_CONSTRAINT_PREFIX))],
+            # Group events the user attends (derived from the group layer + their overlay, never stored).
+            "shared_events": [{
+                "id": c.id[len(SHARED_CONSTRAINT_PREFIX):],
+                "starts_at": _jsonify(c.interval.starts_at),
+                "ends_at": _jsonify(c.interval.ends_at),
+                "label": c.reason,
+            } for c in constraints if c.id.startswith(SHARED_CONSTRAINT_PREFIX)],
             # Sleep / off hours from the planning profile (derived, never stored).
             "off_hours": [{
                 "starts_at": _jsonify(c.interval.starts_at),
@@ -711,8 +745,9 @@ class UiService:
         if place not in (None, "", "open", "done", "archive"):
             raise ValueError("place must be open, done or archive")
         tasks, events, reminders = self.tasks(), self.events(), self.reminders()
+        shared = self.group_read("me_shared")["items"]
         items = commitments(tasks=tasks, events=events, reminders=reminders, now=self._now(),
-                            place=place or None, query=query[:200])
+                            place=place or None, query=query[:200], shared=shared)
         return {"now": _jsonify(self._now()), "items": items}
 
     def connectors(self) -> list[dict[str, Any]]:
@@ -1214,13 +1249,56 @@ class UiService:
             raise ValueError("operations must be a list")
         with self._repo() as repo:
             service = SyncService(
-                repo, account_id=self.account_id, principal_id=self.principal.principal_id, now=self._now()
+                repo, account_id=self.account_id, principal_id=self.principal.principal_id, now=self._now(),
+                channel="offline-queue",
             )
             return {
                 "results": service.apply_batch(operations),
                 "server_revision": repo.get_server_revision(self.account_id),
                 "synced_at": _jsonify(self._now()),
             }
+
+    # ---- collaborative groups (schema v18) -------------------------------------------------
+
+    def group_mutation(self, op_type: str, entity_id: str, payload: dict[str, Any], mutation_id: str | None,
+                       *, if_match: str | None = None, scope: tuple[str, str] | None = None) -> dict[str, Any]:
+        """One group or personal-overlay change through the sync pipeline, as an HTTP result.
+
+        ``mutation_id`` is the operation id: repeating it returns the first result.
+        ``If-Match`` supplies ``expected_version`` when the body does not.
+        """
+        if not mutation_id:
+            raise ValidationError("mutation_id (or an Idempotency-Key header) is required")
+        body = dict(payload)
+        body.pop("mutation_id", None)
+        if if_match and "expected_version" not in body:
+            body["expected_version"] = int(str(if_match).strip('"W/ '))
+        with self._repo() as repo:
+            if scope is not None:
+                # /groups/{g}/events/{e}: the entity must belong to the group in the path.
+                from student_execution_os.groups.model import SharedKind
+                from student_execution_os.groups.repository import SQLiteGroupRepository
+                kind, group_id = scope
+                groups = SQLiteGroupRepository(repo)
+                row = groups.proposal(entity_id) if kind == "PROPOSAL" else groups.invite(entity_id) if kind == "INVITE" \
+                    else groups.entity(SharedKind(kind), entity_id)
+                if row is None or row["group_id"] != group_id:
+                    raise EntityNotFound("not found")
+            result = SyncService(repo, account_id=self.account_id, principal_id=self.principal.principal_id,
+                                 now=self._now()).apply({"op_id": mutation_id, "type": op_type,
+                                                         "entity_id": entity_id, "payload": body})
+        if result["status"] in ("APPLIED", "NOOP"):
+            return {"entity": result["entity"], "status": result["status"], "code": result["code"],
+                    "replayed": result["replayed"], "mutation_id": mutation_id}
+        raise GroupMutationRefused(result)
+
+    def _groups_read(self, repo):
+        from student_execution_os.groups.service import GroupReadService
+        return GroupReadService(repo, self.account_id, self._now())
+
+    def group_read(self, method: str, *args, **kwargs) -> dict[str, Any]:
+        with self._repo() as repo:
+            return getattr(self._groups_read(repo), method)(*args, **kwargs)
 
     def upload_attachment(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._repo() as repo:

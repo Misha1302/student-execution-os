@@ -1,31 +1,341 @@
 {
  "now": "2026-09-23T10:00:00+03:00",
  "tasks": [
-  {"id": "t-essay", "title": "Эссе по английскому", "description": "глава 2", "status": "ACTIVE", "version": 2, "importance": "HIGH",
-   "actual_cutoff": {"state": "KNOWN", "at": "2026-09-25T15:00:00+00:00"}},
-  {"id": "t-read", "title": "Прочитать статью", "status": "DRAFT", "version": 1, "actual_cutoff": {"state": "UNKNOWN"},
-   "actionable_from": "2026-09-24T06:00:00+00:00"},
-  {"id": "t-milk", "title": "Купить молоко", "status": "ACTIVE", "version": 1, "actual_cutoff": {"state": "UNKNOWN"}},
-  {"id": "t-done", "title": "Лаба по физике", "status": "COMPLETED", "version": 4, "actual_cutoff": {"state": "KNOWN", "at": "2026-09-22T15:00:00+00:00"}},
-  {"id": "t-nope", "title": "Реферат", "status": "CANCELLED", "version": 3, "actual_cutoff": {"state": "ABSENT"}, "target_at": "2026-09-30T20:00:00+00:00"},
-  {"id": "t-arch", "title": "Старое", "status": "ARCHIVED", "version": 5, "actual_cutoff": {"state": "ABSENT"}}
+  {
+   "id": "t-essay",
+   "title": "Эссе по английскому",
+   "description": "глава 2",
+   "status": "ACTIVE",
+   "version": 2,
+   "importance": "HIGH",
+   "actual_cutoff": {
+    "state": "KNOWN",
+    "at": "2026-09-25T15:00:00+00:00"
+   }
+  },
+  {
+   "id": "t-read",
+   "title": "Прочитать статью",
+   "status": "DRAFT",
+   "version": 1,
+   "actual_cutoff": {
+    "state": "UNKNOWN"
+   },
+   "actionable_from": "2026-09-24T06:00:00+00:00"
+  },
+  {
+   "id": "t-milk",
+   "title": "Купить молоко",
+   "status": "ACTIVE",
+   "version": 1,
+   "actual_cutoff": {
+    "state": "UNKNOWN"
+   }
+  },
+  {
+   "id": "t-done",
+   "title": "Лаба по физике",
+   "status": "COMPLETED",
+   "version": 4,
+   "actual_cutoff": {
+    "state": "KNOWN",
+    "at": "2026-09-22T15:00:00+00:00"
+   }
+  },
+  {
+   "id": "t-nope",
+   "title": "Реферат",
+   "status": "CANCELLED",
+   "version": 3,
+   "actual_cutoff": {
+    "state": "ABSENT"
+   },
+   "target_at": "2026-09-30T20:00:00+00:00"
+  },
+  {
+   "id": "t-arch",
+   "title": "Старое",
+   "status": "ARCHIVED",
+   "version": 5,
+   "actual_cutoff": {
+    "state": "ABSENT"
+   }
+  }
  ],
  "events": [
-  {"id": "e-call", "title": "Созвон с научруком", "status": "ACTIVE", "version": 1, "starts_at": "2026-09-23T15:00:00+00:00", "ends_at": "2026-09-23T16:00:00+00:00"},
-  {"id": "e-past", "title": "Лекция", "description": "аудитория 5", "status": "ACTIVE", "version": 1, "starts_at": "2026-09-23T05:00:00+00:00", "ends_at": "2026-09-23T06:30:00+00:00"},
-  {"id": "e-cancel", "title": "Тренировка", "status": "CANCELLED", "version": 2, "starts_at": "2026-09-24T15:00:00+00:00", "ends_at": "2026-09-24T16:00:00+00:00"}
+  {
+   "id": "e-call",
+   "title": "Созвон с научруком",
+   "status": "ACTIVE",
+   "version": 1,
+   "starts_at": "2026-09-23T15:00:00+00:00",
+   "ends_at": "2026-09-23T16:00:00+00:00"
+  },
+  {
+   "id": "e-past",
+   "title": "Лекция",
+   "description": "аудитория 5",
+   "status": "ACTIVE",
+   "version": 1,
+   "starts_at": "2026-09-23T05:00:00+00:00",
+   "ends_at": "2026-09-23T06:30:00+00:00"
+  },
+  {
+   "id": "e-cancel",
+   "title": "Тренировка",
+   "status": "CANCELLED",
+   "version": 2,
+   "starts_at": "2026-09-24T15:00:00+00:00",
+   "ends_at": "2026-09-24T16:00:00+00:00"
+  }
  ],
  "reminders": [
-  {"id": "r-bread", "title": "Купить хлеб", "note": "бородинский", "status": "SCHEDULED", "version": 1, "remind_at": "2026-09-23T15:00:00+00:00", "delivery": "PUSH"},
-  {"id": "r-wake", "title": "Подъём", "status": "DONE", "version": 3, "remind_at": "2026-09-23T04:00:00+00:00", "delivery": "ALARM"}
+  {
+   "id": "r-bread",
+   "title": "Купить хлеб",
+   "note": "бородинский",
+   "status": "SCHEDULED",
+   "version": 1,
+   "remind_at": "2026-09-23T15:00:00+00:00",
+   "delivery": "PUSH"
+  },
+  {
+   "id": "r-wake",
+   "title": "Подъём",
+   "status": "DONE",
+   "version": 3,
+   "remind_at": "2026-09-23T04:00:00+00:00",
+   "delivery": "ALARM"
+  }
  ],
  "queries": [
-  {"place": null, "query": ""},
-  {"place": "open", "query": ""},
-  {"place": "done", "query": ""},
-  {"place": "archive", "query": ""},
-  {"place": null, "query": "купить"},
-  {"place": null, "query": "ГЛАВА 2"},
-  {"place": "open", "query": "аудитория"}
+  {
+   "place": null,
+   "query": ""
+  },
+  {
+   "place": "open",
+   "query": ""
+  },
+  {
+   "place": "done",
+   "query": ""
+  },
+  {
+   "place": "archive",
+   "query": ""
+  },
+  {
+   "place": null,
+   "query": "купить"
+  },
+  {
+   "place": null,
+   "query": "ГЛАВА 2"
+  },
+  {
+   "place": "open",
+   "query": "аудитория"
+  },
+  {
+   "place": null,
+   "query": "пи-261"
+  },
+  {
+   "place": "open",
+   "query": "защита"
+  },
+  {
+   "place": "open",
+   "query": "zoom"
+  }
+ ],
+ "shared": [
+  {
+   "kind": "SHARED_EVENT",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "version": 1,
+   "description": "темы 1-4",
+   "location": "R201",
+   "external": null,
+   "attendance": {
+    "group": "REQUIRED",
+    "effective": "REQUIRED",
+    "overridden": false
+   },
+   "criticality": {
+    "group": "CRITICAL",
+    "effective": "CRITICAL",
+    "overridden": false
+   },
+   "personal": {},
+   "visible_in_agenda": true,
+   "event_kind": "CONTROL_WORK",
+   "id": "sev-kr",
+   "title": "Контрольная №2",
+   "status": "PUBLISHED",
+   "starts_at": "2026-09-25T09:10:00+00:00",
+   "ends_at": "2026-09-25T10:30:00+00:00"
+  },
+  {
+   "kind": "SHARED_EVENT",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "version": 1,
+   "description": null,
+   "location": null,
+   "external": {
+    "bound": true,
+    "local_event_id": "e-call"
+   },
+   "attendance": {
+    "group": "PREFERRED",
+    "effective": "OPTIONAL",
+    "overridden": true
+   },
+   "criticality": {
+    "group": "CRITICAL",
+    "effective": "CRITICAL",
+    "overridden": false
+   },
+   "personal": {},
+   "visible_in_agenda": true,
+   "event_kind": "CONTROL_WORK",
+   "id": "sev-annot",
+   "title": "Защита плана",
+   "status": "PUBLISHED",
+   "starts_at": "2026-09-23T15:00:00+00:00",
+   "ends_at": "2026-09-23T16:00:00+00:00"
+  },
+  {
+   "kind": "SHARED_EVENT",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "version": 1,
+   "description": null,
+   "location": null,
+   "external": null,
+   "attendance": {
+    "group": "REQUIRED",
+    "effective": "REQUIRED",
+    "overridden": false
+   },
+   "criticality": {
+    "group": "CRITICAL",
+    "effective": "CRITICAL",
+    "overridden": false
+   },
+   "personal": {},
+   "visible_in_agenda": false,
+   "event_kind": "LECTURE",
+   "id": "sev-hidden",
+   "title": "Скрытая лекция",
+   "status": "PUBLISHED",
+   "starts_at": "2026-09-24T09:00:00+00:00",
+   "ends_at": "2026-09-24T10:00:00+00:00"
+  },
+  {
+   "kind": "SHARED_EVENT",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "version": 1,
+   "description": null,
+   "location": null,
+   "external": null,
+   "attendance": {
+    "group": "REQUIRED",
+    "effective": "REQUIRED",
+    "overridden": false
+   },
+   "criticality": {
+    "group": "CRITICAL",
+    "effective": "CRITICAL",
+    "overridden": false
+   },
+   "personal": {},
+   "visible_in_agenda": true,
+   "event_kind": "COLLOQUIUM",
+   "id": "sev-cancel",
+   "title": "Коллоквиум",
+   "status": "CANCELLED",
+   "starts_at": "2026-09-26T09:00:00+00:00",
+   "ends_at": "2026-09-26T10:00:00+00:00"
+  },
+  {
+   "kind": "SHARED_OBLIGATION",
+   "id": "sob-lab",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "title": "Сдать лабу 3",
+   "status": "PUBLISHED",
+   "version": 2,
+   "description": null,
+   "deadline": "2026-09-26T20:59:00+00:00",
+   "criticality": {
+    "group": "IMPORTANT",
+    "effective": "IMPORTANT",
+    "overridden": false
+   },
+   "personal": {
+    "acceptance_state": "ACCEPTED",
+    "personal_task": {
+     "id": "t-lab",
+     "status": "COMPLETED"
+    }
+   },
+   "visible_in_agenda": true
+  },
+  {
+   "kind": "SHARED_OBLIGATION",
+   "id": "sob-reg",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "title": "Регистрация на олимпиаду",
+   "status": "PUBLISHED",
+   "version": 1,
+   "description": null,
+   "deadline": "2026-09-28T20:59:00+00:00",
+   "criticality": {
+    "group": "NORMAL",
+    "effective": "NORMAL",
+    "overridden": false
+   },
+   "personal": {
+    "acceptance_state": "UNDECIDED",
+    "personal_task": null
+   },
+   "visible_in_agenda": true
+  },
+  {
+   "kind": "ANNOUNCEMENT",
+   "id": "san-zoom",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "title": "Пара в Zoom",
+   "body": "ссылка в чате",
+   "importance": "IMPORTANT",
+   "status": "PUBLISHED",
+   "version": 1,
+   "personal": {
+    "dismissed": false
+   },
+   "visible_in_agenda": true
+  },
+  {
+   "kind": "ANNOUNCEMENT",
+   "id": "san-quiet",
+   "group_id": "g-pi",
+   "group_name": "ПИ-261",
+   "title": "Не в ленте",
+   "body": "…",
+   "importance": "NORMAL",
+   "status": "PUBLISHED",
+   "version": 1,
+   "personal": {
+    "dismissed": false
+   },
+   "visible_in_agenda": false
+  }
  ]
 }
