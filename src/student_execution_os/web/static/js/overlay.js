@@ -169,7 +169,7 @@ function applyExecutionTaskOp(task, item) {
   const op = item.operation || {};
   const p = op.payload || {};
   if (!task || executionTaskId(item) !== task.id) return task;
-  const at = item.queued_at || new Date().toISOString();
+  const at = p.occurred_at || item.queued_at || new Date().toISOString();
   const next = { ...task, updated_at: at, _pending: true };
   if (op.type === 'execution.start') {
     next.started_at = task.started_at || at;
@@ -204,7 +204,7 @@ export function projectExecution(session, ops) {
   let current = session ? { ...session } : null;
   for (const item of ops) {
     const op = item.operation || {};
-    const at = item.queued_at || new Date().toISOString();
+    const at = op.payload?.occurred_at || item.queued_at || new Date().toISOString();
     if (!op.type?.startsWith('execution.')) continue;
     if (op.type === 'execution.start') {
       if (current && current.id !== op.entity_id) continue;
