@@ -4,6 +4,8 @@
 !.env.example
 *.pem
 *.key
+*.jks
+*.keystore
 secrets/
 .credentials/
 # Service-account / platform credentials (FCM Admin SDK, credential master keys)

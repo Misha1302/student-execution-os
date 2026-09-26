@@ -8,6 +8,54 @@ import { shell } from '../actions.js';
 import { aiSection, aiActions, loadAiSettings } from '../ai.js';
 import { healthSection, healthActions, loadHealth } from '../health.js';
 import { syncSection, syncActions, loadConnectors } from '../sync-panel.js';
+import { appUpdateService, UpdateChannel, UpdateState } from '../update-service.js';
+
+async function loadUpdates() {
+  if (!isNative()) return null;
+  await appUpdateService.initialize();
+  return { state: appUpdateService.getState(), preferences: await appUpdateService.preferences() };
+}
+
+function updateSection(updates) {
+  if (!updates) return '';
+  const { state, preferences } = updates;
+  const target = state.target;
+  const locale = getLocale();
+  const releaseNotes = target?.release?.releaseNotes?.[locale] || target?.release?.releaseNotes?.en;
+  const status = t(`updates.state.${state.status}`);
+  const percent = Math.round((state.progress || 0) * 100);
+  const progress = `<div data-update-progress ${state.status === UpdateState.DOWNLOADING ? '' : 'hidden'}>
+    <div class="progress"><span data-w="${percent}" data-update-progress-bar></span></div>
+    <small data-update-progress-label>${esc(t('updates.progress', { n: percent }))}</small>
+  </div>`;
+  const error = state.error ? `<div class="banner danger">${icon('alert')}<div><strong>${esc(t(`updates.error.${state.error.code}`))}</strong><p>${esc(state.error.message || '')}</p></div></div>` : '';
+  const notes = releaseNotes ? `<div class="update-notes"><strong>${esc(releaseNotes.summary)}</strong><ul>${releaseNotes.changes.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div>` : '';
+  const available = [UpdateState.AVAILABLE, UpdateState.FAILED].includes(state.status) && target && !state.downloaded
+    ? `<button class="button primary" data-action="update-download">${esc(t('updates.download'))}</button>` : '';
+  const ready = [UpdateState.READY_TO_INSTALL, UpdateState.FAILED].includes(state.status) && state.downloaded
+    ? `<button class="button primary" data-action="update-apply">${esc(t('updates.restartInstall'))}</button>` : '';
+  const permission = state.error?.code === 'PERMISSION_REQUIRED'
+    ? `<button class="button" data-action="update-permission">${esc(t('updates.allowInstall'))}</button>` : '';
+  return `<section class="section">
+    <div class="section-head"><h2>${esc(t('updates.title'))}</h2></div>
+    <div class="card form">
+      <dl class="kv-list">
+        ${kv(t('updates.version'), state.currentVersion || '—')}
+        ${kv(t('updates.channel'), t(`updates.channel.${preferences.channel}`))}
+        ${target ? kv(t('updates.availableVersion'), target.release.version.toString()) : ''}
+        ${kv(t('updates.status'), status)}
+      </dl>
+      ${preferences.betaChannelAvailable ? `<div class="field"><span>${esc(t('updates.channel'))}</span>${chipGroup('update-channel', [[UpdateChannel.STABLE, t('updates.channel.STABLE')], [UpdateChannel.BETA, t('updates.channel.BETA')]], preferences.channel)}
+        ${preferences.channel === UpdateChannel.BETA ? `<small class="help text-danger">${esc(t('updates.betaWarning'))}</small>` : ''}</div>` : ''}
+      <label class="setting-toggle"><span><strong>${esc(t('updates.autoCheck'))}</strong></span><input type="checkbox" data-update-pref="autoCheck" ${preferences.autoCheck ? 'checked' : ''}></label>
+      <label class="setting-toggle"><span><strong>${esc(t('updates.autoDownload'))}</strong></span><input type="checkbox" data-update-pref="autoDownload" ${preferences.autoDownload ? 'checked' : ''}></label>
+      ${target && target.mandatory !== 'OPTIONAL' ? `<div class="banner danger">${icon('alert')}<div><strong>${esc(t(`updates.mandatory.${target.mandatory}`))}</strong><p>${esc(t('updates.dataSafe'))}</p></div></div>` : ''}
+      ${notes}${progress}${error}
+      <div class="button-row"><button class="button" data-action="update-check">${esc(t('updates.check'))}</button>${available}${ready}${permission}</div>
+      ${!state.enabled ? `<p class="help">${esc(t('updates.notConfigured'))}</p>` : ''}
+    </div>
+  </section>`;
+}
 
 export async function logout() {
   if (session.authMode === 'session') {
@@ -114,7 +162,7 @@ export default {
   detail: true,
   title: () => t('nav.settings'),
   async load({ fresh }) {
-    const [diag, deletion, prefs, llm, profile, health, connectors] = await Promise.all([
+    const [diag, deletion, prefs, llm, profile, health, connectors, updates] = await Promise.all([
       load('/api/v1/settings/diagnostics', { fresh }),
       load('/api/v1/account/deletion-policy', { fresh }),
       load('/api/v1/notification-preferences', { fresh }).catch(() => ({ data: null })),
@@ -122,10 +170,11 @@ export default {
       load('/api/v1/settings/planning-profile', { fresh }).catch(() => ({ data: null })),
       loadHealth({ fresh }),
       loadConnectors(),
+      loadUpdates(),
     ]);
-    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors }, stale: diag.stale, fetchedAt: diag.fetchedAt };
+    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors, updates }, stale: diag.stale, fetchedAt: diag.fetchedAt };
   },
-  render({ diag, deletion, prefs, llm, profile, health, connectors }) {
+  render({ diag, deletion, prefs, llm, profile, health, connectors, updates }) {
     this._deletion = deletion;
     this._prefs = prefs;
     this._profile = profile;
@@ -164,6 +213,8 @@ export default {
       </section>` : ''}
 
       ${healthSection(health)}
+
+      ${updateSection(updates)}
 
       ${profile ? `<section class="section">
         <div class="section-head"><h2>${esc(t('settings.planning'))}</h2></div>
@@ -220,9 +271,20 @@ export default {
       </section>`;
   },
   mount(root, _data, ctx) {
+    root.querySelectorAll('[data-update-pref]').forEach((input) => input.addEventListener('change', async () => {
+      await appUpdateService.setPreferences({ [input.dataset.updatePref]: input.checked });
+      toast(t('settings.saved'));
+    }));
     root.addEventListener('chipchange', (e) => {
       if (e.detail.name === 'locale') { setLocale(e.detail.value); ctx.relabel(); ctx.rerender(); }
       if (e.detail.name === 'theme') setTheme(e.detail.value);
+      if (e.detail.name === 'update-channel') {
+        const save = async () => { await appUpdateService.setPreferences({ channel: e.detail.value }); toast(t('settings.saved')); ctx.refresh(); };
+        if (e.detail.value === UpdateChannel.BETA) {
+          confirmSheet({ title: t('updates.betaConfirmTitle'), body: `<p>${esc(t('updates.betaConfirmBody'))}</p>`, confirmLabel: t('common.continue') })
+            .then((ok) => (ok ? save() : ctx.refresh())).catch((err) => toast(errorMessage(err), { error: true }));
+        } else save().catch((err) => toast(errorMessage(err), { error: true }));
+      }
       if (e.detail.name === 'optional-policy') {
         const value = e.detail.value;
         root.querySelector('[data-optional-help]').textContent = t(`settings.optionalHelp.${value}`);
@@ -254,6 +316,10 @@ export default {
     },
     'account-export': (el) => exportAccount(el),
     'save-sleep': (el, ctx) => saveSleep(el, ctx),
+    'update-check': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.checkForUpdates({ manual: true }); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
+    'update-download': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.download(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
+    'update-apply': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.applyAndRestart(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
+    'update-permission': async () => { await appUpdateService.adapter.openInstallPermission(); },
     'account-delete-preview': (_el, ctx) => deleteSheet(ctx.view._deletion),
     ...aiActions,
     ...healthActions,

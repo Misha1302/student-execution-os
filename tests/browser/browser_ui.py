@@ -749,6 +749,38 @@ class BrowserUiTest(unittest.TestCase):
         self.assertEqual(self.page_errors, [])
         page.close()
 
+    def test_native_settings_show_update_channel_preferences_and_manual_check(self):
+        self.config_js = f"window.SEOS_CONFIG = {{ defaultServerUrl: '{ORIGIN}', pushEnabled: false }};"
+        page = self.browser.new_page(viewport={"width": 390, "height": 844}, reduced_motion="reduce",
+                                     timezone_id="Europe/Moscow")
+        self.page_errors = []
+        page.on("pageerror", lambda e: self.page_errors.append(str(e)))
+        page.add_init_script(
+            f"const prefs = new Map([['seos.server','{ORIGIN}'],"
+            "['seos.update.state.v1', JSON.stringify({installationId:'browser-update',channel:'STABLE',autoCheck:false,autoDownload:true,sequences:{},lastCheckAt:0})]]);"
+            "window.Capacitor={isNativePlatform:()=>true,Plugins:{"
+            "Preferences:{get:async({key})=>({value:prefs.get(key)??null}),set:async({key,value})=>prefs.set(key,value),remove:async({key})=>prefs.delete(key)},"
+            "SeosUpdate:{configuration:async()=>({enabled:true,debug:true,policyUrlTemplate:'http://127.0.0.1:8099/{channel}/policy.json',betaChannelAvailable:true,platform:'android',architecture:'x64',sdk:35,versionName:'1.0.0',buildNumber:100}),"
+            "addListener:async()=>({remove(){}})}}};"
+            "localStorage.setItem('seos.locale','en');"
+        )
+        page.route(ORIGIN + "/**", self._handler)
+        page.goto(f"{ORIGIN}/#/settings")
+        try:
+            page.wait_for_selector('#workspace[data-view="settings"][data-view-state="ready"]', timeout=10000)
+        except Exception as error:
+            raise AssertionError({"page_errors": self.page_errors, "workspace": page.locator("#workspace").inner_text()}) from error
+        text = self._text(page)
+        self.assertIn("Updates", text)
+        self.assertIn("Version", text)
+        self.assertIn("1.0.0", text)
+        self.assertIn("Stable", text)
+        self.assertIn("Check for updates", text)
+        self.assertTrue(page.locator('[data-update-pref="autoCheck"]').is_visible())
+        self.assertTrue(page.locator('[data-update-pref="autoDownload"]').is_checked())
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
 
     # ---- v16 interactions --------------------------------------------------------------
 

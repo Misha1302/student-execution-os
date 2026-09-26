@@ -226,6 +226,13 @@ button.chip { border: 0; font: inherit; font-size: 12px; font-weight: 650; curso
 }
 .chip-toggle.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 
+.setting-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; }
+.setting-toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
+.update-notes ul { margin: 8px 0 0; padding-inline-start: 22px; }
+.update-notes li + li { margin-top: 5px; }
+.progress { height: 7px; overflow: hidden; border-radius: 999px; background: var(--line); }
+.progress > span { display: block; height: 100%; background: var(--accent); transition: width .2s ease; }
+
 .card { background: var(--surface); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .card h3 { font-size: 16px; display: flex; align-items: center; gap: 8px; }
 .card h3 .icon { width: 18px; height: 18px; color: var(--text-3); }

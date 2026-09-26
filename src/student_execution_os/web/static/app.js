@@ -26,6 +26,7 @@ import reminder from './js/views/reminder.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
+import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
 const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, settings, welcome };
 
@@ -435,6 +436,7 @@ async function boot() {
   onResume(() => {
     flushSync().catch(() => {});
     reportDeviceStatus();
+    appUpdateService.reconcileInstallerState().catch(() => {});
     if (!current || current.view.bare || document.querySelector('dialog[open]')) return;
     // Notification buttons change tasks while the app is in the background.
     if (Date.now() - (current.fetchedAt || 0) > 5000) { invalidate(); render({ fresh: true, keepScroll: true }); }
@@ -464,6 +466,30 @@ async function boot() {
     invalidate();
     toast(event.detail?.title || t('nav.notifications'));
     if (current && !current.view.bare) render({ fresh: true, keepScroll: true });
+  });
+  let lastUpdateNotice = null;
+  window.addEventListener('seos-update-state', (event) => {
+    const state = event.detail;
+    const progress = document.querySelector('[data-update-progress]');
+    if (progress) {
+      const percent = Math.round(Math.max(0, Math.min(1, Number(state?.progress) || 0)) * 100);
+      progress.hidden = state?.status !== UpdateState.DOWNLOADING;
+      const bar = progress.querySelector('[data-update-progress-bar]');
+      const label = progress.querySelector('[data-update-progress-label]');
+      if (bar) bar.style.width = `${percent}%`;
+      if (label) label.textContent = t('updates.progress', { n: percent });
+    }
+    if (!state?.enabled || state.status === lastUpdateNotice) return;
+    lastUpdateNotice = state.status;
+    if (state.status === UpdateState.AVAILABLE) toast(t('updates.availableToast', { version: state.target?.release?.version }), {
+      action: { label: t('updates.openSettings'), run: () => go('settings') }, duration: state.target?.release?.severity === 'CRITICAL' ? 12000 : 7000,
+    });
+    if (state.status === UpdateState.READY_TO_INSTALL) toast(t('updates.readyToast'), {
+      action: { label: t('updates.openSettings'), run: () => go('settings') }, duration: 12000,
+    });
+    if (state.status === UpdateState.FAILED && state.error && state.error.code !== 'METADATA_UNAVAILABLE') {
+      toast(t(`updates.error.${state.error.code}`), { error: true, action: { label: t('updates.openSettings'), run: () => go('settings') } });
+    }
   });
 
   if (/^#\/?assistant/.test(location.hash)) history.replaceState(null, '', '#/today');
@@ -501,6 +527,8 @@ async function boot() {
     if (event.detail?.firstRun) setTimeout(() => openCapture(), 300);
   });
   hideSplash();
+  // UI and offline data are usable before any updater network request begins.
+  startUpdateRuntime();
 }
 
 boot();

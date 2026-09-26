@@ -1,0 +1,252 @@
+name: android-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Unique SemVer (for example 0.7.0 or 0.8.0-beta.1)'
+        required: true
+      build_number:
+        description: 'Monotonically increasing Android versionCode'
+        required: true
+        type: number
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        options: [STABLE, BETA]
+      policy_sequence:
+        description: 'Monotonically increasing signed-policy sequence'
+        required: true
+        type: number
+      rollout:
+        description: 'Initial rollout percent'
+        required: true
+        type: choice
+        options: ['0', '5', '25', '50', '100']
+        default: '5'
+      severity:
+        required: true
+        type: choice
+        options: [NORMAL, IMPORTANT, SECURITY, CRITICAL]
+        default: NORMAL
+      mandatory:
+        required: true
+        type: choice
+        options: [OPTIONAL, REQUIRED_AFTER, UNSUPPORTED_CLIENT]
+        default: OPTIONAL
+      required_after:
+        description: 'ISO UTC deadline, only for REQUIRED_AFTER'
+        required: false
+      minimum_supported_version:
+        description: 'Optional minimum supported SemVer'
+        required: false
+      summary_en:
+        required: true
+      summary_ru:
+        required: true
+      change_en:
+        description: 'One concise primary change'
+        required: true
+      change_ru:
+        description: 'Одно краткое основное изменение'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: BUILD — tests without release authority
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Restore and run application/update tests
+        run: |
+          python -m pip install -r requirements-dev.txt
+          npm ci --prefix mobile
+          make static
+          PYTHONPATH=src python -m unittest discover -s tests -p 'test_*.py' -v
+          cd mobile/android
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebugAndroidTest --no-daemon --console=plain
+
+  package:
+    name: PACKAGE — signed immutable APK
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: android-release
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.sha }}' }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Require production signing and trust configuration
+        env:
+          KEYSTORE_B64: ${{ secrets.SEOS_ANDROID_KEYSTORE_B64 }}
+          UPDATE_KEYS: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          UPDATE_URL: ${{ vars.SEOS_UPDATE_POLICY_URL_TEMPLATE }}
+          UPDATE_KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+        run: |
+          test -n "$KEYSTORE_B64"
+          test -n "$UPDATE_KEYS"
+          test -n "$UPDATE_URL"
+          test -n "$UPDATE_KEY_ID"
+          test -n "${{ secrets.SEOS_KEYSTORE_PASSWORD }}"
+          test -n "${{ secrets.SEOS_KEY_PASSWORD }}"
+          test -n "${{ secrets.SEOS_KEY_ALIAS }}"
+      - name: Restore Android keystore outside the repository
+        env:
+          KEYSTORE_B64: ${{ secrets.SEOS_ANDROID_KEYSTORE_B64 }}
+        run: printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/seos-release.jks"
+      - name: Build signed release APK
+        env:
+          SEOS_VERSION_NAME: ${{ inputs.version }}
+          SEOS_VERSION_CODE: ${{ inputs.build_number }}
+          SEOS_SERVER_URL: ${{ vars.SEOS_SERVER_URL }}
+          SEOS_UPDATE_POLICY_URL_TEMPLATE: ${{ vars.SEOS_UPDATE_POLICY_URL_TEMPLATE }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          SEOS_UPDATE_BETA_AVAILABLE: 'true'
+          SEOS_KEYSTORE: ${{ runner.temp }}/seos-release.jks
+          SEOS_KEY_ALIAS: ${{ secrets.SEOS_KEY_ALIAS }}
+          SEOS_KEYSTORE_PASSWORD: ${{ secrets.SEOS_KEYSTORE_PASSWORD }}
+          SEOS_KEY_PASSWORD: ${{ secrets.SEOS_KEY_PASSWORD }}
+        run: |
+          npm ci --prefix mobile
+          npm run sync --prefix mobile
+          cd mobile/android
+          ./gradlew assembleRelease --no-daemon --console=plain
+      - name: Verify final signed bytes and deterministic identity
+        id: artifact
+        run: |
+          name="student-execution-os-${{ inputs.version }}-android-universal.apk"
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk "$name"
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner" verify --verbose --print-certs "$name"
+          test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest version-name "$name")" = "${{ inputs.version }}"
+          test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest version-code "$name")" = "${{ inputs.build_number }}"
+          sha256sum "$name" > artifact.sha256
+          stat --printf='%s\n' "$name" > artifact.size
+          printf 'APK_NAME=%s\n' "$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release-package
+          path: |
+            ${{ steps.artifact.outputs.APK_NAME }}
+            artifact.sha256
+            artifact.size
+          if-no-files-found: error
+          retention-days: 7
+
+  publish_artifacts:
+    name: PUBLISH_ARTIFACTS — upload then byte-verify
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: update-production
+    permissions:
+      contents: write
+    outputs:
+      apk_name: ${{ steps.names.outputs.apk_name }}
+      artifact_url: ${{ steps.names.outputs.artifact_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: android-release-package }
+      - name: Resolve immutable release identity
+        id: names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ inputs.version }}"
+          apk="student-execution-os-${{ inputs.version }}-android-universal.apk"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "immutable release tag already exists: $tag" >&2
+            exit 1
+          fi
+          gh release create "$tag" "$apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Student Execution OS ${{ inputs.version }}" --notes "${{ inputs.summary_en }}"
+          mkdir uploaded
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$apk" --dir uploaded
+          expected="$(cut -d' ' -f1 artifact.sha256)"
+          actual="$(sha256sum "uploaded/$apk" | cut -d' ' -f1)"
+          test "$expected" = "$actual"
+          test "$(cat artifact.size)" = "$(stat --printf='%s' "uploaded/$apk")"
+          printf 'apk_name=%s\n' "$apk" >> "$GITHUB_OUTPUT"
+          printf 'artifact_url=https://github.com/%s/releases/download/%s/%s\n' "$GITHUB_REPOSITORY" "$tag" "$apk" >> "$GITHUB_OUTPUT"
+
+  promote_release:
+    name: PROMOTE_RELEASE — signed discovery metadata LAST
+    needs: publish_artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: update-production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.sha }}' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - uses: actions/download-artifact@v4
+        with: { name: android-release-package }
+      - name: Restore publisher dependency
+        run: python -m pip install -r requirements.txt
+      - name: Generate and verify signed policy against final APK bytes
+        env:
+          SEOS_UPDATE_SIGNING_KEY_B64: ${{ secrets.SEOS_UPDATE_SIGNING_KEY_B64 }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+        run: |
+          test -n "$SEOS_UPDATE_SIGNING_KEY_B64"
+          test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
+          extra=()
+          if test -n "${{ inputs.required_after }}"; then extra+=(--required-after "${{ inputs.required_after }}"); fi
+          if test -n "${{ inputs.minimum_supported_version }}"; then extra+=(--minimum-supported-version "${{ inputs.minimum_supported_version }}"); fi
+          python tools/update_policy.py create \
+            --artifact "${{ needs.publish_artifacts.outputs.apk_name }}" \
+            --artifact-url "${{ needs.publish_artifacts.outputs.artifact_url }}" \
+            --output policy.json --version "${{ inputs.version }}" \
+            --build-number "${{ inputs.build_number }}" --sequence "${{ inputs.policy_sequence }}" \
+            --channel "${{ inputs.channel }}" --rollout "${{ inputs.rollout }}" \
+            --severity "${{ inputs.severity }}" --mandatory "${{ inputs.mandatory }}" \
+            --key-id "${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}" \
+            --summary-en "${{ inputs.summary_en }}" --summary-ru "${{ inputs.summary_ru }}" \
+            --change-en "${{ inputs.change_en }}" --change-ru "${{ inputs.change_ru }}" "${extra[@]}"
+          python tools/update_policy.py verify --policy policy.json
+      - name: Publish channel metadata last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+        run: |
+          channel="$(printf '%s' '${{ inputs.channel }}' | tr '[:upper:]' '[:lower:]')"
+          tag="updates-$channel"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "Signed $channel update policy" --notes "Machine-readable signed metadata; artifacts are in immutable version tags."
+          gh release upload "$tag" policy.json --repo "$GITHUB_REPOSITORY" --clobber
+          mkdir published
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir published
+          cmp policy.json published/policy.json
+          python tools/update_policy.py verify --policy published/policy.json

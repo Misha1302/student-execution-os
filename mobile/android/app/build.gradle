@@ -8,13 +8,25 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode Integer.parseInt(System.getenv("SEOS_VERSION_CODE") ?: "1")
-        versionName "0.6.0"
+        versionName System.getenv("SEOS_VERSION_NAME") ?: "0.6.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    def javaString = { String value -> '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+    def updatePolicyUrlTemplate = System.getenv("SEOS_UPDATE_POLICY_URL_TEMPLATE") ?: ""
+    def updateTrustKeys = System.getenv("SEOS_UPDATE_TRUST_KEYS_JSON") ?: "{}"
+    def betaChannelAvailable = (System.getenv("SEOS_UPDATE_BETA_AVAILABLE") ?: "true").toBoolean()
+    defaultConfig {
+        buildConfigField "String", "SEOS_UPDATE_POLICY_URL_TEMPLATE", javaString(updatePolicyUrlTemplate)
+        buildConfigField "String", "SEOS_UPDATE_TRUST_KEYS_JSON", javaString(updateTrustKeys)
+        buildConfigField "boolean", "SEOS_UPDATE_BETA_AVAILABLE", betaChannelAvailable.toString()
     }
     // Release signing is configured only when a keystore is provided through the
     // environment (see mobile/README.md); otherwise assembleRelease yields an
@@ -57,6 +69,9 @@ dependencies {
     // service extends the push plugin's, and button actions are queued in WorkManager.
     implementation "com.google.firebase:firebase-messaging:${rootProject.ext.has('firebaseMessagingVersion') ? rootProject.ext.firebaseMessagingVersion : '25.0.1'}"
     implementation "androidx.work:work-runtime:$androidxWorkVersion"
+    // Ed25519 is only provided by the Android platform from API 33. Tink keeps
+    // signed update-policy verification available on this app's real minSdk 24.
+    implementation "com.google.crypto.tink:tink-android:1.23.0"
     testImplementation "junit:junit:$junitVersion"
     testImplementation "org.json:json:20240303"
     androidTestImplementation "androidx.test:core:1.7.0"

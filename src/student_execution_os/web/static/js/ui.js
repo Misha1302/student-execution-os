@@ -109,6 +109,16 @@ export function errorMessage(err) {
     RATE_LIMITED: t('err.rate'),
     NOT_FOUND: t('err.notFound'),
     NO_SERVER: t('err.noServer'),
+    METADATA_UNAVAILABLE: t('updates.error.METADATA_UNAVAILABLE'),
+    SIGNATURE_INVALID: t('updates.error.SIGNATURE_INVALID'),
+    METADATA_EXPIRED: t('updates.error.METADATA_EXPIRED'),
+    METADATA_ROLLBACK: t('updates.error.METADATA_ROLLBACK'),
+    HASH_MISMATCH: t('updates.error.HASH_MISMATCH'),
+    INSUFFICIENT_DISK: t('updates.error.INSUFFICIENT_DISK'),
+    PERMISSION_REQUIRED: t('updates.error.PERMISSION_REQUIRED'),
+    UPDATE_LOCKED: t('updates.error.UPDATE_LOCKED'),
+    INSTALLER_FAILED: t('updates.error.INSTALLER_FAILED'),
+    RELEASE_NO_LONGER_AVAILABLE: t('updates.error.RELEASE_NO_LONGER_AVAILABLE'),
   };
   return known[err?.code] || err?.message || t('err.generic');
 }

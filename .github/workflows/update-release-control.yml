@@ -1,0 +1,66 @@
+name: update-release-control
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        required: true
+        type: choice
+        options: [STABLE, BETA]
+      sequence:
+        description: 'Must be greater than the currently published sequence'
+        required: true
+        type: number
+      status:
+        required: true
+        type: choice
+        options: [AVAILABLE, PAUSED, WITHDRAWN]
+      rollout:
+        required: true
+        type: choice
+        options: ['0', '5', '25', '50', '100']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-control-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: update-production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - run: python -m pip install -r requirements.txt
+      - name: Fetch, authenticate and update channel policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEOS_UPDATE_SIGNING_KEY_B64: ${{ secrets.SEOS_UPDATE_SIGNING_KEY_B64 }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          SEOS_UPDATE_SIGNING_KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+        run: |
+          test -n "$SEOS_UPDATE_SIGNING_KEY_B64"
+          test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
+          test -n "$SEOS_UPDATE_SIGNING_KEY_ID"
+          channel="$(printf '%s' '${{ inputs.channel }}' | tr '[:upper:]' '[:lower:]')"
+          tag="updates-$channel"
+          mkdir current
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir current
+          python tools/update_policy.py verify --policy current/policy.json
+          python tools/update_policy.py control --policy current/policy.json --output policy.json \
+            --sequence "${{ inputs.sequence }}" --status "${{ inputs.status }}" \
+            --rollout "${{ inputs.rollout }}" --key-id "$SEOS_UPDATE_SIGNING_KEY_ID"
+          python tools/update_policy.py verify --policy policy.json
+          # Discovery metadata is the only mutable asset and is published last.
+          gh release upload "$tag" policy.json --repo "$GITHUB_REPOSITORY" --clobber
+          mkdir published
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir published
+          cmp policy.json published/policy.json
+          python tools/update_policy.py verify --policy published/policy.json

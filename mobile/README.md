@@ -62,6 +62,19 @@ SEOS_SERVER_URL=https://plan.example.com npm run apk:release
 Keep the keystore outside the repository; losing it means updates can no longer be
 installed over the existing app.
 
+Release builds intended for sideload auto-update also require the independent signed
+policy configuration:
+
+```bash
+export SEOS_UPDATE_POLICY_URL_TEMPLATE='https://github.com/OWNER/REPO/releases/download/updates-{channel}/policy.json'
+export SEOS_UPDATE_TRUST_KEYS_JSON='{"release-2026":"BASE64_ED25519_PUBLIC_KEY"}'
+```
+
+The private Ed25519 key is never part of the APK or repository. See
+[`docs/updates.md`](../docs/updates.md) for protected CI promotion, pause/withdraw,
+key rotation and the local update source. Android always retains the right to show
+its install confirmation; the app does not attempt silent installation.
+
 ## Layout
 
 - `scripts/sync-web.mjs` — copies the web client into `www/` (`index.html` + `/assets/…`,
