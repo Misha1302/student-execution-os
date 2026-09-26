@@ -10,8 +10,9 @@ RUN apt-get update \
 
 COPY torrc /etc/tor/torrc
 COPY healthcheck.sh /usr/local/bin/tor-healthcheck
-RUN chmod 0755 /usr/local/bin/tor-healthcheck \
-    && tor --verify-config -f /etc/tor/torrc
+RUN chmod 0755 /usr/local/bin/tor-healthcheck
 
 USER debian-tor
+RUN tor --verify-config -f /etc/tor/torrc
+
 ENTRYPOINT ["tor", "-f", "/etc/tor/torrc"]
