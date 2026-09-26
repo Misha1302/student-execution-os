@@ -558,7 +558,10 @@ class Commands:
         if status is LifecycleStatus.ARCHIVED:
             return self._task_out(task_id, NOOP, "ALREADY_ARCHIVED")
         if status in OPEN:
-            # Put away something still open: it is "not doing it" first.
+            # Put away something still open: stop actual execution before closing it.
+            active_execution = self._execution().active(self.account_id, self.now)
+            if active_execution is not None and active_execution["task_id"] == task_id:
+                self._execution().cancel(self.account_id, active_execution["id"], self.now, self.actor)
             self._transition(task_id, "cancel")
         self._transition(task_id, "archive")
         return self._task_out(task_id)
