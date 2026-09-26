@@ -62,21 +62,22 @@ export async function startExecution(task, plan) {
     task_id: task.id,
     planning_snapshot_id: plan?.id || null,
     source_plan_block_id: block?.id || null,
+    occurred_at: new Date().toISOString(),
   }, { success: t('execution.started') });
 }
 
 export function pauseExecution(session) {
-  return change('execution.pause', session.id, {}, { success: t('execution.pausedToast') });
+  return change('execution.pause', session.id, { occurred_at: new Date().toISOString() }, { success: t('execution.pausedToast') });
 }
 
 export function resumeExecution(session) {
-  return change('execution.resume', session.id, {}, { success: t('execution.resumedToast') });
+  return change('execution.resume', session.id, { occurred_at: new Date().toISOString() }, { success: t('execution.resumedToast') });
 }
 
 export function finishExecution(session, task, { complete = false } = {}) {
   if (!session || !task) return Promise.resolve(null);
   if (complete) {
-    return change('execution.finish', session.id, { task_id: task.id, outcome: 'COMPLETE' }, { success: t('execution.completed') });
+    return change('execution.finish', session.id, { task_id: task.id, outcome: 'COMPLETE', occurred_at: new Date().toISOString() }, { success: t('execution.completed') });
   }
   const worked = Math.max(1, Math.round(executionSeconds(session) / 60));
   const current = Number(task.remaining_effort_minutes || 0);
@@ -112,7 +113,7 @@ export function finishExecution(session, task, { complete = false } = {}) {
     syncVisibility();
     dialog.querySelector('[data-save]').addEventListener('click', async () => {
       const outcome = chipValue(dialog, 'execution-outcome') || 'KEEP_REMAINING';
-      const payload = { task_id: task.id, outcome };
+      const payload = { task_id: task.id, outcome, occurred_at: new Date().toISOString() };
       if (outcome === 'UPDATE_REMAINING') payload.remaining_effort_minutes = Number(chipValue(dialog, 'execution-remaining') || 0);
       const result = await change('execution.finish', session.id, payload, { success: t('execution.saved') });
       dialog.close('saved');
