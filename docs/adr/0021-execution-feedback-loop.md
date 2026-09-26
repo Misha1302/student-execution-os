@@ -47,6 +47,20 @@ The device projects queued execution operations onto Today, Tasks and
 and survive restart once the core read models have been cached. Server replay remains
 exactly-once by operation id.
 
+## Rollback
+
+Schema v18 adds only `execution_sessions` and `execution_segments`. To roll back
+to v17 after taking a verified backup:
+
+```sql
+DROP TABLE execution_segments;
+DROP TABLE execution_sessions;
+DELETE FROM schema_migrations WHERE version=18;
+```
+
+Execution history created after the v18 deploy is lost by that rollback; restore the
+backup or export it first when it must be retained.
+
 ## Consequences
 
 - Planned minutes, actual work and remaining effort are three distinct values.
