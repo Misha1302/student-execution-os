@@ -55,7 +55,7 @@ APPLIED, NOOP, CONFLICT, REJECTED = "APPLIED", "NOOP", "CONFLICT", "REJECTED"
 OPEN = {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 MAX_BATCH = 100
-_REMINDER_ACTIONS = {"task.start": "START", "task.complete": "DONE", "reminder.snooze": "SNOOZE",
+_REMINDER_ACTIONS = {"task.start": "START", "execution.start": "START", "task.complete": "DONE", "reminder.snooze": "SNOOZE",
                      "task.defer": "RESCHEDULE", "task.update": "RESCHEDULE", "task.progress": "PROGRESS",
                      "reminder.done": "DONE", "reminder.ack": "DONE", "reminder.update": "RESCHEDULE"}
 
