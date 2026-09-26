@@ -1,4 +1,4 @@
-import { isNative, prefGet, prefSet, clearDeviceAlarms } from './native.js';
+import { isNative, prefGet, prefSet, clearDeviceAlarms, clearExecutionNotification } from './native.js';
 
 // Session state. In the browser the page is served by the API host itself, so the
 // base URL is same-origin (''). The Android app keeps a user-chosen server URL.
@@ -46,6 +46,7 @@ export async function setServer(url) {
     await prefSet(KEYS.token, null);
     await prefSet(KEYS.user, null);
     await clearDeviceAlarms();
+    await clearExecutionNotification();
   }
 }
 
@@ -55,7 +56,10 @@ export async function setAuth(token, user) {
   session.user = user;
   await prefSet(KEYS.token, token);
   await prefSet(KEYS.user, user ? JSON.stringify(user) : null);
-  if (ownershipChanged) await clearDeviceAlarms();
+  if (ownershipChanged) {
+    await clearDeviceAlarms();
+    await clearExecutionNotification();
+  }
 }
 
 export async function clearAuth() { await setAuth(null, null); }
