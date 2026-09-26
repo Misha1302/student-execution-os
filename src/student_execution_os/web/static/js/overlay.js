@@ -394,7 +394,7 @@ function projectDay(data, ops, now) {
   const touched = new Set([...tOps.map((x) => x.operation.entity_id), ...xOps.map(executionTaskId).filter(Boolean)]);
   const projected = projectTasks(known, ops) || [];
   const byId = new Map(projected.map((task) => [task.id, task]));
-  if (tOps.length) {
+  if (tOps.length || xOps.length) {
     out.tasks = projected.filter((task) => task.status === 'ACTIVE');
     if ('needs_refinement' in data) out.needs_refinement = projected.filter((task) => task.status === 'DRAFT');
     out.next_actions = (data.next_actions || []).filter((a) => !unschedulable(byId.get(a.task_id), now));
