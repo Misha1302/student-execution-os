@@ -117,6 +117,9 @@ export default {
   'sync.empty': 'Всё синхронизировано.',
   'sync.retry': 'Отправить сейчас',
   'sync.dismiss': 'Скрыть',
+  'sync.openCurrentExecution': 'Открыть текущую',
+  'sync.keepCurrentExecution': 'Оставить текущую',
+  'sync.code.EXECUTION_ACTIVE': 'На другом устройстве уже идёт другая работа.',
   'sync.problemHelp': 'Сервер оставил свою текущую версию. Откройте задачу и повторите изменение, если оно ещё нужно.',
   'sync.stillOffline': 'Сервер всё ещё недоступен; изменения сохранены на устройстве.',
 
