@@ -44,6 +44,7 @@ from student_execution_os.domain.model import (
     LocationEffectKind,
     ObligationCategory,
     TemporalPrecision,
+    UserTimeConstraintType,
 )
 from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
