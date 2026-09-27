@@ -77,6 +77,45 @@ class ReflectionApiTest(unittest.TestCase):
         self.assertEqual(closed["status"], "APPLIED", closed)
         self.assertIsNotNone(self.client.get("/api/v1/today").json()["daily_intent"]["closed_at"])
 
+    def test_intent_and_calibration_updates_reject_stale_versions(self):
+        self.create_task("task-versioned-intent", "Versioned")
+        first = self.sync("op-intent-v1", "intent.set", "2026-10-01", {
+            "local_date": "2026-10-01",
+            "priority_task_ids": ["task-versioned-intent"],
+            "note": "v1",
+        })
+        self.assertEqual(first["entity"]["version"], 1)
+
+        stale_intent = self.sync("op-intent-stale", "intent.set", "2026-10-01", {
+            "local_date": "2026-10-01",
+            "priority_task_ids": [],
+            "note": "stale",
+            "expected_version": 99,
+        })
+        self.assertEqual(stale_intent["status"], "CONFLICT")
+        today = self.client.get("/api/v1/today").json()
+        self.assertEqual(today["daily_intent"]["note"], "v1")
+
+        first_calibration = self.sync("op-cal-v1", "calibration.set", "calibration-HOMEWORK", {
+            "category": "HOMEWORK",
+            "safety_multiplier": 1.25,
+            "enabled": True,
+            "suppress_suggestion": False,
+        })
+        self.assertEqual(first_calibration["entity"]["version"], 1)
+
+        stale_calibration = self.sync("op-cal-stale", "calibration.set", "calibration-HOMEWORK", {
+            "category": "HOMEWORK",
+            "safety_multiplier": 2.0,
+            "enabled": True,
+            "suppress_suggestion": False,
+            "expected_version": 99,
+        })
+        self.assertEqual(stale_calibration["status"], "CONFLICT")
+        reflection = self.client.get("/api/v1/reflection?days=1").json()
+        pref = next(item["preference"] for item in reflection["calibration"] if item["category"] == "HOMEWORK")
+        self.assertEqual(pref["safety_multiplier"], 1.25)
+
     def test_calibration_changes_planning_projection_not_canonical_task(self):
         self.create_task("task-calibrated-1", "Essay", category="HOMEWORK", effort=60)
         applied = self.sync("op-calibration-set", "calibration.set", "calibration-HOMEWORK", {
