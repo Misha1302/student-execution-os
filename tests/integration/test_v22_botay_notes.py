@@ -25,10 +25,9 @@ def build_v21(path: str) -> None:
         version = int(script.name[:3])
         if version > 21:
             continue
-            conn.executescript(
-                "DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
-                "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;"
-            )
+        conn.executescript(script.read_text(encoding="utf-8"))
+        conn.execute("INSERT INTO schema_migrations VALUES (?, ?)", (version, NOW.isoformat()))
+    conn.commit()
     conn.close()
 
 
@@ -56,7 +55,10 @@ class V22BotayMigrationTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v1/notes").json()[0]["content"], "survived upgrade")
             with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as check:
                 check.initialize()
-                self.assertEqual([r[0] for r in check.connection.execute("SELECT version FROM schema_migrations")], list(range(1, 23)))
+                self.assertEqual(
+                    [r[0] for r in check.connection.execute("SELECT version FROM schema_migrations")],
+                    list(range(1, 23)),
+                )
                 self.assertEqual(check.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_documented_rollback_returns_to_v21_table_shape_when_v22_has_no_data(self):
@@ -65,9 +67,12 @@ class V22BotayMigrationTests(unittest.TestCase):
             with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
                 repo.initialize()
                 repo.create_account("a")
+
             conn = sqlite3.connect(db)
-            counts = sum(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in
-                         ("notes", "note_audio", "note_links", "deleted_notes", "beta_feedback"))
+            counts = sum(
+                conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in ("notes", "note_audio", "note_links", "deleted_notes", "beta_feedback")
+            )
             self.assertEqual(counts, 0)
             conn.executescript(
                 "DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
@@ -80,8 +85,13 @@ class V22BotayMigrationTests(unittest.TestCase):
             build_v21(reference)
 
             def tables(path):
-                with closing(sqlite3.connect(path)) as c:
-                    return sorted(r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'"))
+                with closing(sqlite3.connect(path)) as connection:
+                    return sorted(
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        )
+                    )
 
             self.assertEqual(tables(db), tables(reference))
 
