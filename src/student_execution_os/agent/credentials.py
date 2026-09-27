@@ -48,6 +48,7 @@ from .providers import (
     normalize_provider,
     platform_provider_from_environment,
 )
+from .usage import MeteredStarterProvider, StarterQuotaPolicy, StarterUsageStore
 
 
 def _passed_before(reason: str) -> list[str]:
@@ -219,11 +220,14 @@ class LlmCredentialStore:
     """Account-scoped credential and entitlement access. Every query filters by account."""
 
     def __init__(self, repo: SQLiteCanonicalRepository, cipher: CredentialCipher | None = None, *,
-                 platform: Any | None = None, use_environment: bool = True) -> None:
+                 platform: Any | None = None, use_environment: bool = True,
+                 starter_policy: StarterQuotaPolicy | None = None) -> None:
         self.repo = repo
         self.cipher = cipher if cipher is not None or not use_environment else CredentialCipher.from_environment()
         self._platform = platform
         self._use_environment = use_environment
+        self.starter_policy = starter_policy or StarterQuotaPolicy.from_environment()
+        self.usage = StarterUsageStore(repo, self.starter_policy)
 
     # ---- reads ---------------------------------------------------------------------
 
@@ -236,7 +240,7 @@ class LlmCredentialStore:
         if self._platform is not None or not self._use_environment:
             return self._platform
         try:
-            return platform_provider_from_environment()
+            return platform_provider_from_environment(max_output_tokens=self.starter_policy.max_output_tokens)
         except ValidationError:
             return None
 
@@ -245,6 +249,8 @@ class LlmCredentialStore:
             "SELECT source,plan,granted_at,expires_at FROM llm_entitlements WHERE account_id=?", (account_id,)
         ).fetchone()
         if row is None:
+            return None
+        if row["plan"] == "STARTER" and not self.starter_policy.enabled:
             return None
         expires = _dt(row["expires_at"]) if row["expires_at"] else None
         if expires is not None and expires <= self.repo.clock.now():
@@ -267,7 +273,8 @@ class LlmCredentialStore:
         if self.entitlement(account_id) is not None:
             platform = self.platform_provider()
             if platform is not None:
-                return ResolvedLlm(CredentialSource.PLATFORM_MANAGED, platform)
+                return ResolvedLlm(CredentialSource.PLATFORM_MANAGED,
+                                   MeteredStarterProvider(platform, self.usage, account_id))
         return ResolvedLlm(CredentialSource.NONE, None)
 
     def public(self, account_id: str) -> dict[str, Any]:
@@ -275,6 +282,8 @@ class LlmCredentialStore:
         row = self._row(account_id)
         resolved = self.resolve(account_id)
         entitled = self.entitlement(account_id) is not None
+        entitlement = self.entitlement(account_id)
+        platform = self.platform_provider() if entitlement is not None else None
         credential = None
         if row is not None:
             row = self._row(account_id)  # resolve() may have updated the status
@@ -288,7 +297,13 @@ class LlmCredentialStore:
             "active": resolved.live,
             "credential": credential,
             "storage_available": self.cipher is not None,
-            "platform_managed": {"entitled": entitled, "available": entitled and self.platform_provider() is not None},
+            "platform_managed": {
+                "entitled": entitled,
+                "available": entitled and platform is not None,
+                "plan": entitlement["plan"] if entitlement else None,
+                "model": getattr(platform, "model", None) if platform is not None else None,
+                "quota": self.usage.public_quota(account_id) if entitlement and entitlement["plan"] == "STARTER" else None,
+            },
             "providers": [
                 {"id": kind, "label": label, "requires_base_url": default is None}
                 for kind, (label, default) in PROVIDERS.items()
@@ -405,6 +420,9 @@ class LlmCredentialStore:
                 "latency_ms": latency, "settings": self.public(account_id)}
 
     # ---- operator actions ----------------------------------------------------------
+
+    def backfill_starter_entitlements(self) -> int:
+        return self.usage.backfill_entitlements()
 
     def grant_entitlement(self, account_id: str, plan: str, expires_at: datetime | None = None) -> None:
         self.repo._require_account(account_id)

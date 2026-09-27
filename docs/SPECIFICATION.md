@@ -1293,6 +1293,22 @@ dry_run?
 
 The server derives the authenticated actor; an LLM claim that “the user wanted this” is not authorization evidence.
 
+Provider credential resolution MUST preserve this order:
+
+```text
+USER_BYOK > entitled PLATFORM_MANAGED STARTER > deterministic local parser
+```
+
+Platform credentials are server-only secrets and MUST NOT enter SQLite, user export,
+HTTP responses, client storage, logs, diagnostics, or exception text. Configuration
+alone MUST NOT grant platform access. Before every platform-managed outbound operation,
+the server MUST atomically reserve both per-account and global request/token capacity;
+concurrent operations MUST NOT cross either hard cap. Provider-reported prompt,
+completion, and total token usage SHOULD reconcile the reservation, without storing
+prompt or response content. Exhausted quota or unavailable platform inference MUST
+fall back to the deterministic parser without an HTTP 500. A user-owned credential
+MUST bypass STARTER accounting completely.
+
 ## 21.1 Mutation classes
 
 Minimum policy:

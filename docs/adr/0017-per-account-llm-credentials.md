@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted, 2026-09-25. Schema v14.
+Accepted, 2026-09-25. Amended 2026-09-28 for STARTER, schema v21.
 
 ## Context
 
@@ -20,13 +20,20 @@ be able to include AI without asking the user for a key.
 | Source | Who supplies credentials | When |
 |---|---|---|
 | `USER_BYOK` | the account holder, in Settings → AI | a readable key is stored for the account |
-| `PLATFORM_MANAGED` | the operator (`SEOS_PLATFORM_LLM_*`) | the account has an unexpired `llm_entitlements` row **and** platform credentials are configured |
+| `PLATFORM_MANAGED` | the operator (`SEOS_PLATFORM_LLM_*`) | the account has an active entitlement, platform credentials are configured, and STARTER is enabled when the plan is `STARTER` |
 | `NONE` | — | otherwise: the deterministic RU/EN parser |
 
 A user's own key wins over an entitlement (explicit user choice). Platform
 credentials alone serve nobody: without an entitlement they are never used, so the
 old "one key for everyone" behaviour cannot come back by configuration accident. The
 legacy `SEOS_LLM_*` variables are ignored and the server says so at startup.
+
+The shipped order is `USER_BYOK > PLATFORM_MANAGED STARTER > deterministic local
+parser`. With `SEOS_STARTER_LLM_ENABLED=1`, registration grants a `STARTER`
+entitlement in the account-creation transaction and startup safely backfills accounts
+that have no entitlement (`INSERT OR IGNORE`). Turning the flag off makes STARTER
+entitlements inactive; merely configuring a platform credential grants nobody access.
+Deleting BYOK exposes STARTER again if its entitlement, provider, and quota are active.
 
 Every source builds its provider through the same `build_provider`; the Assistant
 boundary (typed proposals, validation, confirmation, idempotent apply — ADR 0007) is
@@ -75,16 +82,52 @@ changed while keeping the key.
 - User-supplied base URLs (OpenAI-compatible only) must be public `https` hosts; the
   resolved addresses are checked when saving and before every request (no loopback,
   private, link-local/metadata or other non-global targets).
+- Platform keys are read server-side from the comma-separated
+  `SEOS_PLATFORM_LLM_API_KEY_FILES` (primary, then standby); this takes precedence
+  over the backward-compatible single `SEOS_PLATFORM_LLM_API_KEY`. They are never
+  written to SQLite, API responses, exports, browser/Android storage, logs,
+  diagnostics, or provider exception text.
 
-### Platform-managed seam
+### STARTER quota and usage owner (schema v21)
 
 `llm_entitlements(account_id, source='PLATFORM_MANAGED', plan, granted_at,
-expires_at)` is written only by an operator (`llm-entitlement` CLI) today; a future
-billing integration writes the same row. Usage accounting, quotas and spend limits
-are a roadmap item (`docs/ROADMAP.md`) and must exist before any real plan grants
-platform-managed access.
+expires_at)` remains the access seam. `agent/usage.py::StarterQuotaPolicy` is the
+single owner of period length, per-account request/token quota, global request/token
+hard cap, output ceiling, and reservation overhead. Defaults are 30 days, 100
+requests/100,000 tokens per account, and 10,000 requests/10,000,000 tokens globally;
+every value is environment-configurable.
+
+Before an outbound platform request, one `BEGIN IMMEDIATE` transaction checks both
+scopes, charges one logical request plus a conservative token ceiling, and writes a
+content-free reservation. Concurrent workers therefore cannot both pass the last
+available unit. A provider response reconciles that ceiling down to its
+`prompt_tokens`, `completion_tokens`, and `total_tokens`; when trustworthy usage is
+absent, the conservative charge remains. The ledger contains counts/timestamps only,
+never prompts or responses. Account deletion cascades account usage/reservations;
+the aggregate global spend counter remains operational history.
+
+Quota exhaustion and every platform/provider failure degrade to the deterministic
+parser without HTTP 500. Primary/standby is not round-robin: standby is tried at most
+once per logical operation, only for `AUTH` or credential-level `QUOTA`. Model,
+request, output-format, 429, 5xx, network, region/server-blocked, and other semantic or
+provider-wide failures never rotate credentials, preventing retry storms.
+
+This ships a bounded free STARTER capability. It is not a paid billing tier; paid
+subscription/billing ownership remains future work.
 
 ## Rollback
+
+To roll schema v21 code back while retaining the v14 BYOK seam:
+
+1. set `SEOS_STARTER_LLM_ENABLED=0`, remove `SEOS_PLATFORM_LLM_API_KEY_FILES`, and
+   recreate the API container so no new platform request can start;
+2. stop writers and take/verify a backup;
+3. drop `starter_llm_reservations`, `starter_llm_account_usage`, and
+   `starter_llm_global_usage`, then delete `schema_migrations.version=21`;
+4. deploy the previous image. STARTER entitlements are harmless to pre-v21 code only
+   when platform credentials are absent; optionally delete rows with `plan='STARTER'`.
+
+The older v14 rollback remains:
 
 Migration 014 only adds two tables. Rolling the code back to v13 is done by:
 

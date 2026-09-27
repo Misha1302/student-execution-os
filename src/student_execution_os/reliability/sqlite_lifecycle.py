@@ -219,6 +219,8 @@ _DIRECT_ACCOUNT_TABLES = (
     "work_routine_occurrences",
     "daily_intents",
     "calibration_preferences",
+    "starter_llm_account_usage",
+    "starter_llm_reservations",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
@@ -269,6 +271,7 @@ _GLOBAL_LIFECYCLE_TABLES = {
     "schema_migrations",
     "worker_heartbeats",
     "account_deletion_tombstones",
+    "starter_llm_global_usage",
 }
 
 _KNOWN_DATABASE_TABLES = {
