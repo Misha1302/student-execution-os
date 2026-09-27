@@ -70,7 +70,7 @@ class ProjectsApiTest(unittest.TestCase):
         self.assertEqual(payload["milestones"][0]["id"], "milestone-project-1")
 
         done = self.sync("op-project-task-done", "task.complete", "task-project-check-1", {
-            "occurred_at": (NOW + timedelta(minutes=30)).isoformat(),
+            "occurred_at": NOW.isoformat(),
         })
         self.assertEqual(done["status"], "APPLIED")
         payload = self.client.get("/api/v1/projects/project-product-1").json()
