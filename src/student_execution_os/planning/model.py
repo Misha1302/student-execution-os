@@ -72,10 +72,10 @@ class PlanningSnapshot:
     dependencies: tuple[Dependency, ...]
     milestones: tuple[Milestone, ...]
     policy: PlanningPolicy
-    soft_priority_task_ids: tuple[str, ...] = ()
-    effort_multipliers: tuple[tuple[str, float], ...] = ()
     cutoff_reconciliation: tuple[CutoffReconciliationContext, ...] = ()
     travel_projection: TravelProjection = TravelProjection()
+    soft_priority_task_ids: tuple[str, ...] = ()
+    effort_multipliers: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
