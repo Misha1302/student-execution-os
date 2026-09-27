@@ -22,6 +22,7 @@ import evidence from './js/views/evidence.js';
 import places from './js/views/places.js';
 import projects from './js/views/projects.js';
 import project from './js/views/project-detail.js';
+import routines from './js/views/routines.js';
 import settings from './js/views/settings.js';
 import welcome from './js/views/welcome.js';
 import reminder from './js/views/reminder.js';
@@ -30,7 +31,7 @@ import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, projects, project, settings, welcome };
+const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, projects, project, routines, settings, welcome };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }

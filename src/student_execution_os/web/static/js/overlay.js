@@ -386,7 +386,8 @@ export function projectProjects(list, ops) {
   for (const item of ops) {
     if (item.operation?.type?.startsWith('milestone.')) projected = applyMilestoneToProjects(projected, item);
   }
-  const taskRelated = ops.filter((x) => x.operation?.type?.startsWith('task.') || executionTaskId(x));
+  const routineTaskOps = ops.map(routineTaskProjection).filter(Boolean);
+  const taskRelated = [...ops.filter((x) => x.operation?.type?.startsWith('task.') || executionTaskId(x)), ...routineTaskOps];
   if (taskRelated.length) {
     projected = projected.map((project) => {
       let changed = false;
@@ -404,6 +405,129 @@ export function projectProjects(list, ops) {
     });
   }
   return projected;
+}
+
+function routineTaskProjection(item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  const taskId = p.task_id;
+  if (!taskId || !op.type?.startsWith('routine.occurrence.')) return null;
+  if (op.type === 'routine.occurrence.skip') {
+    return { ...item, operation: { ...op, type: 'task.cancel', entity_id: taskId, payload: {} } };
+  }
+  if (op.type === 'routine.occurrence.reopen') {
+    return { ...item, operation: { ...op, type: 'task.reopen', entity_id: taskId, payload: {} } };
+  }
+  if (op.type === 'routine.occurrence.edit') {
+    const payload = {};
+    if ('title' in p) payload.title = p.title;
+    if ('effort_minutes' in p) {
+      payload.estimated_total_effort_minutes = p.effort_minutes;
+      payload.remaining_effort_minutes = p.effort_minutes;
+    }
+    return { ...item, operation: { ...op, type: 'task.update', entity_id: taskId, payload } };
+  }
+  return null;
+}
+
+function pendingRoutine(id, payload, at) {
+  return {
+    id,
+    title: String(payload.title || '').trim(),
+    description: payload.description || null,
+    category: payload.category || 'GENERAL',
+    importance: payload.importance || 'NORMAL',
+    dtstart_local: payload.dtstart_local,
+    effort_minutes: Number(payload.effort_minutes || 0),
+    recurrence_rule: payload.recurrence_rule || 'FREQ=WEEKLY',
+    timezone_name: payload.timezone_name || 'UTC',
+    splittable: Boolean(payload.splittable),
+    min_chunk_minutes: payload.min_chunk_minutes ?? null,
+    max_chunk_minutes: payload.max_chunk_minutes ?? null,
+    status: 'ACTIVE',
+    version: 1,
+    created_at: at,
+    updated_at: at,
+    occurrences: [],
+    _pending: true,
+  };
+}
+
+function applyRoutineTemplateOp(routine, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  const at = item.queued_at || new Date().toISOString();
+  if (op.type === 'routine.create') return routine || pendingRoutine(op.entity_id, p, at);
+  if (!routine) return routine;
+  if (op.type === 'routine.cancel') {
+    return { ...routine, status: 'CANCELLED', version: Number(routine.version || 1) + 1, updated_at: at, _pending: true };
+  }
+  return routine;
+}
+
+function applyRoutineOccurrenceToTemplates(routines, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  if (!op.type?.startsWith('routine.occurrence.')) return routines;
+  let changed = false;
+  const next = routines.map((routine) => {
+    if (routine.id !== p.template_id) return routine;
+    const occurrences = [...(routine.occurrences || [])];
+    const index = occurrences.findIndex((o) => o.original_recurrence_id === p.original_recurrence_id);
+    if (index < 0) return routine;
+    const current = { ...occurrences[index], _pending: true };
+    if (op.type === 'routine.occurrence.skip') {
+      current.state = 'SKIPPED';
+      current.task_status = 'CANCELLED';
+    } else if (op.type === 'routine.occurrence.reopen') {
+      current.state = 'ACTIVE';
+      current.task_status = current.effort_minutes == null ? 'DRAFT' : 'ACTIVE';
+    } else if (op.type === 'routine.occurrence.edit') {
+      if ('title' in p) current.title = p.title;
+      if ('effort_minutes' in p) {
+        current.effort_minutes = Number(p.effort_minutes);
+        current.remaining_effort_minutes = Number(p.effort_minutes);
+      }
+      if ('target_local' in p) current.override_target_local = p.target_local;
+    }
+    current.version = Number(current.version || 1) + 1;
+    occurrences[index] = current;
+    changed = true;
+    return { ...routine, occurrences, _pending: true };
+  });
+  return changed ? next : routines;
+}
+
+export function projectWorkRoutines(data, ops) {
+  const source = data?.routines || [];
+  let routines = projectList(source, ops, 'routine.', applyRoutineTemplateOp) || [];
+  for (const item of ops) {
+    routines = applyRoutineOccurrenceToTemplates(routines, item);
+    const op = item.operation || {};
+    const p = op.payload || {};
+    if (op.type === 'routine.split') {
+      routines = routines.map((routine) => routine.id === p.template_id
+        ? { ...routine, _pending_split: p.original_recurrence_id, _pending: true }
+        : routine);
+      if (!routines.some((routine) => routine.id === op.entity_id)) {
+        const base = routines.find((routine) => routine.id === p.template_id);
+        routines.push({
+          ...(base || {}),
+          id: op.entity_id,
+          title: p.title || base?.title || '',
+          effort_minutes: p.effort_minutes ?? base?.effort_minutes ?? 0,
+          dtstart_local: p.target_local || p.original_recurrence_id,
+          status: 'ACTIVE',
+          version: 1,
+          series_end_before_local: null,
+          occurrences: [],
+          _pending: true,
+          _pending_successor: true,
+        });
+      }
+    }
+  }
+  return { ...(data || {}), routines };
 }
 
 export function applyEventOp(event, item) {
@@ -521,7 +645,9 @@ function projectList(list, ops, prefix, apply) {
 }
 
 export function projectTasks(list, ops) {
-  let projected = projectList(list, ops, 'task.', applyTaskOp);
+  const routineTaskOps = (ops || []).map(routineTaskProjection).filter(Boolean);
+  const allTaskOps = [...(ops || []), ...routineTaskOps];
+  let projected = projectList(list, allTaskOps, 'task.', applyTaskOp);
   const execution = (ops || []).filter((x) => executionTaskId(x));
   if (!execution.length) return projected;
   projected = projected || [];
@@ -572,15 +698,20 @@ function projectDay(data, ops, now) {
   const eOps = eventOps(ops);
   const xOps = executionOps(ops);
   const cOps = constraintOps(ops);
+  const rTaskOps = ops.map(routineTaskProjection).filter(Boolean);
   const out = { ...data };
   out.active_execution = projectExecution(data.active_execution || null, xOps);
   // Today lists active tasks in `tasks` and drafts in `needs_refinement`; a queued
   // change can move a task between the two or out of both.
   const known = [...(data.tasks || []), ...(data.needs_refinement || [])];
-  const touched = new Set([...tOps.map((x) => x.operation.entity_id), ...xOps.map(executionTaskId).filter(Boolean)]);
+  const touched = new Set([
+    ...tOps.map((x) => x.operation.entity_id),
+    ...xOps.map(executionTaskId).filter(Boolean),
+    ...rTaskOps.map((x) => x.operation.entity_id),
+  ]);
   const projected = projectTasks(known, ops) || [];
   const byId = new Map(projected.map((task) => [task.id, task]));
-  if (tOps.length || xOps.length) {
+  if (tOps.length || xOps.length || rTaskOps.length) {
     out.tasks = projected.filter((task) => task.status === 'ACTIVE');
     if ('needs_refinement' in data) out.needs_refinement = projected.filter((task) => task.status === 'DRAFT');
     out.next_actions = (data.next_actions || []).filter((a) => !unschedulable(byId.get(a.task_id), now));
@@ -607,6 +738,7 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
+  if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);
   if (route === '/api/v1/projects') return projectProjects(base, ops);
   if (route.startsWith('/api/v1/projects/')) {
     const projected = projectProjects(base ? [base] : [], ops);

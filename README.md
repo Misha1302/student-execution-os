@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v18**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v19**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -113,6 +113,23 @@ Schema v18 closes the first actual-execution loop (ADR 0021):
   active execution is cached for offline restart;
 - execution history participates in account export/deletion and is covered by Python
   and device-side projection regressions.
+
+Plan Control and Projects build on schema v18 without duplicating planner state:
+
+- pin/move/avoid gestures write canonical `UserTimeConstraint` records and preview the
+  real planner result before apply; `PlanBlock` remains derived;
+- Projects remain containers over canonical Tasks/Events and Milestones; progress and
+  project risk are derived from member state rather than stored as another truth.
+
+Schema v19 adds recurring **work** separately from recurring calendar Events (ADR 0024):
+
+- a work-routine template owns recurrence/timezone/default effort;
+- each occurrence has stable recurrence identity and materializes one ordinary Task,
+  so planner, execution sessions and progress use the existing Task model;
+- one occurrence can be skipped/reopened/edited without changing the series identity;
+- "this and future" performs a series split and refuses to rewrite future occurrences
+  that already contain user history;
+- routine state is offline-safe and included in account export/deletion.
 
 ## Run the current implementation locally
 
@@ -202,6 +219,9 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
 - [Offline-first client, events and lifecycle (v15) ADR](docs/adr/0018-offline-first-events-and-lifecycle.md)
 - [Actual execution sessions and feedback loop (v18) ADR](docs/adr/0021-execution-feedback-loop.md)
+- [Canonical Plan Control ADR](docs/adr/0022-plan-control-canonical-constraints.md)
+- [Projects as containers ADR](docs/adr/0023-projects-as-containers.md)
+- [Recurring work as canonical Tasks (v19) ADR](docs/adr/0024-recurring-work.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
