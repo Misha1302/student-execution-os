@@ -25,9 +25,10 @@ def build_v21(path: str) -> None:
         version = int(script.name[:3])
         if version > 21:
             continue
-        conn.executescript(script.read_text(encoding="utf-8"))
-        conn.execute("INSERT INTO schema_migrations VALUES (?, ?)", (version, NOW.isoformat()))
-    conn.commit()
+            conn.executescript(
+                "DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
+                "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;"
+            )
     conn.close()
 
 

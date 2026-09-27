@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="#F6F7F9"/>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#F6F7F9"/>
+        </shape>
+    </item>
     <item android:width="144dp" android:height="144dp" android:gravity="center"
         android:drawable="@drawable/botay_splash_mark"/>
 </layer-list>
