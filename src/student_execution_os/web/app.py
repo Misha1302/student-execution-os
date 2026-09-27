@@ -548,7 +548,7 @@ def create_app(
     async def account_export(service: UiService = Depends(current_service)) -> JSONResponse:
         return JSONResponse(
             content=service.account_export(),
-            headers={"Content-Disposition": 'attachment; filename="student-execution-os-export.json"'},
+            headers={"Content-Disposition": 'attachment; filename="botay-export.json"'},
         )
 
     @app.get("/api/v1/account/deletion-policy")

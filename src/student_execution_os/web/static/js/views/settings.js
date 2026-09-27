@@ -115,7 +115,7 @@ async function exportAccount(button) {
   setBusy(button, true);
   try {
     const data = await api('/api/v1/account/export');
-    await saveJson('student-execution-os-export.json', JSON.stringify(data, null, 2));
+    await saveJson('botay-export.json', JSON.stringify(data, null, 2));
   } catch (err) {
     toast(errorMessage(err), { error: true });
   } finally {
