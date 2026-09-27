@@ -125,7 +125,7 @@ class WorkRoutinesApiTest(unittest.TestCase):
             "task_id": "task-wrong-reference",
         })
         self.assertEqual(result["status"], "REJECTED")
-        self.assertEqual(self.client.get(f"/api/v1/tasks/{first['task_id']}").json()["status"], "CANCELLED",
+        self.assertEqual(self.client.get(f"/api/v1/tasks/{first['task_id']}").json()["status"], "ACTIVE",
                          "server mutation is transactional with sync result and must roll back on ref mismatch")
 
 
