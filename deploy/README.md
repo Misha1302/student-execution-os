@@ -30,6 +30,8 @@ container that needs it (files, not environment variables: variables show up in
 |---|---|---|
 | `secrets/worker/fcm-service-account.json` | reminder-worker | Firebase Admin SDK service account for FCM push |
 | `secrets/api/credential.key` | api | master key that encrypts every account's own AI key (ADR 0017) |
+| `secrets/api/platform-groq-1.key` | api | primary platform LLM credential (never copied into `.env`) |
+| `secrets/api/platform-groq-2.key` | api | standby platform LLM credential (never copied into `.env`) |
 | `secrets/api/llm-egress-proxy.url` | api | optional HTTP(S) proxy URL for LLM-only egress; needed only when a provider rejects the VPS network |
 | `secrets/api/llm-egress-relay.token` | api | optional shared secret for the Cloudflare Groq relay (same value as the Worker's `RELAY_TOKEN`) |
 
@@ -65,14 +67,25 @@ validate-only check of every registered device token.)
 
 ## AI (LLM) access
 
-AI is **bring your own key**: each user adds an OpenAI, Anthropic or OpenAI-compatible
-key in Settings → AI; it is stored encrypted per account and never shown again. Without a
-key the app uses its built-in parser. The operator pays for nobody's inference.
+Resolution is `USER_BYOK > PLATFORM_MANAGED STARTER > deterministic local parser`.
+Each user may add an OpenAI, Anthropic, or OpenAI-compatible key in Settings → AI; it
+is stored encrypted per account and never shown again. With
+`SEOS_STARTER_LLM_ENABLED=1`, registration and safe startup backfill grant STARTER to
+accounts that have no existing entitlement. Turning the flag off disables STARTER even
+when platform keys exist.
 
-`SEOS_PLATFORM_LLM_PROVIDER/MODEL/API_KEY/BASE_URL` configure operator credentials for a
-future paid tier; they are used **only** for accounts granted an entitlement
-(`python -m student_execution_os llm-entitlement --database … --login <user> --grant <plan>`).
-The old `SEOS_LLM_*` variables are ignored (the server warns at startup).
+Use `SEOS_PLATFORM_LLM_API_KEY_FILES` for primary/standby server-side credentials;
+files take precedence over backward-compatible `SEOS_PLATFORM_LLM_API_KEY`. Standby is
+tried once only after credential `AUTH`/`QUOTA`, never after 429, 5xx, network, model,
+request, or format failures. The keys are not stored in SQLite, exports, clients,
+logs, diagnostics, or exception text. The old `SEOS_LLM_*` variables remain ignored.
+
+`agent/usage.py::StarterQuotaPolicy` owns all STARTER limits. Defaults are a 30-day
+period, 100 requests/100,000 tokens per account, and global hard caps of 10,000
+requests/10,000,000 tokens. A conservative maximum is atomically reserved before the
+outbound request and reconciled from provider usage afterward. Exhaustion or provider
+failure returns the local parser, not HTTP 500. BYOK bypasses this ledger entirely.
+STARTER does not implement paid billing.
 
 ### Provider rejects the server but the key works elsewhere
 
@@ -318,7 +331,9 @@ SEOS_IMAGE_TAG=release
 SEOS_PLATFORM_LLM_PROVIDER=
 SEOS_PLATFORM_LLM_MODEL=
 SEOS_PLATFORM_LLM_BASE_URL=
+SEOS_PLATFORM_LLM_API_KEY_FILES=
 SEOS_PLATFORM_LLM_API_KEY=
+SEOS_STARTER_LLM_ENABLED=0
 EOF
 chmod 0600 /etc/student-execution-os/student-execution-os.env
 # then install the FCM service account and the credential master key (see "Secrets")
@@ -332,6 +347,64 @@ certificate with Certbot's nginx integration, and run `nginx -t` before reloadin
 The public URL is `https://seos.185-102-139-43.sslip.io`; health is at
 `/api/v1/health`, auth at `/api/v1/auth/*`, and all other account API calls require the
 bearer session token returned by registration/login.
+
+### Release-SHA checkout with persistent shared platform secrets
+
+For `~/seos-staging/<release-sha>/deploy/docker-compose.yml`, keep secrets outside the
+release so the next checkout reuses the same read-only mount. Do not put key contents
+in the environment or repository. Run these commands on the host after the two key
+files have already been installed by the operator:
+
+```bash
+cd ~/seos-staging/<release-sha>
+test -r ~/seos-staging/shared/secrets/api/platform-groq-1.key
+test -r ~/seos-staging/shared/secrets/api/platform-groq-2.key
+sudo chown 10001:10001 ~/seos-staging/shared/secrets/api \
+  ~/seos-staging/shared/secrets/api/platform-groq-1.key \
+  ~/seos-staging/shared/secrets/api/platform-groq-2.key
+sudo chmod 0700 ~/seos-staging/shared/secrets/api
+sudo chmod 0400 ~/seos-staging/shared/secrets/api/platform-groq-1.key \
+  ~/seos-staging/shared/secrets/api/platform-groq-2.key
+```
+
+Set or replace these exact entries in `deploy/.env` (do not append duplicate names):
+
+```dotenv
+SEOS_API_SECRETS_DIR=../../shared/secrets/api
+SEOS_STARTER_LLM_ENABLED=1
+SEOS_PLATFORM_LLM_PROVIDER=openai-compatible
+SEOS_PLATFORM_LLM_MODEL=openai/gpt-oss-20b
+SEOS_PLATFORM_LLM_BASE_URL=https://api.groq.com/openai/v1
+SEOS_PLATFORM_LLM_API_KEY_FILES=/run/secrets/seos/platform-groq-1.key,/run/secrets/seos/platform-groq-2.key
+SEOS_STARTER_LLM_PERIOD_SECONDS=2592000
+SEOS_STARTER_LLM_ACCOUNT_REQUEST_LIMIT=100
+SEOS_STARTER_LLM_ACCOUNT_TOKEN_LIMIT=100000
+SEOS_STARTER_LLM_GLOBAL_REQUEST_LIMIT=10000
+SEOS_STARTER_LLM_GLOBAL_TOKEN_LIMIT=10000000
+SEOS_STARTER_LLM_MAX_OUTPUT_TOKENS=1200
+SEOS_STARTER_LLM_TOKEN_RESERVATION_OVERHEAD=256
+```
+
+Then validate and recreate only the API service:
+
+```bash
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env config
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build api
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env exec api \
+  python -m student_execution_os --help
+curl --fail --silent --show-error https://<domain>/api/v1/health
+```
+
+The two `test -r` commands inspect only file presence/readability, not contents. Review
+`docker compose ... config` before `up`; it may show file paths but must never show the
+key contents. A normal login can then verify Settings → AI shows Basic AI, the model,
+remaining quota, and reset time.
+
+Rollback STARTER without deleting data: set `SEOS_STARTER_LLM_ENABLED=0`, clear both
+`SEOS_PLATFORM_LLM_API_KEY_FILES` and `SEOS_PLATFORM_LLM_API_KEY`, and recreate `api`;
+STARTER becomes inactive and capture falls back to BYOK/local parsing. For a schema rollback, stop all writers, take
+a verified backup, drop the three v21 usage tables, delete migration 21, optionally
+delete only `llm_entitlements WHERE plan='STARTER'`, then deploy the previous image.
 
 For daily verified backups with 14-day retention, install the two files from
 `deploy/systemd/` under `/etc/systemd/system/`, enable

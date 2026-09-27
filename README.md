@@ -85,6 +85,12 @@ server-wide `SEOS_LLM_*` key is gone; operator credentials (`SEOS_PLATFORM_LLM_*
 only accounts with a platform-managed entitlement — the seam for a future paid plan
 ([roadmap](docs/ROADMAP.md)).
 
+Schema v21 ships opt-in **STARTER** AI: with `SEOS_STARTER_LLM_ENABLED=1`, accounts
+receive a basic platform-managed entitlement protected by atomic per-account and global
+request/token caps. Platform keys stay in API-only files and never enter SQLite or a
+client. BYOK always has priority and does not spend STARTER quota; exhausted or
+unavailable STARTER falls back to the local parser. This is not a paid billing tier.
+
 Schema v15 makes the app **offline-first** and adds fixed-time events (ADR 0018):
 
 - Every task/event change (create, edit, start, done, «не сейчас», reschedule, won't do,
@@ -256,7 +262,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 6. Recurrence/notifications as demanded by usage. **Implemented in Pass 8.**
 7. Reliability/security/conformance hardening. **Implemented through schema v12.**
 8. Offline task-operation replication and execution reminders. **Implemented for the MVP; external FCM/LLM/routing/OAuth providers remain configuration-dependent.**
-9. Per-account AI keys (BYOK). **Implemented in schema v14.** Paid/managed AI: see [docs/ROADMAP.md](docs/ROADMAP.md).
+9. Per-account AI keys (BYOK). **Implemented in schema v14.** Bounded STARTER managed AI: **implemented in schema v21.** Paid billing: see [docs/ROADMAP.md](docs/ROADMAP.md).
 10. Offline-first client, fixed-time events, task lifecycle, sleep hours. **Implemented in schema v15.**
 
 ## License

@@ -9,31 +9,32 @@ when it changes an ownership or trust boundary).
 
 - The app is fully usable without AI: capture uses the deterministic RU/EN parser.
 - AI is **bring your own key** (BYOK): each account adds its own OpenAI, Anthropic or
-  OpenAI-compatible key in Settings → AI; the operator pays for nobody's inference
-  (ADR 0017).
+  OpenAI-compatible key in Settings → AI.
+- Opt-in STARTER platform AI is shipped in schema v21: new/existing accounts receive
+  the non-destructive `STARTER` entitlement when enabled, with atomic per-account and
+  global request/token caps. BYOK always wins and consumes no STARTER quota; exhausted
+  or unavailable STARTER falls back to the local parser (ADR 0017).
 
 ## Planned
 
-### Paid / managed AI
+### Paid managed AI (not implemented)
 
 A paid plan in which AI works without the user owning an LLM API key.
 
 - The user buys a plan; no personal LLM key is required.
-- Student Execution OS uses **platform-managed** credentials for that account.
+- Student Execution OS would use **platform-managed** credentials for that account.
 - Credentials are assigned automatically from the plan (entitlement), never typed
   in by the user. The seam already exists: `llm_entitlements` +
-  `SEOS_PLATFORM_LLM_*` resolve to `PLATFORM_MANAGED` (ADR 0017).
-- Usage, quota and cost limits are tracked per account (requests, tokens, money)
-  and per plan period.
-- There is protection against unbounded API spend: per-account and global budget
-  caps, rate limits, and a hard stop that degrades to the local parser instead of
-  spending further; operator alerts before caps are reached.
+  `SEOS_PLATFORM_LLM_*` resolve to `PLATFORM_MANAGED` (ADR 0017); STARTER already
+  exercises this seam without claiming billing.
+- Reuse the shipped request/token ledger and hard caps, then add monetary accounting,
+  billing reconciliation, subscription lifecycle, operator alerts, and plan-specific
+  policy.
 - BYOK remains available alongside the paid plan, if that matches the product model
   at the time (today a user's own key takes precedence over the plan).
 
-Prerequisites before any real account is granted platform-managed access: billing /
-subscription source of truth that writes and expires entitlements, the usage ledger
-and caps above, and choice of default platform model(s).
+Prerequisites for a paid tier: billing/subscription source of truth that writes and
+expires entitlements, monetary reconciliation, plan policy, and operator alerts.
 
 ### Progress beyond time
 

@@ -27,6 +27,7 @@ from student_execution_os.domain.errors import (
 )
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.agent.usage import StarterUsageStore
 
 from .auth import AuthConfig, RateLimited, Session, SQLiteAuthStore, Unauthenticated
 from .queries import UiService
@@ -94,6 +95,11 @@ def create_app(
     """
     if (account_id is None) == (auth is None):
         raise ValueError("exactly one of account_id (bound mode) or auth (session mode) is required")
+    # Migration and STARTER backfill are startup work. INSERT OR IGNORE preserves any
+    # operator/billing entitlement already attached to an existing account.
+    with SQLiteCanonicalRepository(database) as startup_repo:
+        startup_repo.initialize()
+        StarterUsageStore(startup_repo).backfill_entitlements()
     auth_store = None if auth is None else SQLiteAuthStore(database, config=auth, now=now)
     bound_service = None
     if account_id is not None:

@@ -4,10 +4,11 @@
 
 ## Current architecture
 
-- Schema: v16 (v13: explicit `remind_at` reminder requests, device capabilities, retention
+- Schema: v21 (v13: explicit `remind_at` reminder requests, device capabilities, retention
   indexes; v14: per-account encrypted LLM credentials and the platform-managed entitlement seam;
   v15: delete tombstones, event reminder leads, counted progress — ADR 0018; v16: standalone
   reminders and wake alarms, device health, AI test failure states — ADR 0019).
+  v21 adds opt-in STARTER entitlements and atomic account/global LLM usage reservations.
 - v16 (ADR 0019): `reminders/standalone.py` + `reminder.*` sync ops; CRITICAL escalation ladder
   in `reminders/policy.py`; `/notifications/health`, `/notifications/test`; RU/EN command
   grammar `agent/commands.py` ⇄ `js/commands.js` (fixture `nl_command_cases.json`) and typed
@@ -33,9 +34,9 @@
   `reminder_messages` is both the in-app inbox and leased push outbox. A new user
   reminder is not a technical retry. The v7–v11 runtime notification package was
   removed by v12.
-- Assistant: deterministic degraded parser by default; per account, the user's own
+- Assistant: `USER_BYOK > PLATFORM_MANAGED STARTER > deterministic parser`; per account, the user's own
   OpenAI, Anthropic, or OpenAI-compatible key (Settings → AI, `agent/credentials.py`,
-  ADR 0017) or, for accounts with a `PLATFORM_MANAGED` entitlement, operator credentials. Model output is a typed proposal only;
+  ADR 0017) or, for accounts with a `PLATFORM_MANAGED` entitlement, server-file operator credentials. STARTER is quota-protected and falls back locally. Model output is a typed proposal only;
   preview, explicit confirmation, server validation, atomic apply, and idempotency
   remain application-owned.
 - Capture: `agent/nlparse.py` (server) and `web/static/js/nlparse.js` (device) parse RU/EN

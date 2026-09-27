@@ -77,6 +77,8 @@ class V14MigrationTest(unittest.TestCase):
                 repo.create_account("a")
             conn = sqlite3.connect(db)
             # Newer releases are rolled back first (see their ADRs), then v14.
+            conn.executescript("DROP TABLE starter_llm_reservations; DROP TABLE starter_llm_account_usage; "
+                               "DROP TABLE starter_llm_global_usage; DELETE FROM schema_migrations WHERE version=21;")
             conn.executescript("DROP TABLE calibration_preferences; DROP TABLE daily_intents; "
                                "DELETE FROM schema_migrations WHERE version=20;")
             conn.executescript("DROP TABLE work_routine_occurrences; DROP TABLE work_routine_templates; "
