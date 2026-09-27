@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS work_routine_templates (
     min_chunk_minutes INTEGER CHECK (min_chunk_minutes IS NULL OR min_chunk_minutes > 0),
     max_chunk_minutes INTEGER CHECK (max_chunk_minutes IS NULL OR max_chunk_minutes > 0),
     status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE','CANCELLED')),
+    series_end_before_local TEXT,
     version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
