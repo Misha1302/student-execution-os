@@ -117,6 +117,13 @@ console.log('{{"ok":true}}');
         sync_web = (ROOT / "mobile/scripts/sync-web.mjs").read_text()
         self.assertIn("google-services.json", sync_web)
 
+    def test_voice_note_has_visible_record_stop_cancel_and_original_audio_path(self):
+        source = (ROOT / "src/student_execution_os/web/static/js/notes-audio.js").read_text()
+        for contract in ("navigator.mediaDevices.getUserMedia", "new MediaRecorder", "data-record-state",
+                         "data-record-stop", "data-record-cancel", "apiUpload"):
+            self.assertIn(contract, source)
+        self.assertNotIn("content_base64", source)
+
     def test_token_is_never_sent_to_a_candidate_server_and_failed_login_keeps_old_identity(self):
         script = f"""
 globalThis.window = {{ Capacitor: null }};
