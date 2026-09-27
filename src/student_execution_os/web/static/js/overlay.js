@@ -810,7 +810,10 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);
-  if (route === '/api/v1/reflection' || route === '/api/v1/reflection/daily') return projectReflection(base, ops);
+  if (route.startsWith('/api/v1/reflection?') || route === '/api/v1/reflection'
+      || route.startsWith('/api/v1/reflection/daily?') || route === '/api/v1/reflection/daily') {
+    return projectReflection(base, ops);
+  }
   if (route === '/api/v1/projects') return projectProjects(base, ops);
   if (route.startsWith('/api/v1/projects/')) {
     const projected = projectProjects(base ? [base] : [], ops);
