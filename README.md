@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v19**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v20**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -130,6 +130,20 @@ Schema v19 adds recurring **work** separately from recurring calendar Events (AD
 - "this and future" performs a series split and refuses to rewrite future occurrences
   that already contain user history;
 - routine state is offline-safe and included in account export/deletion.
+
+Schema v20 adds Reflection & Calibration (ADR 0025) without creating a second truth
+for progress or effort:
+
+- Daily Intent stores at most three explicit Task priorities plus a note and acts only
+  as a soft planner tie-break; closing the day removes that signal;
+- daily/weekly review derives planned-vs-actual, completion, carry-over and schedule
+  churn from saved PlanSnapshots, canonical Tasks and Execution Sessions;
+- estimate calibration is suggested only after repeated completed-task evidence and
+  never applies automatically;
+- an accepted category multiplier changes only the planning/risk projection; the
+  Task's canonical estimate and remaining effort remain unchanged;
+- intent/calibration mutations are offline-safe, while stale derived WORK blocks are
+  hidden until the server replans.
 
 ## Run the current implementation locally
 
@@ -222,6 +236,7 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Canonical Plan Control ADR](docs/adr/0022-plan-control-canonical-constraints.md)
 - [Projects as containers ADR](docs/adr/0023-projects-as-containers.md)
 - [Recurring work as canonical Tasks (v19) ADR](docs/adr/0024-recurring-work.md)
+- [Derived Reflection and opt-in calibration (v20) ADR](docs/adr/0025-reflection-calibration.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)

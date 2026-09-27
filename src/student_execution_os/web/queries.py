@@ -61,6 +61,7 @@ from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
 from student_execution_os.sync.commands import Commands, SyncService
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
+from student_execution_os.reflection import SQLiteReflectionStore
 
 
 class _AccountLimiter:
@@ -518,8 +519,48 @@ class UiService:
                 "reasons": list(outcome.plan.explanations),
             }]
             plan_payload = self._plan_payload(outcome.plan, tasks, events, snapshot.constraints)
+            reflection = SQLiteReflectionStore(repo)
+            local_date = reflection.local_date(self.account_id, self._now())
+            daily_intent = reflection.intent(self.account_id, local_date)
+            profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            from zoneinfo import ZoneInfo
+            zone = ZoneInfo(profile.timezone_name)
+            local_day = datetime.fromisoformat(local_date).date()
+            windows = planning_intervals(profile, local_day, 1)
+            capacity_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
+            occupied_parts: list[tuple[datetime, datetime]] = []
+            work_parts: list[tuple[datetime, datetime]] = []
+            for block in outcome.plan.blocks:
+                interval = (block.starts_at, block.ends_at)
+                clipped = [
+                    (max(interval[0], window[0]), min(interval[1], window[1]))
+                    for window in windows if overlap_minutes(interval, window)
+                ]
+                occupied_parts.extend(clipped)
+                if block.type.value == "WORK":
+                    work_parts.extend(clipped)
+            for constraint in snapshot.constraints:
+                if constraint.id.startswith(OFF_HOURS_PREFIX):
+                    continue
+                interval = (constraint.interval.starts_at, constraint.interval.ends_at)
+                occupied_parts.extend([
+                    (max(interval[0], window[0]), min(interval[1], window[1]))
+                    for window in windows if overlap_minutes(interval, window)
+                ])
+            planned_work_minutes = self._merged_minutes(work_parts)
+            occupied_minutes = self._merged_minutes(occupied_parts)
+            day_capacity = {
+                "planning_capacity_minutes": capacity_minutes,
+                "planned_work_minutes": planned_work_minutes,
+                "occupied_minutes": occupied_minutes,
+                "safe_reserve_minutes": max(0, capacity_minutes - occupied_minutes),
+            }
             return {
                 "now": _jsonify(self._now()),
+                "local_date": local_date,
+                "daily_intent": daily_intent,
+                "day_capacity": day_capacity,
+                "planning_effort_multipliers": {category: multiplier for category, multiplier in snapshot.effort_multipliers},
                 "server_revision": snapshot.input_server_revision,
                 "plan": plan_payload,
                 "current_action": current_action,
@@ -620,6 +661,44 @@ class UiService:
                 "plan": self._plan_payload(outcome.plan, tasks, events, snapshot.constraints),
                 "tasks": tasks,
             }
+
+    def reflection(self, days: int = 7) -> dict[str, Any]:
+        days = max(1, min(int(days), 31))
+        with self._repo() as repo:
+            from zoneinfo import ZoneInfo
+            store = SQLiteReflectionStore(repo)
+            zone = ZoneInfo(store.timezone_name(self.account_id))
+            now = self._now()
+            local_today = now.astimezone(zone).date()
+            start_local = local_today - timedelta(days=days - 1)
+            start = datetime.combine(start_local, datetime.min.time(), zone).astimezone(timezone.utc)
+            data = store.review(self.account_id, start, now)
+            data["days"] = days
+            data["daily_intent"] = store.intent(self.account_id, local_today.isoformat())
+            return data
+
+    def reflection_daily(self, local_date: str) -> dict[str, Any]:
+        with self._repo() as repo:
+            from zoneinfo import ZoneInfo
+            store = SQLiteReflectionStore(repo)
+            zone = ZoneInfo(store.timezone_name(self.account_id))
+            day = datetime.fromisoformat(local_date).date()
+            start = datetime.combine(day, datetime.min.time(), zone).astimezone(timezone.utc)
+            end = min(
+                datetime.combine(day + timedelta(days=1), datetime.min.time(), zone).astimezone(timezone.utc),
+                self._now(),
+            )
+            review = store.review(self.account_id, start, end) if start < end else {
+                "start": _jsonify(start), "end": _jsonify(end),
+                "timezone_name": store.timezone_name(self.account_id),
+                "planned_work_minutes": 0, "actual_work_minutes": 0, "variance_minutes": 0,
+                "completed_tasks": 0, "schedule_churn": 0, "carry_over_count": 0,
+                "calibration_window_days": store.CALIBRATION_WINDOW_DAYS,
+                "calibration": [], "most_underestimated": None,
+            }
+            review["local_date"] = local_date
+            review["daily_intent"] = store.intent(self.account_id, local_date)
+            return review
 
     def execution_active(self) -> dict[str, Any]:
         with self._repo() as repo:

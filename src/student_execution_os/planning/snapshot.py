@@ -16,7 +16,8 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def _stable_payload(*, account_id, revision, analysis_start, analysis_end, output_start, output_end,
-                    tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, travel_projection, policy) -> dict[str, object]:
+                    tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, travel_projection, policy,
+                    soft_priority_task_ids, effort_multipliers) -> dict[str, object]:
     return {
         "account_id": account_id,
         "input_server_revision": revision,
@@ -29,6 +30,8 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
             "max_next_actions": policy.max_next_actions,
             "optional_event_policy": policy.optional_event_policy,
         },
+        "soft_priority_task_ids": list(soft_priority_task_ids),
+        "effort_multipliers": [[category, multiplier] for category, multiplier in effort_multipliers],
         "tasks": [
             {
                 "id": t.obligation.id,
@@ -165,6 +168,13 @@ def _read_stable_inputs(source, account_id: str, analysis_horizon_start: datetim
     """Read one revision-consistent planning state without requiring source-specific transactions."""
     for _ in range(_STABLE_CAPTURE_ATTEMPTS):
         revision_before = source.get_server_revision(account_id)
+        signals_reader = getattr(source, "planning_signals", None)
+        if signals_reader is not None:
+            priority_ids, multipliers = signals_reader(account_id, analysis_horizon_start)
+            soft_priority_task_ids = tuple(priority_ids)
+            effort_multipliers = tuple(sorted((str(k), float(v)) for k, v in dict(multipliers).items()))
+        else:
+            soft_priority_task_ids, effort_multipliers = (), ()
         tasks = tuple(sorted(
             (t for t in source.list_tasks(account_id) if t.obligation.lifecycle_status is LifecycleStatus.ACTIVE),
             key=lambda t: t.obligation.id,
@@ -217,6 +227,8 @@ def _read_stable_inputs(source, account_id: str, analysis_horizon_start: datetim
                 milestones,
                 cutoff_reconciliation,
                 travel_projection,
+                soft_priority_task_ids,
+                effort_multipliers,
             )
     raise RuntimeError("planning state changed during snapshot capture")
 
@@ -251,6 +263,8 @@ def build_planning_snapshot(
         milestones,
         cutoff_reconciliation,
         travel_projection,
+        soft_priority_task_ids,
+        effort_multipliers,
     ) = _read_stable_inputs(
         source,
         account_id,
@@ -310,6 +324,8 @@ def build_planning_snapshot(
         cutoff_reconciliation=cutoff_reconciliation,
         travel_projection=travel_projection,
         policy=policy,
+        soft_priority_task_ids=soft_priority_task_ids,
+        effort_multipliers=effort_multipliers,
     )
     input_hash = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -328,6 +344,8 @@ def build_planning_snapshot(
         dependencies=dependencies,
         milestones=milestones,
         policy=policy,
+        soft_priority_task_ids=soft_priority_task_ids,
+        effort_multipliers=effort_multipliers,
         cutoff_reconciliation=cutoff_reconciliation,
         travel_projection=travel_projection,
     )

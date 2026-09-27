@@ -530,6 +530,70 @@ export function projectWorkRoutines(data, ops) {
   return { ...(data || {}), routines };
 }
 
+function projectDailyIntent(current, ops, localDate) {
+  let intent = current ? { ...current } : null;
+  for (const item of ops) {
+    const op = item.operation || {};
+    const p = op.payload || {};
+    if (!op.type?.startsWith('intent.') || p.local_date !== localDate) continue;
+    const at = item.queued_at || new Date().toISOString();
+    if (op.type === 'intent.set') {
+      intent = {
+        local_date: localDate,
+        priority_task_ids: [...(p.priority_task_ids || [])],
+        note: p.note || null,
+        started_at: intent?.started_at || at,
+        closed_at: null,
+        version: Number(intent?.version || 0) + 1,
+        created_at: intent?.created_at || at,
+        updated_at: at,
+        _pending: true,
+      };
+    } else if (op.type === 'intent.close') {
+      intent = {
+        ...(intent || { local_date: localDate, priority_task_ids: [], note: null, created_at: at }),
+        started_at: intent?.started_at || at,
+        closed_at: at,
+        updated_at: at,
+        version: Number(intent?.version || 0) + 1,
+        _pending: true,
+      };
+    }
+  }
+  return intent;
+}
+
+function projectReflection(data, ops) {
+  const out = { ...(data || {}) };
+  const localDate = out.local_date || out.daily_intent?.local_date;
+  if (localDate) out.daily_intent = projectDailyIntent(out.daily_intent || null, ops, localDate);
+  if (Array.isArray(out.calibration)) {
+    out.calibration = out.calibration.map((row) => {
+      let next = row;
+      for (const item of ops) {
+        const op = item.operation || {};
+        const p = op.payload || {};
+        if (op.type !== 'calibration.set' || p.category !== row.category) continue;
+        next = {
+          ...next,
+          preference: {
+            category: row.category,
+            safety_multiplier: Number(p.safety_multiplier || 1),
+            enabled: Boolean(p.enabled),
+            suppress_suggestion: Boolean(p.suppress_suggestion),
+            version: Number(row.preference?.version || 0) + 1,
+            updated_at: item.queued_at,
+            _pending: true,
+          },
+          suggested_multiplier: p.suppress_suggestion ? null : next.suggested_multiplier,
+        };
+      }
+      return next;
+    });
+  }
+  return out;
+}
+
 export function applyEventOp(event, item) {
   const op = item.operation;
   const p = op.payload || {};
@@ -701,6 +765,7 @@ function projectDay(data, ops, now) {
   const rTaskOps = ops.map(routineTaskProjection).filter(Boolean);
   const out = { ...data };
   out.active_execution = projectExecution(data.active_execution || null, xOps);
+  if (data.local_date) out.daily_intent = projectDailyIntent(data.daily_intent || null, ops, data.local_date);
   // Today lists active tasks in `tasks` and drafts in `needs_refinement`; a queued
   // change can move a task between the two or out of both.
   const known = [...(data.tasks || []), ...(data.needs_refinement || [])];
@@ -722,6 +787,12 @@ function projectDay(data, ops, now) {
     if (out.current_action && unschedulable(byId.get(out.current_action.task_id), now)) out.current_action = null;
   }
   out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, cOps, now);
+  const preferenceOps = ops.filter((x) => ['intent.set', 'intent.close', 'calibration.set'].includes(x.operation?.type));
+  if (preferenceOps.length && out.plan) {
+    out.plan = { ...out.plan, blocks: (out.plan.blocks || []).filter((b) => b.type !== 'WORK'), pending_preferences: true };
+    out.next_actions = [];
+    if (!out.active_execution) out.current_action = null;
+  }
   if (ops.length) out.pending_changes = ops.filter((x) => x.state === 'PENDING').length;
   return out;
 }
@@ -739,6 +810,10 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);
+  if (route.startsWith('/api/v1/reflection?') || route === '/api/v1/reflection'
+      || route.startsWith('/api/v1/reflection/daily?') || route === '/api/v1/reflection/daily') {
+    return projectReflection(base, ops);
+  }
   if (route === '/api/v1/projects') return projectProjects(base, ops);
   if (route.startsWith('/api/v1/projects/')) {
     const projected = projectProjects(base ? [base] : [], ops);

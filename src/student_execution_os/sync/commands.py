@@ -53,6 +53,7 @@ from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
 from student_execution_os.execution import SQLiteExecutionStore
 from student_execution_os.planning.state import SQLitePlanningStateSource
+from student_execution_os.reflection import SQLiteReflectionStore
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
 
 from .serialize import event_payload, task_payload
@@ -183,6 +184,9 @@ class Commands:
             "routine.occurrence.skip": self.routine_occurrence_skip,
             "routine.occurrence.reopen": self.routine_occurrence_reopen,
             "routine.occurrence.edit": self.routine_occurrence_edit,
+            "intent.set": self.intent_set,
+            "intent.close": self.intent_close,
+            "calibration.set": self.calibration_set,
             "reminder.snooze": self.reminder_snooze,
             "event.create": self.event_create,
             "event.update": self.event_update,
@@ -1142,6 +1146,49 @@ class Commands:
         )
         self._verify_routine_task_ref(item, task_id)
         return Outcome(APPLIED, self._routine_occurrence_out(item))
+
+    # ---- daily intent / reflection calibration -----------------------------------------
+
+    def intent_set(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {"local_date", "priority_task_ids", "note", "expected_version"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("daily intent fields are not supported: " + ", ".join(sorted(unknown)))
+        local_date = str(payload.get("local_date") or "")
+        raw = payload.get("priority_task_ids") or []
+        if not isinstance(raw, list):
+            raise ValidationError("priority_task_ids must be a list")
+        item = SQLiteReflectionStore(self.repo).set_intent(
+            self.account_id, local_date, [str(value) for value in raw],
+            _description(payload.get("note")), self.actor,
+            expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
+        )
+        return Outcome(APPLIED, item)
+
+    def intent_close(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"local_date", "expected_version"}:
+            raise ValidationError("intent.close only accepts local_date and expected_version")
+        item = SQLiteReflectionStore(self.repo).close_intent(
+            self.account_id, str(payload.get("local_date") or ""), self.actor,
+            expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
+        )
+        return Outcome(APPLIED, item)
+
+    def calibration_set(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {"category", "safety_multiplier", "enabled", "suppress_suggestion", "expected_version"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("calibration fields are not supported: " + ", ".join(sorted(unknown)))
+        item = SQLiteReflectionStore(self.repo).set_calibration(
+            self.account_id,
+            str(payload.get("category") or ""),
+            float(payload.get("safety_multiplier") or 1.0),
+            bool(payload.get("enabled", True)),
+            bool(payload.get("suppress_suggestion", False)),
+            self.actor,
+            expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
+        )
+        return Outcome(APPLIED, item)
 
     # ---- plan control / canonical time constraints -------------------------------------
 

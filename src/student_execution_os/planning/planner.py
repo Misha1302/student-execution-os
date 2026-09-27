@@ -35,14 +35,16 @@ class Planner:
     timeout_seconds: float = 2.0
 
     def plan(self, snapshot: PlanningSnapshot, previous_plan: PlanSnapshot | None = None) -> PlanSnapshot:
+        intent_rank = {task_id: index for index, task_id in enumerate(snapshot.soft_priority_task_ids)}
         def priority(task):
+            intent = intent_rank.get(task.obligation.id, 99)
             if task.target_at is not None:
-                temporal = (0, task.target_at)
-            elif task.actual_cutoff.state is CutoffState.KNOWN:
-                temporal = (1, task.actual_cutoff.at)
-            else:
-                temporal = (2, task.obligation.created_at)
-            return (*temporal, _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
+                return (0, task.target_at, intent, _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
+            if task.actual_cutoff.state is CutoffState.KNOWN:
+                return (1, task.actual_cutoff.at, intent, _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
+            # With no timing signal, Daily Intent is the meaningful soft ordering
+            # input. Creation time remains the deterministic fallback.
+            return (2, intent, task.obligation.created_at, _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
 
         feasibility = FeasibilityEngine(
             exact_search_enabled=self.exact_search_enabled,

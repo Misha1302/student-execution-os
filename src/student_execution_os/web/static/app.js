@@ -23,6 +23,7 @@ import places from './js/views/places.js';
 import projects from './js/views/projects.js';
 import project from './js/views/project-detail.js';
 import routines from './js/views/routines.js';
+import reflection from './js/views/reflection.js';
 import settings from './js/views/settings.js';
 import welcome from './js/views/welcome.js';
 import reminder from './js/views/reminder.js';
@@ -31,7 +32,7 @@ import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, projects, project, routines, settings, welcome };
+const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -365,7 +366,7 @@ function handleBack() {
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
 const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
-  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/notifications/health'];
+  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/reflection?days=7', '/api/v1/notifications/health'];
 let lastPrefetch = 0;
 function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
