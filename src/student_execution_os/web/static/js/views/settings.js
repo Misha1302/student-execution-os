@@ -71,6 +71,46 @@ export async function logout() {
   shell.go('welcome');
 }
 
+
+function feedbackSheet(diag) {
+  const dialog = openSheet({
+    title: t('settings.feedbackTitle'),
+    body: `<p class="muted">${esc(t('settings.feedbackHelp'))}</p>
+      <label class="field"><span>${esc(t('settings.feedbackMessage'))}</span>
+        <textarea rows="6" maxlength="5000" data-feedback placeholder="${esc(t('settings.feedbackPlaceholder'))}"></textarea>
+      </label>
+      <p class="help">${esc(t('settings.feedbackPrivacy'))}</p>`,
+    actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
+      <button type="button" class="button primary" data-send>${esc(t('settings.feedbackSend'))}</button>`,
+  });
+  const input = dialog.querySelector('[data-feedback]');
+  setTimeout(() => input.focus(), 80);
+  dialog.querySelector('[data-send]').addEventListener('click', async (event) => {
+    const message = input.value.trim();
+    if (!message) return;
+    setBusy(event.currentTarget, true);
+    try {
+      await api('/api/v1/feedback', {
+        method: 'POST',
+        body: {
+          message,
+          technical_context: {
+            client_version: String(diag.version || ''),
+            app_version: String(diag.version || ''),
+            platform: isNative() ? 'android' : 'web',
+            timestamp: new Date().toISOString(),
+          },
+        },
+      });
+      dialog.close('sent');
+      toast(t('settings.feedbackThanks'));
+    } catch (err) {
+      toast(errorMessage(err), { error: true });
+      setBusy(event.currentTarget, false);
+    }
+  });
+}
+
 async function exportAccount(button) {
   setBusy(button, true);
   try {
@@ -236,6 +276,14 @@ export default {
       </section>
 
       <section class="section">
+        <div class="section-head"><h2>${esc(t('settings.feedback'))}</h2></div>
+        <div class="card">
+          <p class="muted">${esc(t('settings.feedbackCardHelp'))}</p>
+          <button class="button wide" data-action="feedback">${icon('alert')}${esc(t('settings.feedbackAction'))}</button>
+        </div>
+      </section>
+
+      <section class="section">
         <div class="section-head"><h2>${esc(t('settings.data'))}</h2></div>
         <div class="card">
           <p class="muted">${esc(t('settings.exportHelp'))}</p>
@@ -315,6 +363,7 @@ export default {
       if (ok) shell.go('welcome', { step: 'server' });
     },
     'account-export': (el) => exportAccount(el),
+    feedback: (_el, ctx) => feedbackSheet(ctx.data.diag),
     'save-sleep': (el, ctx) => saveSleep(el, ctx),
     'update-check': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.checkForUpdates({ manual: true }); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
     'update-download': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.download(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
