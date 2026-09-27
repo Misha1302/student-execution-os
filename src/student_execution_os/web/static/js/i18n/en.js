@@ -142,6 +142,7 @@ export default {
   'reflection.underBy': 'typically {n}% longer than estimated',
   'reflection.overBy': 'typically {n}% faster than estimated',
   'reflection.onEstimate': 'estimate is close to actual',
+  'reflection.noRecentSample': 'no recent sample; the saved planning setting still applies',
   'reflection.suggestionTitle': 'Add planning buffer',
   'reflection.suggestionBody': 'Use ×{n} for planning this category. The task\'s own estimate stays unchanged.',
   'reflection.useSuggestion': 'Use buffer',
