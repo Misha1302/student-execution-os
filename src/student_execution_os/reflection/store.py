@@ -333,11 +333,16 @@ class SQLiteReflectionStore:
             by_category.setdefault(row["category"], []).append(actual_minutes / float(estimate))
         prefs = self.calibration_preferences(account_id)
         result = []
-        for category, ratios in sorted(by_category.items()):
-            median_ratio = statistics.median(ratios)
-            mean_ratio = statistics.fmean(ratios)
-            suggested = max(1.0, min(3.0, round(median_ratio * 20) / 20))
+        for category in sorted(set(by_category) | set(prefs)):
+            ratios = by_category.get(category, [])
             pref = prefs.get(category)
+            if ratios:
+                median_ratio = statistics.median(ratios)
+                mean_ratio = statistics.fmean(ratios)
+                suggested = max(1.0, min(3.0, round(median_ratio * 20) / 20))
+            else:
+                median_ratio = mean_ratio = 1.0
+                suggested = 1.0
             result.append({
                 "category": category,
                 "sample_size": len(ratios),
