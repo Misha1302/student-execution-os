@@ -27,7 +27,8 @@ const ACK_KEEP_MS = 24 * 3600 * 1000;
 const IDEMPOTENT = new Set(['task.start', 'task.complete', 'task.cancel', 'task.reopen', 'task.archive', 'task.unarchive',
   'task.restore', 'task.delete', 'event.cancel', 'event.reopen', 'event.delete',
   'reminder.done', 'reminder.cancel', 'reminder.reopen', 'reminder.delete',
-  'execution.pause', 'execution.resume', 'execution.finish', 'execution.cancel']);
+  'execution.pause', 'execution.resume', 'execution.finish', 'execution.cancel',
+  'constraint.update', 'constraint.delete']);
 
 let flushing = null;
 let again = false;
