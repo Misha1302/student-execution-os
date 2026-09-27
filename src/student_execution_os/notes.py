@@ -87,14 +87,19 @@ class SQLiteNoteRepository:
         params: list[Any] = [account_id]
         if not include_archived:
             sql += " AND lifecycle_status='ACTIVE'"
-        if needle:
-            sql += " AND (lower(content) LIKE ? OR lower(COALESCE(transcript,'')) LIKE ?)"
-            like = f"%{needle}%"
-            params.extend([like, like])
+        # SQLite lower() is ASCII-oriented. A bounded Python casefold keeps RU/EN
+        # search correct without introducing a second FTS/indexed source of truth.
         sql += " ORDER BY updated_at DESC,id LIMIT ?"
-        params.append(limit)
+        params.append(500 if needle else limit)
         rows = self.repo.connection.execute(sql, tuple(params)).fetchall()
-        return [self._out(account_id, row["id"]) for row in rows]
+        items = [self._out(account_id, row["id"]) for row in rows]
+        if needle:
+            items = [
+                item for item in items
+                if needle in (item["content"] or "").casefold()
+                or needle in (item["transcript"] or "").casefold()
+            ]
+        return items[:limit]
 
     def list_unlinked(self, account_id: str, *, limit: int = 3) -> list[dict[str, Any]]:
         rows = self.repo.connection.execute(

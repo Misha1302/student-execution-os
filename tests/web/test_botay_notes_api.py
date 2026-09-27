@@ -37,7 +37,7 @@ class BotayNotesApiTests(unittest.TestCase):
 
     def test_text_note_crud_replay_conflict_archive_and_account_isolation(self):
         create = {"op_id": "op-note-create-0001", "type": "note.create", "entity_id": "note-0001",
-                  "payload": {"content": "Idea: dependency graph", "source_kind": "CAPTURE"}}
+                  "payload": {"content": "Идея: dependency graph", "source_kind": "CAPTURE"}}
         first = self.sync(create)[0]
         self.assertEqual(first["status"], "APPLIED")
         self.assertEqual(first["entity"]["version"], 1)
@@ -48,6 +48,7 @@ class BotayNotesApiTests(unittest.TestCase):
         listed = self.client.get("/api/v1/notes").json()
         self.assertEqual([n["id"] for n in listed], ["note-0001"])
         self.assertEqual(self.other.get("/api/v1/notes/note-0001").status_code, 404)
+        self.assertEqual([n["id"] for n in self.client.get("/api/v1/notes?q=ИДЕЯ").json()], ["note-0001"])
 
         updated = self.sync({
             "op_id": "op-note-update-0001", "type": "note.update", "entity_id": "note-0001",
