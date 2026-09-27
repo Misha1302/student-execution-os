@@ -17,9 +17,11 @@ function calibrationCard(item) {
   const pref = item.preference;
   const accepted = pref?.enabled && Number(pref.safety_multiplier || 1) > 1;
   const suggestion = item.suggested_multiplier;
-  const copy = percent > 0
-    ? t('reflection.underBy', { n: Math.abs(percent) })
-    : percent < 0 ? t('reflection.overBy', { n: Math.abs(percent) }) : t('reflection.onEstimate');
+  const copy = Number(item.sample_size || 0) === 0
+    ? t('reflection.noRecentSample')
+    : percent > 0
+      ? t('reflection.underBy', { n: Math.abs(percent) })
+      : percent < 0 ? t('reflection.overBy', { n: Math.abs(percent) }) : t('reflection.onEstimate');
   return `<article class="card" data-category="${esc(item.category)}">
     <div class="section-head"><div>
       <h3>${esc(code('category', item.category))}</h3>
