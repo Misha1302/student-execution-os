@@ -365,9 +365,16 @@ class SQLiteReflectionStore:
             raise ValidationError("review interval must be a non-empty aware interval")
         zone_name = self.timezone_name(account_id)
         zone = ZoneInfo(zone_name)
+        live_end = end >= self.clock.now()
+        completed_sql = (
+            "SELECT count(*) FROM obligations WHERE account_id=? AND kind='TASK' "
+            "AND completed_at>=? AND completed_at<=?"
+            if live_end else
+            "SELECT count(*) FROM obligations WHERE account_id=? AND kind='TASK' "
+            "AND completed_at>=? AND completed_at<?"
+        )
         completed = int(self.connection.execute(
-            "SELECT count(*) FROM obligations WHERE account_id=? AND kind='TASK' AND completed_at>=? AND completed_at<?",
-            (account_id, _iso(start), _iso(end)),
+            completed_sql, (account_id, _iso(start), _iso(end))
         ).fetchone()[0])
         actual_minutes = self._actual_seconds(account_id, start, end) // 60
         planned_minutes = self._planned_minutes(account_id, start, end, zone)
