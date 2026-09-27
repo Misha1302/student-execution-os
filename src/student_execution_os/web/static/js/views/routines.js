@@ -85,7 +85,8 @@ function editOccurrence(routine, occurrence) {
       </label>
       <p class="help">${esc(t('routine.identityHelp'))}</p>`,
     actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
-      <button type="button" class="button primary" data-occurrence-save>${esc(t('common.save'))}</button>`,
+      <button type="button" class="button ghost" data-occurrence-future>${esc(t('routine.thisAndFuture'))}</button>
+      <button type="button" class="button primary" data-occurrence-save>${esc(t('routine.thisOnly'))}</button>`,
   });
   dialog.querySelector('[data-occurrence-save]').addEventListener('click', async (event) => {
     const title = String(dialog.querySelector('[data-occurrence-title]').value || '').trim();
@@ -101,6 +102,23 @@ function editOccurrence(routine, occurrence) {
       effort_minutes: effort,
       target_local: target,
     }, { success: t('routine.occurrenceUpdated') });
+    if (result) dialog.close('saved'); else setBusy(event.currentTarget, false);
+  });
+  dialog.querySelector('[data-occurrence-future]').addEventListener('click', async (event) => {
+    const title = String(dialog.querySelector('[data-occurrence-title]').value || '').trim();
+    const effort = Number(dialog.querySelector('[data-occurrence-effort]').value || 0);
+    const target = String(dialog.querySelector('[data-occurrence-target]').value || '');
+    if (!title || effort <= 0 || !target) return;
+    setBusy(event.currentTarget, true);
+    const result = await change('routine.split', newEntityId('routine'), {
+      template_id: routine.id,
+      original_recurrence_id: occurrence.original_recurrence_id,
+      expected_version: routine.version,
+      title,
+      effort_minutes: effort,
+      target_local: target,
+      timezone_name: routine.timezone_name,
+    }, { success: t('routine.seriesSplit') });
     if (result) dialog.close('saved'); else setBusy(event.currentTarget, false);
   });
 }
