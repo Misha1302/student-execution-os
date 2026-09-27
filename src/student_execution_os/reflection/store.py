@@ -344,7 +344,13 @@ class SQLiteReflectionStore:
                 "median_ratio": round(median_ratio, 3),
                 "mean_ratio": round(mean_ratio, 3),
                 "median_percent_difference": round((median_ratio - 1.0) * 100),
-                "suggested_multiplier": suggested if len(ratios) >= self.MIN_CALIBRATION_SAMPLE and not (pref and pref["suppress_suggestion"]) else None,
+                "suggested_multiplier": (
+                    suggested
+                    if len(ratios) >= self.MIN_CALIBRATION_SAMPLE
+                    and suggested > 1.0
+                    and not (pref and pref["suppress_suggestion"])
+                    else None
+                ),
                 "preference": pref,
             })
         return result
