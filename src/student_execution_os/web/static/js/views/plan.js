@@ -87,13 +87,13 @@ function openItem(item) {
         ${b.reason && item.kind !== 'OFF_HOURS' ? kv(t('plan.reason'), b.reason) : ''}
       </dl>
       ${derived ? `<p class="help">${esc(t('plan.derivedHelp'))}</p>` : ''}
-      ${isWork ? `<div class="button-stack">
+      ${isWork ? `<div class="now-actions">
         ${pin ? '' : `<button type="button" class="button primary wide" data-control-pin>${esc(t('plan.pinThis'))}</button>`}
         <button type="button" class="button ghost wide" data-control-move>${esc(t('plan.moveWork'))}</button>
         ${pin ? `<button type="button" class="button ghost wide" data-control-unpin>${esc(t('plan.unpin'))}</button>`
           : `<button type="button" class="button ghost wide" data-control-avoid>${esc(t('plan.avoidThisTime'))}</button>`}
       </div>` : ''}
-      ${isConstraint && !isWork ? `<div class="button-stack">
+      ${isConstraint && !isWork ? `<div class="now-actions">
         <button type="button" class="button ghost wide" data-control-move>${esc(t('plan.moveConstraint'))}</button>
         <button type="button" class="button ghost wide" data-control-unpin>${esc(t('plan.removeConstraint'))}</button>
       </div>` : ''}
