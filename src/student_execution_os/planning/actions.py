@@ -63,19 +63,20 @@ def auto_order_task_ids(snapshot: PlanningSnapshot, risks: dict[str, RiskResult]
     def key(task):
         risk = risks.get(task.obligation.id)
         risk_rank = _RISK_RANK[risk.state] if risk else 99
+        intent = intent_rank.get(task.obligation.id, 99)
         if task.actual_cutoff.state is CutoffState.KNOWN and task.actual_cutoff.at is not None:
-            relevant = (0, task.actual_cutoff.at)
-        elif task.target_at is not None:
-            relevant = (1, task.target_at)
-        else:
-            relevant = (2, task.obligation.created_at)
+            return (
+                risk_rank, 0, task.actual_cutoff.at, intent,
+                _IMPORTANCE_RANK[task.obligation.importance], task.obligation.created_at, task.obligation.id,
+            )
+        if task.target_at is not None:
+            return (
+                risk_rank, 1, task.target_at, intent,
+                _IMPORTANCE_RANK[task.obligation.importance], task.obligation.created_at, task.obligation.id,
+            )
         return (
-            risk_rank,
-            *relevant,
-            intent_rank.get(task.obligation.id, 99),
-            _IMPORTANCE_RANK[task.obligation.importance],
-            task.obligation.created_at,
-            task.obligation.id,
+            risk_rank, 2, intent, task.obligation.created_at,
+            _IMPORTANCE_RANK[task.obligation.importance], task.obligation.created_at, task.obligation.id,
         )
 
     return tuple(t.obligation.id for t in sorted(snapshot.tasks, key=key))
