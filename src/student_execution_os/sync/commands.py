@@ -1062,7 +1062,7 @@ class Commands:
             raise ValidationError("successor routine id must be a client-generated identifier")
         allowed = {
             "template_id", "original_recurrence_id", "title", "effort_minutes",
-            "recurrence_rule", "timezone_name", "expected_version",
+            "target_local", "recurrence_rule", "timezone_name", "expected_version",
         }
         unknown = set(payload) - allowed
         if unknown:
@@ -1072,6 +1072,7 @@ class Commands:
         if not template_id or not original:
             raise ValidationError("routine split requires template_id and original_recurrence_id")
         effort = _minutes(payload.get("effort_minutes"), "effort_minutes", allow_none=True)
+        target_local = self._local_instant(payload["target_local"], "target_local") if payload.get("target_local") else None
         before, successor = SQLiteWorkRoutineRepository(self.repo).split_this_and_future(
             account_id=self.account_id,
             template_id=template_id,
@@ -1080,6 +1081,7 @@ class Commands:
             actor=self.actor,
             title=_title(payload["title"]) if "title" in payload else None,
             effort_minutes=effort,
+            replacement_start_local=target_local,
             recurrence_rule=str(payload["recurrence_rule"]) if payload.get("recurrence_rule") else None,
             timezone_name=str(payload["timezone_name"]) if payload.get("timezone_name") else None,
             expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
