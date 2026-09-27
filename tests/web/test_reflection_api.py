@@ -119,9 +119,11 @@ class ReflectionApiTest(unittest.TestCase):
         review = self.client.get("/api/v1/reflection?days=1")
         self.assertEqual(review.status_code, 200, review.text)
         data = review.json()
-        self.assertEqual(data["planned_work_minutes"], 60)
+        # The current local day is reviewed only up to "now": future planned
+        # minutes are not compared with work that has not had a chance to happen.
+        self.assertEqual(data["planned_work_minutes"], 30)
         self.assertEqual(data["actual_work_minutes"], 30)
-        self.assertEqual(data["variance_minutes"], -30)
+        self.assertEqual(data["variance_minutes"], 0)
         self.assertEqual(data["completed_tasks"], 1)
         self.assertEqual(data["carry_over_count"], 0)
 
@@ -141,6 +143,9 @@ class ReflectionApiTest(unittest.TestCase):
                 execution = SQLiteExecutionStore(repo)
                 execution.start("a", f"execution-history-{i}", task_id, start, ActorCategory.USER_UI)
                 execution.finish("a", f"execution-history-{i}", end, ActorCategory.USER_UI)
+                # SQLiteExecutionStore participates in its caller's transaction.
+                # Direct store use in this fixture therefore commits explicitly.
+                repo.connection.commit()
             with SQLiteCanonicalRepository(self.db, clock=FrozenClock(end)) as repo:
                 task = repo.get_task("a", task_id)
                 repo.complete_obligation(
