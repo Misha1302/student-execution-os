@@ -41,3 +41,11 @@ Tasks before server materialization.
 Calendar recurrence and work recurrence remain separate concepts, while all actual
 work still flows through one Task/Execution model. Stable identities survive moves,
 sync retries and device restarts. Schema v19 adds routine template/occurrence tables.
+
+## Rollback
+
+Schema v19 only adds work-routine tables. After stopping the service and taking a
+verified backup, roll back to v18 by dropping `work_routine_occurrences` first,
+then `work_routine_templates`, and deleting schema-migration row 19. Materialized
+Task obligations are intentionally retained: they are ordinary user work/history
+and remain valid in v18 even when the recurrence template is removed.
