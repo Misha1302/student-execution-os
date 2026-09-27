@@ -7,7 +7,7 @@ from .model import (
     RecurringOccurrence,
     RecurringTemplate,
 )
-from .repository import SQLiteRecurrenceRepository, recurrence_id
+from .repository import SQLiteRecurrenceRepository, recurrence_id, resolve_local
 
 __all__ = [
     "LocalTimeResolutionPolicy",
@@ -19,4 +19,5 @@ __all__ = [
     "RecurringTemplate",
     "SQLiteRecurrenceRepository",
     "recurrence_id",
+    "resolve_local",
 ]

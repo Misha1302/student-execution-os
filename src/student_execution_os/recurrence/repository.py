@@ -83,6 +83,15 @@ def _resolve_local(local_value: datetime, timezone_name: str, policy: LocalTimeR
     raise ValidationError("could not resolve local civil time within DST gap bound")
 
 
+def resolve_local(
+    local_value: datetime,
+    timezone_name: str,
+    policy: LocalTimeResolutionPolicy = LocalTimeResolutionPolicy.EARLIER_FOLD_SHIFT_FORWARD,
+) -> datetime:
+    """Public deterministic local-civil-time resolution shared by recurrence owners."""
+    return _resolve_local(local_value, timezone_name, policy)
+
+
 class SQLiteRecurrenceRepository:
     def __init__(self, canonical: SQLiteCanonicalRepository) -> None:
         self.canonical = canonical

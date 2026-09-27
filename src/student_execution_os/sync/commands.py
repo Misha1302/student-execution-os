@@ -53,6 +53,7 @@ from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
 from student_execution_os.execution import SQLiteExecutionStore
 from student_execution_os.planning.state import SQLitePlanningStateSource
+from student_execution_os.work_routines import SQLiteWorkRoutineRepository
 
 from .serialize import event_payload, task_payload
 
@@ -176,6 +177,11 @@ class Commands:
             "milestone.cancel": self.milestone_cancel,
             "milestone.reopen": self.milestone_reopen,
             "milestone.delete": self.milestone_delete,
+            "routine.create": self.routine_create,
+            "routine.cancel": self.routine_cancel,
+            "routine.occurrence.skip": self.routine_occurrence_skip,
+            "routine.occurrence.reopen": self.routine_occurrence_reopen,
+            "routine.occurrence.edit": self.routine_occurrence_edit,
             "reminder.snooze": self.reminder_snooze,
             "event.create": self.event_create,
             "event.update": self.event_update,
@@ -950,6 +956,153 @@ class Commands:
             expected_version=int(payload.get("expected_version") or row["version"]), actor=self.actor,
         )
         return Outcome(APPLIED, {"kind": "MILESTONE", "id": milestone_id, "deleted": True})
+
+    # ---- recurring work ----------------------------------------------------------------
+
+    @staticmethod
+    def _local_instant(value: Any, field: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(f"{field} must be an ISO local civil datetime") from exc
+        if parsed.tzinfo is not None:
+            raise ValidationError(f"{field} must not include an offset")
+        return parsed.replace(second=0, microsecond=0)
+
+    @staticmethod
+    def _routine_out(template) -> dict[str, Any]:
+        return {
+            "id": template.id,
+            "title": template.title,
+            "description": template.description,
+            "category": template.category.value,
+            "importance": template.importance.value,
+            "dtstart_local": template.dtstart_local.isoformat(),
+            "effort_minutes": template.effort_minutes,
+            "recurrence_rule": template.recurrence_rule.canonical(),
+            "timezone_name": template.timezone_name,
+            "splittable": template.splittable,
+            "min_chunk_minutes": template.min_chunk_minutes,
+            "max_chunk_minutes": template.max_chunk_minutes,
+            "status": template.status,
+            "version": template.version,
+            "created_at": _iso(template.created_at),
+            "updated_at": _iso(template.updated_at),
+        }
+
+    @staticmethod
+    def _routine_occurrence_out(item) -> dict[str, Any]:
+        return {
+            "template_id": item.template_id,
+            "original_recurrence_id": item.original_recurrence_id,
+            "identity": [item.template_id, item.original_recurrence_id],
+            "task_id": item.task_id,
+            "state": item.state,
+            "override_title": item.override_title,
+            "override_effort_minutes": item.override_effort_minutes,
+            "override_target_local": None if item.override_target_local is None else item.override_target_local.isoformat(),
+            "version": item.version,
+            "created_at": _iso(item.created_at),
+            "updated_at": _iso(item.updated_at),
+        }
+
+    def routine_create(self, routine_id: str, payload: dict[str, Any]) -> Outcome:
+        if not _ID.match(routine_id):
+            raise ValidationError("routine id must be a client-generated identifier")
+        allowed = {
+            "title", "description", "category", "importance", "dtstart_local",
+            "effort_minutes", "recurrence_rule", "timezone_name", "splittable",
+            "min_chunk_minutes", "max_chunk_minutes",
+        }
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("routine fields are not supported: " + ", ".join(sorted(unknown)))
+        store = SQLiteWorkRoutineRepository(self.repo)
+        existing = self.repo.connection.execute(
+            "SELECT account_id FROM work_routine_templates WHERE id=?", (routine_id,)
+        ).fetchone()
+        if existing is not None:
+            if existing["account_id"] != self.account_id:
+                raise ValidationError("routine id is already in use")
+            return Outcome(NOOP, self._routine_out(store.get_template(self.account_id, routine_id)), "ALREADY_EXISTS")
+        template = store.create_template(
+            account_id=self.account_id,
+            template_id=routine_id,
+            title=_title(payload.get("title")),
+            description=_description(payload.get("description")),
+            category=ObligationCategory(payload.get("category") or ObligationCategory.GENERAL.value),
+            importance=Importance(payload.get("importance") or Importance.NORMAL.value),
+            dtstart_local=self._local_instant(payload.get("dtstart_local"), "dtstart_local"),
+            effort_minutes=_minutes(payload.get("effort_minutes"), "effort_minutes") or 0,
+            recurrence_rule=str(payload.get("recurrence_rule") or ""),
+            timezone_name=str(payload.get("timezone_name") or "UTC"),
+            splittable=bool(payload.get("splittable", True)),
+            min_chunk_minutes=_minutes(payload.get("min_chunk_minutes"), "min_chunk_minutes", allow_none=True),
+            max_chunk_minutes=_minutes(payload.get("max_chunk_minutes"), "max_chunk_minutes", allow_none=True),
+            actor=self.actor,
+        )
+        store.ensure_horizon(self.account_id, self.now, self.now + timedelta(days=28))
+        return Outcome(APPLIED, self._routine_out(template))
+
+    def routine_cancel(self, routine_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"expected_version"}:
+            raise ValidationError("routine.cancel only accepts expected_version")
+        store = SQLiteWorkRoutineRepository(self.repo)
+        current = store.get_template(self.account_id, routine_id)
+        updated = store.cancel_template(
+            self.account_id, routine_id,
+            int(payload.get("expected_version") or current.version), self.actor,
+        )
+        return Outcome(APPLIED if updated.version != current.version else NOOP, self._routine_out(updated))
+
+    def _routine_occurrence_identity(self, payload: dict[str, Any]) -> tuple[str, str, str | None]:
+        template_id = str(payload.get("template_id") or "")
+        original = str(payload.get("original_recurrence_id") or "")
+        task_id = str(payload.get("task_id") or "") or None
+        if not template_id or not original:
+            raise ValidationError("routine occurrence requires template_id and original_recurrence_id")
+        return template_id, original, task_id
+
+    @staticmethod
+    def _verify_routine_task_ref(item, task_id: str | None) -> None:
+        if task_id is not None and task_id != item.task_id:
+            raise ValidationError("routine occurrence task_id does not match stable occurrence identity")
+
+    def routine_occurrence_skip(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"template_id", "original_recurrence_id", "task_id"}:
+            raise ValidationError("routine occurrence skip fields are not supported")
+        template_id, original, task_id = self._routine_occurrence_identity(payload)
+        store = SQLiteWorkRoutineRepository(self.repo)
+        before = store.get_occurrence(self.account_id, template_id, original)
+        item = store.skip_occurrence(self.account_id, template_id, original, self.actor)
+        self._verify_routine_task_ref(item, task_id)
+        return Outcome(NOOP if before is not None and before.state == "SKIPPED" else APPLIED, self._routine_occurrence_out(item))
+
+    def routine_occurrence_reopen(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"template_id", "original_recurrence_id", "task_id"}:
+            raise ValidationError("routine occurrence reopen fields are not supported")
+        template_id, original, task_id = self._routine_occurrence_identity(payload)
+        store = SQLiteWorkRoutineRepository(self.repo)
+        before = store.get_occurrence(self.account_id, template_id, original)
+        item = store.reopen_occurrence(self.account_id, template_id, original, self.actor)
+        self._verify_routine_task_ref(item, task_id)
+        return Outcome(NOOP if before is not None and before.state == "ACTIVE" else APPLIED, self._routine_occurrence_out(item))
+
+    def routine_occurrence_edit(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {"template_id", "original_recurrence_id", "task_id", "title", "effort_minutes", "target_local"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("routine occurrence edit fields are not supported: " + ", ".join(sorted(unknown)))
+        template_id, original, task_id = self._routine_occurrence_identity(payload)
+        effort = _minutes(payload.get("effort_minutes"), "effort_minutes", allow_none=True)
+        target = self._local_instant(payload["target_local"], "target_local") if payload.get("target_local") else None
+        item = SQLiteWorkRoutineRepository(self.repo).edit_occurrence(
+            self.account_id, template_id, original, actor=self.actor,
+            title=_title(payload["title"]) if "title" in payload else None,
+            effort_minutes=effort, target_local=target,
+        )
+        self._verify_routine_task_ref(item, task_id)
+        return Outcome(APPLIED, self._routine_occurrence_out(item))
 
     # ---- plan control / canonical time constraints -------------------------------------
 
