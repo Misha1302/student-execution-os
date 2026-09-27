@@ -142,6 +142,7 @@ export default {
   'reflection.underBy': 'обычно дольше оценки на {n}%',
   'reflection.overBy': 'обычно быстрее оценки на {n}%',
   'reflection.onEstimate': 'оценка близка к факту',
+  'reflection.noRecentSample': 'нет свежей выборки; сохранённая настройка всё ещё действует',
   'reflection.suggestionTitle': 'Можно добавить запас',
   'reflection.suggestionBody': 'Для новых расчётов этой категории использовать ×{n}. Исходная оценка задачи останется неизменной.',
   'reflection.useSuggestion': 'Использовать запас',
