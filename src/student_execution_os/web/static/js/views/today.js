@@ -1,6 +1,6 @@
 import { load } from '../store.js';
 import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, now, sameDay } from '../i18n.js';
-import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead } from '../ui.js';
+import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead, openSheet, setBusy } from '../ui.js';
 import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../capture.js';
 import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
@@ -173,6 +173,68 @@ function fallbackNowCard(item) {
   </article>`;
 }
 
+function openDailyIntent(data) {
+  const current = data.daily_intent || {};
+  const selected = new Set(current.priority_task_ids || []);
+  const tasks = (data.tasks || []).filter((task) => task.status === 'ACTIVE');
+  const rows = tasks.map((task) => `<label class="row">
+    <input type="checkbox" data-intent-task value="${esc(task.id)}" ${selected.has(task.id) ? 'checked' : ''}>
+    <span class="row-main"><strong>${esc(task.title)}</strong>
+      <small>${task.remaining_effort_minutes == null ? esc(t('card.effort.unknown')) : esc(t('tasks.left', { d: fmtDuration(task.remaining_effort_minutes) }))}</small></span>
+    ${riskChip(task.risk)}
+  </label>`).join('');
+  const dialog = openSheet({
+    title: t('intent.title'),
+    body: `<p class="help">${esc(t('intent.help'))}</p>
+      ${rows ? `<div class="list">${rows}</div>` : `<p class="muted">${esc(t('intent.noTasks'))}</p>`}
+      <label class="field"><span>${esc(t('intent.note'))}</span>
+        <textarea rows="3" maxlength="2000" data-intent-note>${esc(current.note || '')}</textarea>
+      </label>`,
+    actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
+      <button type="button" class="button primary" data-intent-save>${esc(t('common.save'))}</button>`,
+  });
+  const checks = [...dialog.querySelectorAll('[data-intent-task]')];
+  checks.forEach((box) => box.addEventListener('change', () => {
+    if (checks.filter((item) => item.checked).length > 3) box.checked = false;
+  }));
+  dialog.querySelector('[data-intent-save]').addEventListener('click', async (event) => {
+    setBusy(event.currentTarget, true);
+    const result = await change('intent.set', data.local_date, {
+      local_date: data.local_date,
+      priority_task_ids: checks.filter((item) => item.checked).map((item) => item.value),
+      note: String(dialog.querySelector('[data-intent-note]').value || '').trim() || null,
+    }, { success: t('intent.saved') });
+    if (result) dialog.close('saved'); else setBusy(event.currentTarget, false);
+  });
+}
+
+function dailyIntentCard(data, tasks) {
+  const intent = data.daily_intent;
+  const ids = intent?.priority_task_ids || [];
+  const chosen = ids.map((id) => tasks.get(id)).filter(Boolean);
+  if (!intent || intent.closed_at) {
+    return `<section class="section"><button class="card plain" data-action="intent-edit">
+      <span class="task-top"><span class="kind-icon kind-task">${icon('flag')}</span>
+        <strong class="task-title">${esc(t('intent.startTitle'))}</strong></span>
+      <p class="muted">${esc(t('intent.startHelp'))}</p>
+    </button></section>`;
+  }
+  return `<section class="section"><article class="card">
+    <div class="section-head"><div><span class="eyebrow">${esc(t('intent.eyebrow'))}</span>
+      <h3>${esc(t('intent.today'))}</h3></div>
+      ${intent._pending ? chip(t('sync.pendingShort'), 'warn') : ''}
+    </div>
+    ${chosen.length ? `<ol class="intent-list">${chosen.map((task) => `<li><button class="link" data-action="open-task" data-id="${esc(task.id)}">${esc(task.title)}</button></li>`).join('')}</ol>`
+      : `<p class="muted">${esc(t('intent.noPriorities'))}</p>`}
+    ${intent.note ? `<p>${esc(intent.note)}</p>` : ''}
+    <div class="now-actions">
+      <button class="button ghost" data-action="intent-edit">${esc(t('intent.edit'))}</button>
+      <button class="button ghost" data-nav="reflection">${esc(t('intent.review'))}</button>
+      <button class="button ghost" data-action="intent-close">${esc(t('intent.close'))}</button>
+    </div>
+  </article></section>`;
+}
+
 // Standalone reminders due today (and ones that rang and still wait for an answer).
 function todayReminders(reminders = [], cur = now()) {
   const list = reminders.filter((r) => isOpen(r) && (sameDay(new Date(r.remind_at), cur) || r.status === 'FIRED'))
@@ -225,6 +287,7 @@ export default {
     return `
       ${unhealthy.length ? `<button class="banner warn" data-nav="evidence">${icon('alert')}<div><strong>${esc(t('today.sourcesStale', { n: unhealthy.length }))}</strong><p>${esc(t('today.sourcesStaleHint'))}</p></div>${icon('chevron')}</button>` : ''}
       ${nothingYet ? `<section class="section">${capture}<p class="help pad">${esc(t('today.firstHint'))}</p></section>` : heroStatus(plan, data.tasks || [])}
+      ${nothingYet ? '' : dailyIntentCard(data, tasks)}
 
       <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}
@@ -319,6 +382,13 @@ export default {
     }, 0);
   },
   actions: {
+    'intent-edit'(_el, ctx) {
+      openDailyIntent(ctx.data);
+    },
+    async 'intent-close'(_el, ctx) {
+      if (!ctx.data?.local_date) return;
+      await change('intent.close', ctx.data.local_date, { local_date: ctx.data.local_date }, { success: t('intent.closed') });
+    },
     progress(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
       if (task) logProgress(task, el.dataset.minutes);
