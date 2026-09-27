@@ -199,11 +199,13 @@ function openDailyIntent(data) {
   }));
   dialog.querySelector('[data-intent-save]').addEventListener('click', async (event) => {
     setBusy(event.currentTarget, true);
-    const result = await change('intent.set', data.local_date, {
+    const payload = {
       local_date: data.local_date,
       priority_task_ids: checks.filter((item) => item.checked).map((item) => item.value),
       note: String(dialog.querySelector('[data-intent-note]').value || '').trim() || null,
-    }, { success: t('intent.saved') });
+    };
+    if (current.version) payload.expected_version = Number(current.version);
+    const result = await change('intent.set', data.local_date, payload, { success: t('intent.saved') });
     if (result) dialog.close('saved'); else setBusy(event.currentTarget, false);
   });
 }
@@ -387,7 +389,9 @@ export default {
     },
     async 'intent-close'(_el, ctx) {
       if (!ctx.data?.local_date) return;
-      await change('intent.close', ctx.data.local_date, { local_date: ctx.data.local_date }, { success: t('intent.closed') });
+      const payload = { local_date: ctx.data.local_date };
+      if (ctx.data.daily_intent?.version) payload.expected_version = Number(ctx.data.daily_intent.version);
+      await change('intent.close', ctx.data.local_date, payload, { success: t('intent.closed') });
     },
     progress(el, ctx) {
       const task = (ctx.data?.tasks || []).find((x) => x.id === el.dataset.id);
