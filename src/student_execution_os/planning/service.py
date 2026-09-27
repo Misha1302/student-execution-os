@@ -30,14 +30,19 @@ def _calibrated_snapshot(snapshot: PlanningSnapshot) -> PlanningSnapshot:
             tasks.append(task)
             continue
         scale = lambda value: None if value is None else int(math.ceil(value * multiplier))
+        scaled_remaining = scale(task.remaining_effort_minutes)
+        max_chunk = task.max_chunk_minutes
+        if not task.splittable and scaled_remaining is not None:
+            max_chunk = max(max_chunk or 0, scaled_remaining)
         tasks.append(replace(
             task,
             estimated_total_effort_minutes=scale(task.estimated_total_effort_minutes),
-            remaining_effort_minutes=scale(task.remaining_effort_minutes),
+            remaining_effort_minutes=scaled_remaining,
             estimated_total_effort_low_minutes=scale(task.estimated_total_effort_low_minutes),
             estimated_total_effort_high_minutes=scale(task.estimated_total_effort_high_minutes),
             remaining_effort_low_minutes=scale(task.remaining_effort_low_minutes),
             remaining_effort_high_minutes=scale(task.remaining_effort_high_minutes),
+            max_chunk_minutes=max_chunk,
         ))
     return replace(snapshot, tasks=tuple(tasks))
 
