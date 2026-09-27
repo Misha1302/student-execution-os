@@ -91,6 +91,12 @@ function field(label, control, hint = '', name = '') {
   return `<label class="field" ${name ? `data-field="${esc(name)}"` : ''}><span>${esc(label)}</span>${control}${hint ? `<small class="help">${esc(hint)}</small>` : ''}</label>`;
 }
 
+function calibrationHintHtml() {
+  const hint = peek('/api/v1/today')?.calibration_hint;
+  if (!hint?.multiplier) return '';
+  return `<small class="help">${esc(t('reflection.estimateHint', { x: Number(hint.multiplier).toFixed(2), n: Number(hint.based_on_samples || 0) }))}</small>`;
+}
+
 export function fieldsHtml(draft, { remaining = false } = {}) {
   const cutoff = draft.actual_cutoff || { state: 'UNKNOWN' };
   const effort = draft.estimated_total_effort_minutes;
@@ -104,6 +110,7 @@ export function fieldsHtml(draft, { remaining = false } = {}) {
     <div class="field" data-field="effort"><span>${esc(t('form.effort'))}</span>
       ${chipGroup('f-effort', [...EFFORT_CHOICES.map((m) => [String(m), fmtDuration(m)]), ['custom', t('form.custom')], ['unknown', t('form.effortUnknown')]], effortChoice)}
       <input type="number" inputmode="numeric" min="1" step="5" data-f="effort" class="${effortChoice === 'custom' ? '' : 'hidden'}" value="${esc(effort ?? '')}" placeholder="${esc(t('form.minutes'))}">
+      ${calibrationHintHtml()}
     </div>
     ${remaining ? field(t('form.remaining'), `<input type="number" inputmode="numeric" min="0" step="5" data-f="remaining" value="${esc(draft.remaining_effort_minutes ?? '')}">`, t('form.remainingHelp')) : ''}
     <div class="field" data-field="importance"><span>${esc(t('form.importance'))}</span>

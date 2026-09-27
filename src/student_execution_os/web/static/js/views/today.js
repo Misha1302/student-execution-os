@@ -112,6 +112,24 @@ function travelCard(travel) {
     </article>`).join('');
 }
 
+function dailyIntentCard(intent) {
+  if (!intent) {
+    return `<button class="banner" data-nav="reflection">
+      ${icon('today')}<div><strong>${esc(t('today.setIntent'))}</strong><p>${esc(t('today.setIntentHelp'))}</p></div>${icon('chevron')}
+    </button>`;
+  }
+  const tasks = (intent.tasks || []).filter((x) => x.title);
+  return `<section class="card">
+    <div class="section-head"><div><span class="eyebrow">${esc(t('today.intentEyebrow'))}</span>
+      <h3>${esc(t('today.intentTitle'))}</h3></div>
+      <button class="link" data-nav="reflection">${esc(t('common.edit'))}</button>
+    </div>
+    ${intent.focus_note ? `<p>${esc(intent.focus_note)}</p>` : ''}
+    ${tasks.length ? `<div class="chip-row">${tasks.map((x) => chip(x.title, x.status === 'COMPLETED' ? 'ok' : 'accent')).join('')}</div>` : ''}
+    ${intent._pending ? `<small class="muted">${icon('clock')} ${esc(t('sync.pendingShort'))}</small>` : ''}
+  </section>`;
+}
+
 function nowCard(action, task, plan) {
   const why = parseWhyNow(action.why_now);
   const start = why.PLAN_START || plan.blocks.find((b) => b.type === 'WORK' && b.obligation_id === action.task_id)?.starts_at;
@@ -225,6 +243,8 @@ export default {
     return `
       ${unhealthy.length ? `<button class="banner warn" data-nav="evidence">${icon('alert')}<div><strong>${esc(t('today.sourcesStale', { n: unhealthy.length }))}</strong><p>${esc(t('today.sourcesStaleHint'))}</p></div>${icon('chevron')}</button>` : ''}
       ${nothingYet ? `<section class="section">${capture}<p class="help pad">${esc(t('today.firstHint'))}</p></section>` : heroStatus(plan, data.tasks || [])}
+
+      ${dailyIntentCard(data.daily_intent)}
 
       <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}

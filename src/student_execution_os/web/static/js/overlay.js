@@ -505,6 +505,94 @@ export function projectWorkRoutines(data, ops) {
   return { ...(data || {}), routines };
 }
 
+function noteProjection(current, payload, keyName, keyValue, at) {
+  return {
+    ...(current || {}),
+    [keyName]: keyValue,
+    timezone_name: payload.timezone_name || current?.timezone_name || 'UTC',
+    summary: payload.summary ?? current?.summary ?? null,
+    wins: payload.wins ?? current?.wins ?? null,
+    blockers: payload.blockers ?? current?.blockers ?? null,
+    adjustment: payload.adjustment ?? current?.adjustment ?? null,
+    version: Number(current?.version || 0) + 1,
+    updated_at: at,
+    _pending: true,
+  };
+}
+
+function intentProjection(current, payload, taskLookup, at) {
+  const ids = Array.isArray(payload.task_ids) ? payload.task_ids : (current?.task_ids || []);
+  return {
+    ...(current || {}),
+    local_date: payload.local_date || current?.local_date,
+    timezone_name: payload.timezone_name || current?.timezone_name || 'UTC',
+    focus_note: payload.focus_note ?? current?.focus_note ?? null,
+    task_ids: ids,
+    tasks: ids.map((id) => {
+      const known = taskLookup.get(id);
+      const old = current?.tasks?.find?.((x) => x.id === id);
+      return { id, title: known?.title ?? old?.title ?? null, status: known?.status ?? old?.status ?? null };
+    }),
+    version: Number(current?.version || 0) + 1,
+    updated_at: at,
+    _pending: true,
+  };
+}
+
+export function projectReflection(data, ops) {
+  const out = { ...(data || {}) };
+  out.focus_candidates = (projectTasks(out.focus_candidates || [], ops) || [])
+    .filter((task) => task.status === 'ACTIVE' || task.status === 'DRAFT');
+  const candidates = new Map((out.focus_candidates || []).map((x) => [x.id, x]));
+  for (const item of ops || []) {
+    const op = item.operation || {};
+    const p = op.payload || {};
+    const at = item.queued_at || new Date().toISOString();
+    if (op.type === 'intent.upsert' && (!out.local_date || p.local_date === out.local_date)) {
+      out.intent = intentProjection(out.intent || null, p, candidates, at);
+    } else if (op.type === 'reflection.upsert' && (!out.local_date || p.local_date === out.local_date)) {
+      out.daily_reflection = noteProjection(out.daily_reflection || null, p, 'local_date', p.local_date, at);
+    } else if (op.type === 'weekly_review.upsert' && (!out.week_starts_on || p.week_starts_on === out.week_starts_on)) {
+      out.weekly_review = noteProjection(out.weekly_review || null, p, 'week_starts_on', p.week_starts_on, at);
+    } else if (op.type === 'calibration.accept') {
+      out.calibration = { ...(out.calibration || {}), accepted: {
+        multiplier: Number(p.multiplier),
+        based_on_samples: Number(p.based_on_samples || 0),
+        accepted_at: at,
+        version: Number(out.calibration?.accepted?.version || 0) + 1,
+        _pending: true,
+      }};
+    }
+  }
+  return out;
+}
+
+function projectTodayIntent(data, ops) {
+  const out = { ...data };
+  const lookup = new Map([...(data.tasks || []), ...(data.needs_refinement || [])].map((x) => [x.id, x]));
+  for (const item of ops || []) {
+    const op = item.operation || {};
+    const p = op.payload || {};
+    if (op.type === 'calibration.accept') {
+      out.calibration_hint = {
+        multiplier: Number(p.multiplier),
+        based_on_samples: Number(p.based_on_samples || 0),
+        accepted_at: item.queued_at || new Date().toISOString(),
+        version: Number(out.calibration_hint?.version || 0) + 1,
+        _pending: true,
+      };
+      continue;
+    }
+    if (op.type !== 'intent.upsert') continue;
+    const currentDate = out.local_date || out.daily_intent?.local_date || String(out.now || '').slice(0, 10);
+    if (p.local_date && currentDate && p.local_date !== currentDate) continue;
+    out.daily_intent = intentProjection(
+      out.daily_intent || null, p, lookup, item.queued_at || new Date().toISOString()
+    );
+  }
+  return out;
+}
+
 export function applyEventOp(event, item) {
   const op = item.operation;
   const p = op.payload || {};
@@ -692,6 +780,7 @@ function projectDay(data, ops, now) {
     if (out.current_action && unschedulable(byId.get(out.current_action.task_id), now)) out.current_action = null;
   }
   out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, cOps, now);
+  Object.assign(out, projectTodayIntent(out, ops));
   if (ops.length) out.pending_changes = ops.filter((x) => x.state === 'PENDING').length;
   return out;
 }
@@ -709,6 +798,7 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);
+  if (route === '/api/v1/reflection') return projectReflection(base, ops);
   if (route === '/api/v1/projects') return projectProjects(base, ops);
   if (route.startsWith('/api/v1/projects/')) {
     const projected = projectProjects(base ? [base] : [], ops);

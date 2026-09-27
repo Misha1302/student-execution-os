@@ -61,6 +61,7 @@ from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
 from student_execution_os.sync.commands import Commands, SyncService
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
+from student_execution_os.reflection import SQLiteReflectionRepository
 
 
 class _AccountLimiter:
@@ -482,6 +483,23 @@ class UiService:
             all_tasks = [self._task(task, remind_at=reminders.get(task.obligation.id), count=counts.get(task.obligation.id))
                          for task in SQLitePlanningStateSource(repo).list_tasks(self.account_id)]
             needs_refinement = [task for task in all_tasks if task["status"] == "DRAFT"]
+            from zoneinfo import ZoneInfo
+            planning_profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            local_today = self._now().astimezone(ZoneInfo(planning_profile.timezone_name)).date()
+            intent = SQLiteReflectionRepository(repo).get_intent(self.account_id, local_today)
+            if intent is not None:
+                task_by_id = {task["id"]: task for task in all_tasks}
+                intent = {
+                    **intent,
+                    "tasks": [
+                        {
+                            "id": task_id,
+                            "title": task_by_id.get(task_id, {}).get("title"),
+                            "status": task_by_id.get(task_id, {}).get("status"),
+                        }
+                        for task_id in intent["task_ids"]
+                    ],
+                }
             active_tasks = {task["id"]: task for task in tasks}
             now = self._now()
             current_block = next((
@@ -535,6 +553,10 @@ class UiService:
                 },
                 "source_health": self._source_health(repo),
                 "active_execution": SQLiteExecutionStore(repo).active(self.account_id, self._now()),
+                "local_date": local_today.isoformat(),
+                "timezone_name": planning_profile.timezone_name,
+                "daily_intent": intent,
+                "calibration_hint": SQLiteReflectionRepository(repo).calibration_preference(self.account_id),
             }
 
     def _plan_payload(self, plan, tasks: list[dict[str, Any]], events: list[dict[str, Any]], constraints) -> dict[str, Any]:
@@ -922,6 +944,60 @@ class UiService:
             "version": template.version,
             "ownership": "CANONICAL_RULE",
         }
+
+    def reflection_dashboard(self) -> dict[str, Any]:
+        from zoneinfo import ZoneInfo
+        with self._repo() as repo:
+            profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            now = self._now()
+            local_now = now.astimezone(ZoneInfo(profile.timezone_name))
+            today = local_now.date()
+            week = today - timedelta(days=today.weekday())
+            reflection = SQLiteReflectionRepository(repo)
+            intent = reflection.get_intent(self.account_id, today)
+            all_tasks = [
+                self._task(task)
+                for task in SQLitePlanningStateSource(repo).list_tasks(self.account_id)
+            ]
+            task_by_id = {task["id"]: task for task in all_tasks}
+            if intent is not None:
+                intent = {
+                    **intent,
+                    "tasks": [
+                        {
+                            "id": task_id,
+                            "title": task_by_id.get(task_id, {}).get("title"),
+                            "status": task_by_id.get(task_id, {}).get("status"),
+                        }
+                        for task_id in intent["task_ids"]
+                    ],
+                }
+            return {
+                "now": _jsonify(now),
+                "timezone_name": profile.timezone_name,
+                "local_date": today.isoformat(),
+                "week_starts_on": week.isoformat(),
+                "intent": intent,
+                "daily_reflection": reflection.get_daily_reflection(self.account_id, today),
+                "weekly_review": reflection.get_weekly_review(self.account_id, week),
+                "day_stats": reflection.day_stats(
+                    self.account_id, today, profile.timezone_name, now=now
+                ),
+                "week_stats": reflection.week_stats(
+                    self.account_id, week, profile.timezone_name, now=now
+                ),
+                "calibration": reflection.calibration(self.account_id, now=now),
+                "focus_candidates": [
+                    {
+                        "id": task["id"],
+                        "title": task["title"],
+                        "status": task["status"],
+                        "remaining_effort_minutes": task["remaining_effort_minutes"],
+                    }
+                    for task in all_tasks
+                    if task["status"] in {"ACTIVE", "DRAFT"}
+                ],
+            }
 
     def work_routines(self) -> dict[str, Any]:
         with self._repo() as repo:

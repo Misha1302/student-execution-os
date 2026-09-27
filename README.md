@@ -47,7 +47,7 @@ Feasibility → Planner → Risk / Next actions
 
 Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v18**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current MVP uses schema **v20**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -113,6 +113,26 @@ Schema v18 closes the first actual-execution loop (ADR 0021):
   active execution is cached for offline restart;
 - execution history participates in account export/deletion and is covered by Python
   and device-side projection regressions.
+
+Schema v19 adds **recurring work** without turning recurrence into a second Task model
+(ADR 0024):
+
+- recurring-work templates own recurrence rule, timezone and default fields;
+- every in-horizon occurrence has a stable `(template_id, original_recurrence_id)`
+  identity and materializes exactly one canonical Task;
+- skip/reopen/edit operate on that same Task and keep occurrence identity stable;
+- calendar recurrence remains the fixed-event model; recurring work stays flexible work;
+- future materialization stops when a series is stopped, while existing Task history remains.
+
+Schema v20 adds **Reflection & Learning** (ADR 0025):
+
+- DailyIntent records explicit local-day focus without becoming a hidden planner constraint;
+- daily and weekly reflections keep user observations separate from derived metrics;
+- planned-vs-actual statistics derive from saved WORK PlanBlocks and Execution Segments;
+- calibration aggregates finished sessions by their source WORK block and withholds a
+  suggestion until at least three matched samples exist;
+- accepted calibration is only a user-approved future estimation hint — existing Task
+  estimates, remaining effort and PlanningPolicy are never rewritten automatically.
 
 ## Run the current implementation locally
 
@@ -202,6 +222,10 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 - [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
 - [Offline-first client, events and lifecycle (v15) ADR](docs/adr/0018-offline-first-events-and-lifecycle.md)
 - [Actual execution sessions and feedback loop (v18) ADR](docs/adr/0021-execution-feedback-loop.md)
+- [Canonical Plan Control constraints ADR](docs/adr/0022-plan-control-canonical-constraints.md)
+- [Projects as container aggregates ADR](docs/adr/0023-projects-as-containers.md)
+- [Recurring work materialized Tasks ADR](docs/adr/0024-recurring-work-materialized-tasks.md)
+- [Reflection & Learning ownership ADR](docs/adr/0025-reflection-learning-ownership.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
@@ -223,6 +247,11 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 8. Offline task-operation replication and execution reminders. **Implemented for the MVP; external FCM/LLM/routing/OAuth providers remain configuration-dependent.**
 9. Per-account AI keys (BYOK). **Implemented in schema v14.** Paid/managed AI: see [docs/ROADMAP.md](docs/ROADMAP.md).
 10. Offline-first client, fixed-time events, task lifecycle, sleep hours. **Implemented in schema v15.**
+11. Execution feedback loop and actual-work sessions. **Implemented in schema v18.**
+12. User plan control through canonical constraints. **Implemented after schema v18.**
+13. Projects as containers over real Tasks/Events/Milestones. **Implemented after schema v18.**
+14. Recurring work with stable Task occurrences. **Implemented in schema v19.**
+15. Reflection, daily intent and explicit effort calibration hints. **Implemented in schema v20.**
 
 ## License
 

@@ -217,6 +217,11 @@ _DIRECT_ACCOUNT_TABLES = (
     "execution_sessions",
     "work_routine_templates",
     "work_routine_occurrences",
+    "daily_intents",
+    "daily_intent_tasks",
+    "daily_reflections",
+    "weekly_reviews",
+    "effort_calibration_preferences",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

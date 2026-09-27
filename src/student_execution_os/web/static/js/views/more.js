@@ -6,6 +6,7 @@ import { peek } from '../store.js';
 export const MORE_ITEMS = [
   ['projects', 'plan', 'more.projectsHint'],
   ['routines', 'repeat', 'more.routinesHint'],
+  ['reflection', 'today', 'more.reflectionHint'],
   ['calendar', 'calendar', 'more.calendarHint'],
   ['notifications', 'bell', 'more.notificationsHint'],
   ['places', 'place', 'more.placesHint'],

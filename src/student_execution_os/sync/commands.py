@@ -54,6 +54,7 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _
 from student_execution_os.execution import SQLiteExecutionStore
 from student_execution_os.planning.state import SQLitePlanningStateSource
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
+from student_execution_os.reflection import SQLiteReflectionRepository
 
 from .serialize import event_payload, task_payload
 
@@ -182,6 +183,10 @@ class Commands:
             "routine.occurrence.skip": self.routine_occurrence_skip,
             "routine.occurrence.reopen": self.routine_occurrence_reopen,
             "routine.occurrence.edit": self.routine_occurrence_edit,
+            "intent.upsert": self.intent_upsert,
+            "reflection.upsert": self.reflection_upsert,
+            "weekly_review.upsert": self.weekly_review_upsert,
+            "calibration.accept": self.calibration_accept,
             "reminder.snooze": self.reminder_snooze,
             "event.create": self.event_create,
             "event.update": self.event_update,
@@ -956,6 +961,88 @@ class Commands:
             expected_version=int(payload.get("expected_version") or row["version"]), actor=self.actor,
         )
         return Outcome(APPLIED, {"kind": "MILESTONE", "id": milestone_id, "deleted": True})
+
+    # ---- reflection and learning ---------------------------------------------------------
+
+    def intent_upsert(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {"local_date", "timezone_name", "focus_note", "task_ids", "expected_version"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("daily intent fields are not supported: " + ", ".join(sorted(unknown)))
+        task_ids = payload.get("task_ids") or []
+        if not isinstance(task_ids, list):
+            raise ValidationError("daily intent task_ids must be an array")
+        item = SQLiteReflectionRepository(self.repo).upsert_intent(
+            account_id=self.account_id,
+            local_date=str(payload.get("local_date") or ""),
+            timezone_name=str(payload.get("timezone_name") or "UTC"),
+            focus_note=_description(payload.get("focus_note")),
+            task_ids=[str(value) for value in task_ids],
+            expected_version=int(payload.get("expected_version") or 0),
+            actor=self.actor,
+        )
+        return Outcome(APPLIED, item)
+
+    def reflection_upsert(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {
+            "local_date", "timezone_name", "summary", "wins", "blockers",
+            "adjustment", "expected_version",
+        }
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("daily reflection fields are not supported: " + ", ".join(sorted(unknown)))
+        item = SQLiteReflectionRepository(self.repo).upsert_daily_reflection(
+            account_id=self.account_id,
+            local_date=str(payload.get("local_date") or ""),
+            timezone_name=str(payload.get("timezone_name") or "UTC"),
+            expected_version=int(payload.get("expected_version") or 0),
+            summary=_description(payload.get("summary")),
+            wins=_description(payload.get("wins")),
+            blockers=_description(payload.get("blockers")),
+            adjustment=_description(payload.get("adjustment")),
+            actor=self.actor,
+        )
+        return Outcome(APPLIED, item)
+
+    def weekly_review_upsert(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {
+            "week_starts_on", "timezone_name", "summary", "wins", "blockers",
+            "adjustment", "expected_version",
+        }
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("weekly review fields are not supported: " + ", ".join(sorted(unknown)))
+        item = SQLiteReflectionRepository(self.repo).upsert_weekly_review(
+            account_id=self.account_id,
+            week_starts_on=str(payload.get("week_starts_on") or ""),
+            timezone_name=str(payload.get("timezone_name") or "UTC"),
+            expected_version=int(payload.get("expected_version") or 0),
+            summary=_description(payload.get("summary")),
+            wins=_description(payload.get("wins")),
+            blockers=_description(payload.get("blockers")),
+            adjustment=_description(payload.get("adjustment")),
+            actor=self.actor,
+        )
+        return Outcome(APPLIED, item)
+
+    def calibration_accept(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {"multiplier", "based_on_samples", "expected_version"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("calibration acceptance fields are not supported: " + ", ".join(sorted(unknown)))
+        try:
+            multiplier = float(payload.get("multiplier"))
+            samples = int(payload.get("based_on_samples"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("calibration multiplier and sample count are required") from exc
+        item = SQLiteReflectionRepository(self.repo).accept_calibration(
+            account_id=self.account_id,
+            multiplier=multiplier,
+            based_on_samples=samples,
+            expected_version=int(payload.get("expected_version") or 0),
+            actor=self.actor,
+        )
+        return Outcome(APPLIED, item)
 
     # ---- recurring work ----------------------------------------------------------------
 

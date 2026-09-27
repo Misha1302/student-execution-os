@@ -388,6 +388,10 @@ def create_app(
     async def list_events(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.events()
 
+    @app.get("/api/v1/reflection")
+    async def reflection_dashboard(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.reflection_dashboard()
+
     @app.get("/api/v1/work-routines")
     async def work_routines(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.work_routines()

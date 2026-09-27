@@ -32,7 +32,8 @@ const IDEMPOTENT = new Set(['task.start', 'task.complete', 'task.cancel', 'task.
   'project.complete', 'project.cancel', 'project.reopen',
   'project.member.add', 'project.member.remove',
   'milestone.complete', 'milestone.cancel', 'milestone.reopen', 'milestone.delete',
-  'routine.cancel', 'routine.occurrence.skip', 'routine.occurrence.reopen']);
+  'routine.cancel', 'routine.occurrence.skip', 'routine.occurrence.reopen',
+  'intent.upsert', 'reflection.upsert', 'weekly_review.upsert', 'calibration.accept']);
 
 let flushing = null;
 let again = false;
