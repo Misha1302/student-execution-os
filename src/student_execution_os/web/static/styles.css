@@ -608,3 +608,10 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .text-danger { color: var(--danger); }
 .reminder-fields .chip-group + .chip-group { margin-top: 6px; }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }
+
+/* Notes / Capture */
+.note-card .capture-note-text,.note-preview { white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-detail textarea { min-height: 10rem; resize: vertical; }
+.note-audio { width: 100%; margin-top: .6rem; }
+.note-row.archived { opacity: .68; }
+.event-now-card { border-inline-start: 3px solid var(--accent, currentColor); }
