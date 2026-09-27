@@ -35,6 +35,7 @@ class Planner:
     timeout_seconds: float = 2.0
 
     def plan(self, snapshot: PlanningSnapshot, previous_plan: PlanSnapshot | None = None) -> PlanSnapshot:
+        intent_rank = {task_id: index for index, task_id in enumerate(snapshot.soft_priority_task_ids)}
         def priority(task):
             if task.target_at is not None:
                 temporal = (0, task.target_at)
@@ -42,7 +43,7 @@ class Planner:
                 temporal = (1, task.actual_cutoff.at)
             else:
                 temporal = (2, task.obligation.created_at)
-            return (*temporal, _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
+            return (*temporal, intent_rank.get(task.obligation.id, 99), _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
 
         feasibility = FeasibilityEngine(
             exact_search_enabled=self.exact_search_enabled,
