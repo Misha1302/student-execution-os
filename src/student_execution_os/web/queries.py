@@ -522,10 +522,44 @@ class UiService:
             reflection = SQLiteReflectionStore(repo)
             local_date = reflection.local_date(self.account_id, self._now())
             daily_intent = reflection.intent(self.account_id, local_date)
+            profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            from zoneinfo import ZoneInfo
+            zone = ZoneInfo(profile.timezone_name)
+            local_day = datetime.fromisoformat(local_date).date()
+            windows = planning_intervals(profile, local_day, 1)
+            capacity_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
+            occupied_parts: list[tuple[datetime, datetime]] = []
+            work_parts: list[tuple[datetime, datetime]] = []
+            for block in outcome.plan.blocks:
+                interval = (block.starts_at, block.ends_at)
+                clipped = [
+                    (max(interval[0], window[0]), min(interval[1], window[1]))
+                    for window in windows if overlap_minutes(interval, window)
+                ]
+                occupied_parts.extend(clipped)
+                if block.type.value == "WORK":
+                    work_parts.extend(clipped)
+            for constraint in snapshot.constraints:
+                if constraint.id.startswith(OFF_HOURS_PREFIX):
+                    continue
+                interval = (constraint.interval.starts_at, constraint.interval.ends_at)
+                occupied_parts.extend([
+                    (max(interval[0], window[0]), min(interval[1], window[1]))
+                    for window in windows if overlap_minutes(interval, window)
+                ])
+            planned_work_minutes = self._merged_minutes(work_parts)
+            occupied_minutes = self._merged_minutes(occupied_parts)
+            day_capacity = {
+                "planning_capacity_minutes": capacity_minutes,
+                "planned_work_minutes": planned_work_minutes,
+                "occupied_minutes": occupied_minutes,
+                "safe_reserve_minutes": max(0, capacity_minutes - occupied_minutes),
+            }
             return {
                 "now": _jsonify(self._now()),
                 "local_date": local_date,
                 "daily_intent": daily_intent,
+                "day_capacity": day_capacity,
                 "planning_effort_multipliers": {category: multiplier for category, multiplier in snapshot.effort_multipliers},
                 "server_revision": snapshot.input_server_revision,
                 "plan": plan_payload,
