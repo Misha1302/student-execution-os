@@ -82,11 +82,13 @@ does **not** prove that the provider accepts the VPS egress IP. If Settings show
 `SERVER_BLOCKED` (HTTP 403) while the same key works from another network, keep the key
 server-side and change only the network path of allowlisted LLM requests.
 
-The application already has a host-scoped HTTP(S) proxy seam, so the deployment solution
-uses **Tor + Privoxy** instead of adding SOCKS support to provider code. This keeps Tor a
-deployment concern, reuses the exact-host allowlist, and makes rollback a Compose-only
-operation. Native SOCKS5/SOCKS5h support would add application dependencies and transport
-branches without providing a capability the existing HTTP CONNECT seam lacks.
+The application already has host-scoped egress seams, so changing network origin stays a
+deployment concern rather than adding provider-specific transport branches. The options
+below are deliberately explicit: Tor + Privoxy is the free CONNECT-proxy overlay, a
+dedicated HTTP CONNECT proxy preserves end-to-end provider TLS, and the Cloudflare Groq
+relay is the current production default for Groq. Native SOCKS5/SOCKS5h support would add
+application dependencies without providing a capability the existing HTTP CONNECT seam
+lacks.
 
 #### Free Tor overlay
 
@@ -171,23 +173,56 @@ returns LLM traffic to its previous direct route.
 
 #### External HTTP(S) egress proxy
 
-If an operator prefers a trusted non-Tor HTTP(S) CONNECT proxy, the existing generic
-configuration remains available:
+The existing host-scoped proxy seam also supports a dedicated HTTP CONNECT egress host.
+This is useful when the production VPS address is rejected but a separate
+provider-supported address is accepted. It remains an explicit operator choice alongside
+the Tor overlay and the Cloudflare Groq relay below.
 
-1. Put the proxy URL in the API-only secret file
+A hardened Squid bootstrap is included at
+`deploy/llm-egress/squid/setup-egress-host.sh`. On a fresh Ubuntu/Debian egress VM:
+
+```bash
+sudo sh deploy/llm-egress/squid/setup-egress-host.sh \
+  <SEOS_PRODUCTION_PUBLIC_IPV4> api.groq.com
+```
+
+The script accepts exactly one production IPv4 source, installs a persistent host-firewall
+chain before Squid, binds Squid to IPv4 port 3128, allows only `CONNECT` to port 443, and
+accepts only exact DNS hostnames (no wildcard or suffix ACLs). It does not cache or
+intercept TLS. Re-running it replaces only the dedicated `SEOS_SQUID` firewall chain and
+the managed Squid configuration.
+
+Also restrict the cloud security group / security list for TCP 3128 to the same production
+`/32`; do not expose the proxy to `0.0.0.0/0`. Verify from the production host without
+using an API key:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  --proxy http://PROXY_IP:3128 https://api.groq.com/
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  --proxy http://PROXY_IP:3128 https://example.com/
+```
+
+Any HTTP response from the allowlisted provider proves the CONNECT tunnel reached it;
+the non-allowlisted destination must fail at the proxy.
+
+To use the proxy from Student Execution OS:
+
+1. Put `http://PROXY_IP:3128` in the API-only secret file
    `secrets/api/llm-egress-proxy.url` (or the nginx deployment equivalent under
    `/etc/student-execution-os/secrets/api/`) and keep it mode 0400.
 2. Set
    `SEOS_LLM_EGRESS_PROXY_FILE=/run/secrets/seos/llm-egress-proxy.url` and
    `SEOS_LLM_EGRESS_PROXY_HOSTS=api.groq.com` in the deployment environment.
-3. Recreate the API container and run **Settings → AI → Test** again.
+3. Clear the relay settings and deploy without the Tor overlay so only one egress
+   mechanism owns the provider host.
+4. Recreate the API container and run **Settings → AI → Test** again.
 
 For a proxy URL without credentials, `SEOS_LLM_EGRESS_PROXY=http://proxy:3128` may be
-used instead of the file. Configure exactly one of the two proxy sources. The proxy is
-used only when the provider request's hostname exactly matches the comma-separated
+used instead of the file. Configure exactly one of the two proxy sources. The application
+uses the proxy only when the provider request hostname exactly matches the comma-separated
 allowlist; arbitrary user-supplied OpenAI-compatible hosts continue to use the normal
-route. Keep an external egress proxy internet-only (no private-network reachability) and
-do not use TLS interception.
+route.
 
 #### Cloudflare Groq relay (default for production)
 
