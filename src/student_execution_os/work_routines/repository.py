@@ -224,8 +224,57 @@ class SQLiteWorkRoutineRepository:
         next_title = current.title if title is None else title.strip()
         if not next_title:
             raise ValidationError("title is required")
+
+        # The 28-day materializer may already have created future Tasks for the old
+        # series. A split may replace only generated state that is still untouched.
+        # Any user interaction/history turns that occurrence into protected history.
+        future_rows = self.connection.execute(
+            "SELECT original_recurrence_id,task_id FROM work_routine_occurrences "
+            "WHERE account_id=? AND template_id=? AND original_recurrence_id>=? "
+            "ORDER BY original_recurrence_id",
+            (account_id, template_id, original_recurrence_id),
+        ).fetchall()
+        for row in future_rows:
+            task = self.canonical.get_task(account_id, row["task_id"])
+            project_link = self.connection.execute(
+                "SELECT 1 FROM project_members WHERE account_id=? AND obligation_id=? LIMIT 1",
+                (account_id, row["task_id"]),
+            ).fetchone()
+            attachment = self.connection.execute(
+                "SELECT 1 FROM attachment_links WHERE account_id=? "
+                "AND owner_kind='OBLIGATION' AND owner_id=? LIMIT 1",
+                (account_id, row["task_id"]),
+            ).fetchone()
+            execution = self.connection.execute(
+                "SELECT 1 FROM execution_sessions WHERE account_id=? AND task_id=? LIMIT 1",
+                (account_id, row["task_id"]),
+            ).fetchone()
+            if (
+                task.obligation.lifecycle_status not in {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
+                or task.obligation.version != 1
+                or task.started_at is not None
+                or task.last_progress_at is not None
+                or project_link is not None
+                or attachment is not None
+                or execution is not None
+            ):
+                raise VersionConflict(
+                    "future routine occurrence has user history; split before an untouched occurrence"
+                )
+
         now = self.clock.now()
         with self.canonical._tx() as conn:
+            # Delete untouched old-series materializations first. Their occurrence rows
+            # cascade with the Task; the successor series then materializes fresh Task
+            # ids from its own (template_id, original_recurrence_id) identity.
+            for row in future_rows:
+                task = self.canonical.get_task(account_id, row["task_id"])
+                self.canonical.delete_obligation(
+                    account_id=account_id,
+                    obligation_id=row["task_id"],
+                    expected_version=task.obligation.version,
+                    actor=actor,
+                )
             cur = conn.execute(
                 "UPDATE work_routine_templates SET series_end_before_local=?,version=version+1,updated_at=? "
                 "WHERE account_id=? AND id=? AND version=?",
