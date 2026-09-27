@@ -114,11 +114,22 @@ def main() -> int:
             "op_id": f"op-snooze-{suffix}", "type": "reminder.snooze", "entity_id": stored["id"],
             "payload": {"minutes": 30}}]})["results"][0]
         check(snooze["status"] == "APPLIED" and snooze["entity"]["remind_at"], "snooze schedules a reminder", snooze)
-        # Per-account AI (BYOK): a fresh account has no key and uses the local parser.
+        # Per-account AI (BYOK): fresh accounts either receive STARTER platform-managed
+        # AI or, when STARTER is disabled, fall back to the local parser.
         llm = call("GET", "/api/v1/settings/llm")
-        check(llm["source"] == "NONE" and llm["credential"] is None, "new account has no AI key", llm)
-        check(capabilities.get("live_llm_provider") is False and preview["provider"] == "deterministic-local-v1",
-              "local parser without a key", capabilities)
+        starter_available = llm["source"] == "PLATFORM_MANAGED"
+        if starter_available:
+            starter = llm.get("platform_managed") or {}
+            quota = starter.get("quota") or {}
+            check(llm["credential"] is None and starter.get("plan") == "STARTER" and starter.get("available") is True,
+                  "new account has STARTER AI", llm)
+            check(isinstance(quota.get("requests_remaining"), int)
+                  and isinstance(quota.get("tokens_remaining"), int)
+                  and quota.get("resets_at"), "STARTER quota is visible", quota)
+        else:
+            check(llm["source"] == "NONE" and llm["credential"] is None, "new account has no AI key", llm)
+            check(capabilities.get("live_llm_provider") is False and preview["provider"] == "deterministic-local-v1",
+                  "local parser without a key", capabilities)
         if args.expect_byok:
             check(llm["storage_available"] is True, "AI key storage configured", llm)
             fake = f"sk-smoke-invalid-{secrets.token_hex(12)}"
@@ -129,14 +140,18 @@ def main() -> int:
                          "/api/v1/account/export"):
                 body = client.get(path).text
                 check(fake not in body and fake[9:] not in body, f"key absent from {path}")
-            # The real provider must refuse the fake key; capture keeps working locally.
+            # The real provider must refuse the fake key (or the deployment egress policy
+            # may block provider access); capture keeps working locally either way.
             tested = call("POST", "/api/v1/settings/llm/test")
-            check(tested["ok"] is False and tested["status"] == "INVALID_KEY", "invalid key detected by provider", tested)
+            check(tested["ok"] is False and tested["status"] in {"INVALID_KEY", "SERVER_BLOCKED"},
+                  "invalid key refused by provider path", tested)
             fallback = call("POST", "/api/v1/assistant/interpret", json={"text": "купить молоко"})
-            check(fallback["fallback"] is True and fallback["fallback_reason"] == "AUTH"
+            expected_reason = "AUTH" if tested["status"] == "INVALID_KEY" else "SERVER_BLOCKED"
+            check(fallback["fallback"] is True and fallback["fallback_reason"] == expected_reason
                   and fallback["actions"][0]["command"] == "CREATE_TASK", "invalid key falls back to local parser", fallback)
             removed = call("DELETE", "/api/v1/settings/llm")
-            check(removed["source"] == "NONE" and removed["credential"] is None, "AI key removed", removed)
+            expected_source = "PLATFORM_MANAGED" if starter_available else "NONE"
+            check(removed["source"] == expected_source and removed["credential"] is None, "AI key removed", removed)
             report["byok"] = "ok"
         diagnostics = call("GET", "/api/v1/settings/diagnostics")
         report["diagnostics"] = {k: diagnostics.get(k) for k in ("schema_version", "reminder_worker", "external_capabilities")}
