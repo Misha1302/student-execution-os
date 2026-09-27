@@ -8,6 +8,7 @@ static:
 	find src/student_execution_os/web/static -name '*.js' -print0 | xargs -0 -n1 node --check
 	node tests/js/execution_overlay_cases.mjs
 	node tests/js/plan_control_overlay_cases.mjs
+	node tests/js/projects_overlay_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
 
 worker:

@@ -267,6 +267,145 @@ export function applyConstraintOp(constraint, item) {
 
 export const projectConstraints = (list, ops) => projectList(list, ops, 'constraint.', applyConstraintOp);
 
+function pendingProject(id, payload, at) {
+  return {
+    id,
+    title: String(payload.title || '').trim(),
+    description: payload.description || null,
+    status: 'ACTIVE',
+    importance: payload.importance || null,
+    version: 1,
+    created_at: at,
+    updated_at: at,
+    members: [],
+    milestones: [],
+    progress: { percent: 0, basis: 'EMPTY', tasks_total: 0, tasks_completed: 0,
+      estimated_total_effort_minutes: null, remaining_effort_minutes: null },
+    risk: null,
+    _pending: true,
+  };
+}
+
+function recomputeProject(project) {
+  const members = project.members || [];
+  const tasks = members.filter((x) => x.kind === 'TASK' && x.status !== 'CANCELLED');
+  const known = tasks.filter((x) => x.estimated_total_effort_minutes != null);
+  const total = known.reduce((sum, x) => sum + Number(x.estimated_total_effort_minutes || 0), 0);
+  const remaining = known.filter((x) => !['COMPLETED', 'CANCELLED', 'ARCHIVED'].includes(x.status))
+    .reduce((sum, x) => sum + Number(x.remaining_effort_minutes || 0), 0);
+  let percent = 0;
+  let basis = 'EMPTY';
+  if (total > 0) { percent = Math.max(0, Math.min(100, Math.round((total - remaining) * 100 / total))); basis = 'EFFORT'; }
+  else if (tasks.length) { percent = Math.round(tasks.filter((x) => x.status === 'COMPLETED').length * 100 / tasks.length); basis = 'TASK_COUNT'; }
+  return { ...project, progress: {
+    percent, basis, tasks_total: tasks.length,
+    tasks_completed: tasks.filter((x) => x.status === 'COMPLETED').length,
+    estimated_total_effort_minutes: total || null,
+    remaining_effort_minutes: total ? remaining : null,
+  }};
+}
+
+function pendingProjectTask(id, payload, at) {
+  const effort = payload.estimated_total_effort_minutes == null ? null : Number(payload.estimated_total_effort_minutes);
+  return {
+    kind: 'TASK', id, title: String(payload.title || '').trim(), description: payload.description || null,
+    category: payload.category || 'GENERAL', importance: payload.importance || 'NORMAL',
+    status: effort == null ? 'DRAFT' : 'ACTIVE', version: 1,
+    estimated_total_effort_minutes: effort, remaining_effort_minutes: effort,
+    splittable: Boolean(payload.splittable), min_chunk_minutes: payload.min_chunk_minutes || null,
+    max_chunk_minutes: payload.max_chunk_minutes || null, actionable_from: payload.actionable_from || null,
+    target_at: payload.target_at || null, actual_cutoff: payload.actual_cutoff || { state: 'UNKNOWN' },
+    created_at: at, completed_at: null, risk: null, _pending: true,
+  };
+}
+
+function pendingMilestone(id, payload) {
+  return {
+    id, title: String(payload.title || '').trim(), marker_at: payload.marker_at,
+    role: payload.role || 'INTERMEDIATE', consequence: payload.consequence || null,
+    hard_for_planning: Boolean(payload.hard_for_planning), status: 'ACTIVE', version: 1,
+    overdue: false, _pending: true,
+  };
+}
+
+function applyProjectOp(project, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  const at = item.queued_at || new Date().toISOString();
+  if (op.type === 'project.create') return project || pendingProject(op.entity_id, p, at);
+  if (!project) return project;
+  let next = { ...project, members: [...(project.members || [])], milestones: [...(project.milestones || [])], _pending: true, updated_at: at };
+  if (op.type === 'project.update') {
+    for (const key of ['title', 'description', 'importance']) if (key in p) next[key] = p[key];
+    next.version = Number(next.version || 1) + 1;
+  } else if (op.type === 'project.complete') next.status = 'COMPLETED';
+  else if (op.type === 'project.cancel') next.status = 'CANCELLED';
+  else if (op.type === 'project.reopen') next.status = 'ACTIVE';
+  else if (op.type === 'project.task.create') {
+    const task = pendingProjectTask(p.task_id, p, at);
+    if (!next.members.some((x) => x.id === task.id)) next.members.push(task);
+    next.version = Number(next.version || 1) + 1;
+  } else if (op.type === 'project.member.remove') {
+    next.members = next.members.filter((x) => x.id !== p.obligation_id);
+    next.version = Number(next.version || 1) + 1;
+  }
+  return recomputeProject(next);
+}
+
+function applyMilestoneToProjects(projects, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  let changed = false;
+  const out = projects.map((project) => {
+    let milestones = [...(project.milestones || [])];
+    const index = milestones.findIndex((m) => m.id === op.entity_id);
+    let belongs = index >= 0;
+    if (op.type === 'milestone.create') belongs = p.project_id === project.id;
+    if (!belongs) return project;
+    changed = true;
+    if (op.type === 'milestone.create' && index < 0) milestones.push(pendingMilestone(op.entity_id, p));
+    else if (op.type === 'milestone.delete') milestones = milestones.filter((m) => m.id !== op.entity_id);
+    else if (index >= 0) {
+      const current = { ...milestones[index], _pending: true };
+      if (op.type === 'milestone.update') {
+        if ('title' in p) current.title = p.title;
+        if ('marker_at' in p) current.marker_at = p.marker_at;
+        current.version = Number(current.version || 1) + 1;
+      } else if (op.type === 'milestone.complete') current.status = 'COMPLETED';
+      else if (op.type === 'milestone.cancel') current.status = 'CANCELLED';
+      else if (op.type === 'milestone.reopen') current.status = 'ACTIVE';
+      milestones[index] = current;
+    }
+    return { ...project, milestones, _pending: true };
+  });
+  return changed ? out : projects;
+}
+
+export function projectProjects(list, ops) {
+  let projected = projectList(list, ops, 'project.', applyProjectOp) || [];
+  for (const item of ops) {
+    if (item.operation?.type?.startsWith('milestone.')) projected = applyMilestoneToProjects(projected, item);
+  }
+  const taskRelated = ops.filter((x) => x.operation?.type?.startsWith('task.') || executionTaskId(x));
+  if (taskRelated.length) {
+    projected = projected.map((project) => {
+      let changed = false;
+      const members = (project.members || []).map((member) => {
+        if (member.kind !== 'TASK') return member;
+        let value = member;
+        for (const item of taskRelated) {
+          const before = value;
+          value = item.operation?.type?.startsWith('task.') ? applyTaskOp(value, item) : applyExecutionTaskOp(value, item);
+          if (value !== before) changed = true;
+        }
+        return value;
+      }).filter(Boolean);
+      return changed ? recomputeProject({ ...project, members, _pending: true }) : project;
+    });
+  }
+  return projected;
+}
+
 export function applyEventOp(event, item) {
   const op = item.operation;
   const p = op.payload || {};
@@ -468,6 +607,11 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
+  if (route === '/api/v1/projects') return projectProjects(base, ops);
+  if (route.startsWith('/api/v1/projects/')) {
+    const projected = projectProjects(base ? [base] : [], ops);
+    return projected[0] || base;
+  }
   if (route === '/api/v1/execution/active') return { ...base, session: projectExecution(base.session || null, executionOps(ops)) };
   if (route === '/api/v1/notifications' && Array.isArray(base)) {
     // A reminder answered from the app (or its notification) shows as answered.

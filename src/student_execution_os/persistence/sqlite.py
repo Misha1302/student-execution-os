@@ -1102,6 +1102,46 @@ class SQLiteCanonicalRepository:
             updated_at=_dt(row["updated_at"]),
         )
 
+    def update_project(
+        self,
+        *,
+        account_id: str,
+        project_id: str,
+        expected_version: int,
+        actor: ActorCategory,
+        title: str | object = _UNSET,
+        description: str | None | object = _UNSET,
+        importance: Importance | None | object = _UNSET,
+    ) -> Project:
+        project = self.get_project(account_id, project_id)
+        if project.version != expected_version:
+            raise VersionConflict(f"expected project version {expected_version}, current {project.version}")
+        next_title = project.title if title is _UNSET else str(title).strip()
+        if not next_title:
+            raise ValidationError("project title is required")
+        next_description = project.description if description is _UNSET else (description or None)
+        next_importance = project.importance if importance is _UNSET else importance
+        if next_importance is not None and not isinstance(next_importance, Importance):
+            next_importance = Importance(next_importance)
+        now = self.clock.now()
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE projects SET title=?,description=?,importance=?,updated_at=?,version=version+1 "
+                "WHERE account_id=? AND id=? AND version=?",
+                (
+                    next_title, next_description,
+                    next_importance.value if next_importance else None,
+                    _iso(now), account_id, project_id, expected_version,
+                ),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("project version changed before commit")
+            self._record_change(
+                conn, account_id=account_id, entity_type="PROJECT", entity_id=project_id,
+                action="UPDATE_PROJECT", actor=actor,
+            )
+        return self.get_project(account_id, project_id)
+
     def _transition_project(
         self,
         *,
@@ -1189,6 +1229,38 @@ class SQLiteCanonicalRepository:
                 action="ADD_MEMBER",
                 actor=actor,
                 payload={"obligation_id": obligation_id},
+            )
+        return self.get_project(account_id, project_id)
+
+    def remove_project_member(
+        self,
+        *,
+        account_id: str,
+        project_id: str,
+        obligation_id: str,
+        expected_version: int,
+        actor: ActorCategory,
+    ) -> Project:
+        project = self.get_project(account_id, project_id)
+        if project.version != expected_version:
+            raise VersionConflict(f"expected project version {expected_version}, current {project.version}")
+        now = self.clock.now()
+        with self._tx() as conn:
+            cur = conn.execute(
+                "DELETE FROM project_members WHERE account_id=? AND project_id=? AND obligation_id=?",
+                (account_id, project_id, obligation_id),
+            )
+            if cur.rowcount != 1:
+                raise EntityNotFound("project member not found")
+            updated = conn.execute(
+                "UPDATE projects SET version=version+1,updated_at=? WHERE account_id=? AND id=? AND version=?",
+                (_iso(now), account_id, project_id, expected_version),
+            )
+            if updated.rowcount != 1:
+                raise VersionConflict("project version changed before commit")
+            self._record_change(
+                conn, account_id=account_id, entity_type="PROJECT", entity_id=project_id,
+                action="REMOVE_MEMBER", actor=actor, payload={"obligation_id": obligation_id},
             )
         return self.get_project(account_id, project_id)
 
@@ -1310,6 +1382,76 @@ class SQLiteCanonicalRepository:
             hard_for_planning=bool(updated["hard_for_planning"]),
             status=MilestoneStatus(updated["status"]), version=int(updated["version"]),
         )
+
+    def set_milestone_status(
+        self,
+        *,
+        account_id: str,
+        milestone_id: str,
+        expected_version: int,
+        status: MilestoneStatus,
+        actor: ActorCategory,
+    ) -> Milestone:
+        row = self.connection.execute(
+            "SELECT * FROM milestones WHERE account_id=? AND id=?", (account_id, milestone_id)
+        ).fetchone()
+        if row is None:
+            raise EntityNotFound("milestone not found")
+        if int(row["version"]) != expected_version:
+            raise VersionConflict(f"expected milestone version {expected_version}, current {row['version']}")
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE milestones SET status=?,version=version+1 WHERE account_id=? AND id=? AND version=?",
+                (status.value, account_id, milestone_id, expected_version),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("milestone version changed before commit")
+            self._record_change(
+                conn, account_id=account_id, entity_type="MILESTONE", entity_id=milestone_id,
+                action="SET_MILESTONE_STATUS", actor=actor, payload={"status": status.value},
+            )
+        row = self.connection.execute(
+            "SELECT * FROM milestones WHERE account_id=? AND id=?", (account_id, milestone_id)
+        ).fetchone()
+        return Milestone(
+            id=row["id"], account_id=row["account_id"],
+            owner_kind=MilestoneOwnerKind(row["owner_kind"]), owner_id=row["owner_id"],
+            title=row["title"], marker_at=_dt(row["marker_at"]),
+            role=MilestoneRole(row["role"]), consequence=row["consequence"],
+            hard_for_planning=bool(row["hard_for_planning"]),
+            status=MilestoneStatus(row["status"]), version=int(row["version"]),
+        )
+
+    def delete_milestone(
+        self,
+        *,
+        account_id: str,
+        milestone_id: str,
+        expected_version: int,
+        actor: ActorCategory,
+    ) -> None:
+        row = self.connection.execute(
+            "SELECT version FROM milestones WHERE account_id=? AND id=?", (account_id, milestone_id)
+        ).fetchone()
+        if row is None:
+            raise EntityNotFound("milestone not found")
+        if int(row["version"]) != expected_version:
+            raise VersionConflict(f"expected milestone version {expected_version}, current {row['version']}")
+        with self._tx() as conn:
+            conn.execute(
+                "DELETE FROM dependencies WHERE account_id=? AND successor_kind='MILESTONE' AND successor_id=?",
+                (account_id, milestone_id),
+            )
+            cur = conn.execute(
+                "DELETE FROM milestones WHERE account_id=? AND id=? AND version=?",
+                (account_id, milestone_id, expected_version),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("milestone version changed before delete")
+            self._record_change(
+                conn, account_id=account_id, entity_type="MILESTONE", entity_id=milestone_id,
+                action="DELETE_MILESTONE", actor=actor,
+            )
 
     def add_dependency(
         self,

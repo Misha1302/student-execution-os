@@ -295,6 +295,14 @@ def create_app(
     async def update_planning_profile(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.update_planning_profile(payload)
 
+    @app.get("/api/v1/projects")
+    async def list_projects(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.projects()
+
+    @app.get("/api/v1/projects/{project_id}")
+    async def get_project(project_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.project(project_id)
+
     @app.get("/api/v1/tasks")
     async def list_tasks(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.tasks()

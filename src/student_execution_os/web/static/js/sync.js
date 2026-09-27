@@ -28,7 +28,10 @@ const IDEMPOTENT = new Set(['task.start', 'task.complete', 'task.cancel', 'task.
   'task.restore', 'task.delete', 'event.cancel', 'event.reopen', 'event.delete',
   'reminder.done', 'reminder.cancel', 'reminder.reopen', 'reminder.delete',
   'execution.pause', 'execution.resume', 'execution.finish', 'execution.cancel',
-  'constraint.update', 'constraint.delete']);
+  'constraint.update', 'constraint.delete',
+  'project.complete', 'project.cancel', 'project.reopen',
+  'project.member.add', 'project.member.remove',
+  'milestone.complete', 'milestone.cancel', 'milestone.reopen', 'milestone.delete']);
 
 let flushing = null;
 let again = false;
