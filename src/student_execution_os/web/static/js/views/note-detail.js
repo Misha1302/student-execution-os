@@ -5,6 +5,7 @@ import { esc, icon, chip, openSheet, confirmSheet, errorMessage } from '../ui.js
 import { change, shell } from '../actions.js';
 import { newEntityId } from '../sync.js';
 import { openCapture } from '../capture.js';
+import { openAudioNoteRecorder } from '../notes-audio.js';
 
 let currentNote = null;
 
@@ -49,7 +50,8 @@ export default {
           ${note._pending ? chip(t('sync.pendingShort'), 'warn') : ''}
         </div>
         ${note.content ? `<p class="note-preview">${esc(note.content)}</p>` : ''}
-        ${note.audio ? `<div class="field"><span>${esc(t('note.audioReady'))}</span><audio class="note-audio" controls data-note-audio></audio></div>` : ''}
+        ${note.audio ? `<div class="field"><span>${esc(t('note.audioReady'))}</span><audio class="note-audio" controls data-note-audio></audio></div>`
+          : `<button class="button ghost" data-action="note-audio-add">${esc(t('note.recordAudio'))}</button>`}
         <div class="field"><span>${esc(t('note.transcript'))}</span><p class="muted note-preview">${esc(transcriptState)}</p></div>
         <div class="button-row">
           <button class="button" data-action="note-edit">${esc(t('note.edit'))}</button>
@@ -85,6 +87,7 @@ export default {
   actions: {
     'note-edit': () => editor(currentNote),
     'note-transcript-edit': () => transcriptEditor(currentNote),
+    'note-audio-add': () => openAudioNoteRecorder(currentNote),
     'note-task': () => openCapture({ text: currentNote.content || currentNote.transcript || '', sourceNoteId: currentNote.id, initialKind: 'TASK' }),
     'note-event': () => openCapture({ text: currentNote.content || currentNote.transcript || '', sourceNoteId: currentNote.id, initialKind: 'EVENT' }),
     'note-project': async () => {

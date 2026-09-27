@@ -370,6 +370,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       </details>
       <div class="capture-other">
         <button type="button" class="link" data-switch-note>${icon('note')} ${esc(t('capture.asNote'))}</button>
+        <button type="button" class="link" data-other="note-audio">${icon('mic')} ${esc(t('note.recordAudio'))}</button>
         <button type="button" class="link" data-other="event">${icon('event')} ${esc(t('capture.event'))}</button>
         <button type="button" class="link" data-other="recurring">${icon('repeat')} ${esc(t('capture.recurring'))}</button>
       </div>
@@ -775,7 +776,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
   dialog.querySelectorAll('[data-other]').forEach((button) => button.addEventListener('click', async () => {
     dialog.close('other');
     const { composers } = await import('./compose.js');
-    composers[button.dataset.other]();
+    composers[button.dataset.other]?.();
   }));
 
   createButton.addEventListener('click', async (e) => {
