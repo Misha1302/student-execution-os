@@ -16,7 +16,7 @@ const today = {
   needs_refinement: [],
   next_actions: [],
   active_execution: null,
-  plan: { blocks: [], canonical_events: [], constraints: [] },
+  plan: { blocks: [{ type: 'WORK', obligation_id: 'task-a', starts_at: '2026-10-01T09:00:00Z', ends_at: '2026-10-01T10:00:00Z' }], canonical_events: [], constraints: [] },
 };
 
 const setIntent = op('intent.set', '2026-10-01', {
@@ -28,6 +28,8 @@ let projected = project('/api/v1/today', today, [setIntent]);
 assert.deepEqual(projected.daily_intent.priority_task_ids, ['task-a']);
 assert.equal(projected.daily_intent.note, 'Focus');
 assert.equal(projected.daily_intent._pending, true);
+assert.equal(projected.plan.blocks.filter((x) => x.type === 'WORK').length, 0, 'stale planner output must be hidden after offline intent change');
+assert.equal(projected.plan.pending_preferences, true);
 
 const close = op('intent.close', '2026-10-01', { local_date: '2026-10-01' });
 projected = project('/api/v1/today', today, [setIntent, close]);
