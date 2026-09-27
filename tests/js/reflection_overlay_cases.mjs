@@ -49,7 +49,7 @@ const calibration = op('calibration.set', 'calibration-HOMEWORK', {
   enabled: true,
   suppress_suggestion: false,
 });
-projected = project('/api/v1/reflection', reflection, [calibration]);
+projected = project('/api/v1/reflection?days=7', reflection, [calibration]);
 assert.equal(projected.calibration[0].preference.safety_multiplier, 1.5);
 assert.equal(projected.calibration[0].preference.enabled, true);
 assert.equal(projected.calibration[0].preference._pending, true);
