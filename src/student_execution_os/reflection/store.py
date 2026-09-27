@@ -70,6 +70,7 @@ class SQLiteReflectionStore:
         priority_task_ids: list[str],
         note: str | None,
         actor: ActorCategory,
+        expected_version: int | None = None,
     ) -> dict[str, Any]:
         _day(local_date)
         clean: list[str] = []
@@ -88,6 +89,11 @@ class SQLiteReflectionStore:
             raise ValidationError("daily intent note is too long")
         now = self.clock.now()
         current = self.intent(account_id, local_date)
+        if current is None:
+            if expected_version not in (None, 0):
+                raise VersionConflict("daily intent does not exist at expected version")
+        elif expected_version is not None and current["version"] != expected_version:
+            raise VersionConflict("daily intent version changed")
         with self.repo._tx() as conn:
             if current is None:
                 conn.execute(
@@ -96,11 +102,14 @@ class SQLiteReflectionStore:
                     (account_id, local_date, json.dumps(clean), note, _iso(now), _iso(now), _iso(now)),
                 )
             else:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE daily_intents SET priority_task_ids_json=?,note=?,started_at=COALESCE(started_at,?),"
-                    "closed_at=NULL,version=version+1,updated_at=? WHERE account_id=? AND local_date=?",
-                    (json.dumps(clean), note, _iso(now), _iso(now), account_id, local_date),
+                    "closed_at=NULL,version=version+1,updated_at=? "
+                    "WHERE account_id=? AND local_date=? AND version=?",
+                    (json.dumps(clean), note, _iso(now), _iso(now), account_id, local_date, current["version"]),
                 )
+                if cur.rowcount != 1:
+                    raise VersionConflict("daily intent version changed before commit")
             self.repo._record_change(
                 conn, account_id=account_id, entity_type="DAILY_INTENT",
                 entity_id=local_date, action="SET_DAILY_INTENT", actor=actor,
@@ -108,19 +117,28 @@ class SQLiteReflectionStore:
             )
         return self.intent(account_id, local_date)  # type: ignore[return-value]
 
-    def close_intent(self, account_id: str, local_date: str, actor: ActorCategory) -> dict[str, Any]:
+    def close_intent(
+        self, account_id: str, local_date: str, actor: ActorCategory,
+        expected_version: int | None = None,
+    ) -> dict[str, Any]:
         current = self.intent(account_id, local_date)
         if current is None:
-            current = self.set_intent(account_id, local_date, [], None, actor)
+            if expected_version not in (None, 0):
+                raise VersionConflict("daily intent does not exist at expected version")
+            current = self.set_intent(account_id, local_date, [], None, actor, expected_version=0)
+        elif expected_version is not None and current["version"] != expected_version:
+            raise VersionConflict("daily intent version changed")
         if current["closed_at"] is not None:
             return current
         now = self.clock.now()
         with self.repo._tx() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "UPDATE daily_intents SET closed_at=?,version=version+1,updated_at=? "
-                "WHERE account_id=? AND local_date=?",
-                (_iso(now), _iso(now), account_id, local_date),
+                "WHERE account_id=? AND local_date=? AND version=?",
+                (_iso(now), _iso(now), account_id, local_date, current["version"]),
             )
+            if cur.rowcount != 1:
+                raise VersionConflict("daily intent version changed before close")
             self.repo._record_change(
                 conn, account_id=account_id, entity_type="DAILY_INTENT",
                 entity_id=local_date, action="CLOSE_DAILY_INTENT", actor=actor,
