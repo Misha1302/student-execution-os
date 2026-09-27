@@ -112,9 +112,8 @@ class ReflectionApiTest(unittest.TestCase):
             "expected_version": 99,
         })
         self.assertEqual(stale_calibration["status"], "CONFLICT")
-        reflection = self.client.get("/api/v1/reflection?days=1").json()
-        pref = next(item["preference"] for item in reflection["calibration"] if item["category"] == "HOMEWORK")
-        self.assertEqual(pref["safety_multiplier"], 1.25)
+        today_after_stale = self.client.get("/api/v1/today").json()
+        self.assertEqual(today_after_stale["planning_effort_multipliers"], {"HOMEWORK": 1.25})
 
     def test_calibration_changes_planning_projection_not_canonical_task(self):
         self.create_task("task-calibrated-1", "Essay", category="HOMEWORK", effort=60)
