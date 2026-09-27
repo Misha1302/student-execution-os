@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
 import socket
 from dataclasses import dataclass, field
@@ -404,6 +405,8 @@ class OpenAICompatibleProvider:
     name: str = "openai"
     timeout: float = 30.0
     public_only: bool = False  # user-supplied base URL: refuse non-public hosts
+    max_output_tokens: int | None = None
+    last_usage: dict[str, int] | None = field(default=None, init=False, repr=False)
 
     def _chat(self, messages: list[dict[str, str]], **extra: Any) -> httpx.Response:
         body: dict[str, Any] = {"model": self.model, "messages": messages, **extra}
@@ -418,10 +421,15 @@ class OpenAICompatibleProvider:
         # No temperature: OpenAI reasoning models reject a non-default one, and Groq's
         # gpt-oss fails JSON mode at temperature 0 on some inputs every time. The output
         # is validated field by field anyway, so determinism is not relied upon there.
+        self.last_usage = None
+        extra: dict[str, Any] = {"response_format": {"type": "json_object"}}
+        if self.max_output_tokens is not None:
+            extra["max_tokens"] = self.max_output_tokens
         response = self._chat([
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _user_message(text, context)},
-        ], response_format={"type": "json_object"})
+        ], **extra)
+        self.last_usage = _openai_usage(response)
         content = _field(response, ("choices", 0, "message", "content"), self.name)
         if not isinstance(content, str):
             raise ProviderUnavailable(f"assistant provider {self.name} returned no text", "MALFORMED")
@@ -443,6 +451,8 @@ class AnthropicProvider:
     name: str = "anthropic"
     timeout: float = 30.0
     public_only: bool = False
+    max_output_tokens: int = 1200
+    last_usage: dict[str, int] | None = field(default=None, init=False, repr=False)
 
     def _messages(self, body: dict[str, Any]) -> httpx.Response:
         return _post(
@@ -453,10 +463,12 @@ class AnthropicProvider:
         )
 
     def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
+        self.last_usage = None
         response = self._messages({
-            "max_tokens": 1200, "temperature": 0, "system": SYSTEM_PROMPT,
+            "max_tokens": self.max_output_tokens, "temperature": 0, "system": SYSTEM_PROMPT,
             "messages": [{"role": "user", "content": _user_message(text, context)}],
         })
+        self.last_usage = _anthropic_usage(response)
         blocks = _field(response, ("content",), self.name)
         texts = [block.get("text") for block in blocks if isinstance(block, dict) and block.get("type", "text") == "text"] \
             if isinstance(blocks, list) else []
@@ -489,7 +501,7 @@ def normalize_provider(kind: str) -> str:
 
 
 def build_provider(kind: str, *, api_key: str, model: str, base_url: str | None = None,
-                   user_supplied: bool = False):
+                   user_supplied: bool = False, max_output_tokens: int | None = None):
     """The one constructor for every credential source (a user's own key or the platform's).
 
     ``user_supplied`` marks an address chosen by an account holder: it must be a
@@ -501,21 +513,109 @@ def build_provider(kind: str, *, api_key: str, model: str, base_url: str | None 
         raise ValidationError("an API address is required for an OpenAI-compatible provider")
     public_only = user_supplied and base != PROVIDERS[kind][1]
     if kind == "anthropic":
-        return AnthropicProvider(api_key, model, base, public_only=public_only)
-    return OpenAICompatibleProvider(api_key, model, base, name=kind, public_only=public_only)
+        return AnthropicProvider(api_key, model, base, public_only=public_only,
+                                 max_output_tokens=max_output_tokens or 1200)
+    return OpenAICompatibleProvider(api_key, model, base, name=kind, public_only=public_only,
+                                    max_output_tokens=max_output_tokens)
 
 
-def platform_provider_from_environment():
-    """Platform-managed credentials (future paid tier), or ``None``.
+def _usage_int(value: Any) -> int | None:
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _openai_usage(response: httpx.Response) -> dict[str, int] | None:
+    try:
+        raw = response.json().get("usage")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    prompt = _usage_int(raw.get("prompt_tokens"))
+    completion = _usage_int(raw.get("completion_tokens"))
+    total = _usage_int(raw.get("total_tokens"))
+    if prompt is None or completion is None:
+        return None
+    return {"prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": max(total, prompt + completion) if total is not None else prompt + completion}
+
+
+def _anthropic_usage(response: httpx.Response) -> dict[str, int] | None:
+    try:
+        raw = response.json().get("usage")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    prompt = _usage_int(raw.get("input_tokens"))
+    completion = _usage_int(raw.get("output_tokens"))
+    if prompt is None or completion is None:
+        return None
+    return {"prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": prompt + completion}
+
+
+class PlatformProviderPool:
+    """Primary platform credential plus at most one useful standby attempt."""
+
+    _ALTERNATE_REASONS = {"AUTH", "QUOTA"}
+
+    def __init__(self, providers: list[Any]) -> None:
+        if not providers:
+            raise ValueError("at least one platform provider is required")
+        self._providers = providers[:2]
+        self.name = providers[0].name
+        self.model = providers[0].model
+        self.last_usage: dict[str, int] | None = None
+
+    def interpret(self, text: str, context: dict[str, object]):
+        self.last_usage = None
+        try:
+            result = self._providers[0].interpret(text, context)
+            self.last_usage = self._providers[0].last_usage
+            return result
+        except ProviderUnavailable as primary:
+            self.last_usage = self._providers[0].last_usage
+            if len(self._providers) == 1 or primary.reason not in self._ALTERNATE_REASONS:
+                raise
+        try:
+            result = self._providers[1].interpret(text, context)
+            self.last_usage = self._providers[1].last_usage
+            return result
+        except ProviderUnavailable:
+            self.last_usage = self._providers[1].last_usage
+            raise
+
+
+def _platform_keys_from_environment() -> list[str]:
+    files = os.environ.get("SEOS_PLATFORM_LLM_API_KEY_FILES", "").strip()
+    if files:
+        keys: list[str] = []
+        for raw_path in files.split(",")[:2]:
+            try:
+                value = Path(raw_path.strip()).read_text(encoding="utf-8").strip()
+                if value and "\n" not in value and "\r" not in value:
+                    keys.append(value)
+            except OSError:
+                logging.getLogger("student_execution_os.providers").error(
+                    "a platform LLM credential file is unreadable")
+        return keys
+    key = os.environ.get("SEOS_PLATFORM_LLM_API_KEY", "").strip()
+    return [key] if key else []
+
+
+def platform_provider_from_environment(*, max_output_tokens: int | None = None):
+    """Platform-managed credentials, primary first and optional standby, or ``None``.
 
     These are the operator's own credentials. They are used only for accounts with a
     PLATFORM_MANAGED entitlement (see ``agent/credentials.py``), never as a default
     for everybody.
     """
     kind = os.environ.get("SEOS_PLATFORM_LLM_PROVIDER", "").strip()
-    key = os.environ.get("SEOS_PLATFORM_LLM_API_KEY", "").strip()
+    keys = _platform_keys_from_environment()
     model = os.environ.get("SEOS_PLATFORM_LLM_MODEL", "").strip()
     base = os.environ.get("SEOS_PLATFORM_LLM_BASE_URL", "").strip()
-    if not kind or not key or not model:
+    if not kind or not keys or not model:
         return None
-    return build_provider(kind, api_key=key, model=model, base_url=base or None)
+    providers = [build_provider(kind, api_key=key, model=model, base_url=base or None,
+                                max_output_tokens=max_output_tokens) for key in keys]
+    return providers[0] if len(providers) == 1 else PlatformProviderPool(providers)

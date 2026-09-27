@@ -18,6 +18,7 @@ from uuid import uuid4
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.domain.errors import DomainError, ValidationError
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.agent.usage import StarterUsageStore
 
 
 DEFAULT_CORS_ORIGINS = (
@@ -199,6 +200,7 @@ class SQLiteAuthStore:
                         "INSERT INTO auth_users(id,account_id,login,password_hash,created_at) VALUES (?,?,?,?,?)",
                         (user_id, account_id, login, password_hash, _iso(self._now())),
                     )
+                    StarterUsageStore(repo).grant_new_account(conn, account_id, self._now())
                     return self._issue(conn, account_id=account_id, user_id=user_id, login=login, device_label=device_label)
             except sqlite3.IntegrityError as exc:
                 raise ValidationError("login is already taken") from exc

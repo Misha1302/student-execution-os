@@ -23,7 +23,16 @@ services:
       SEOS_PLATFORM_LLM_PROVIDER: ${SEOS_PLATFORM_LLM_PROVIDER:-}
       SEOS_PLATFORM_LLM_MODEL: ${SEOS_PLATFORM_LLM_MODEL:-}
       SEOS_PLATFORM_LLM_BASE_URL: ${SEOS_PLATFORM_LLM_BASE_URL:-}
+      SEOS_PLATFORM_LLM_API_KEY_FILES: ${SEOS_PLATFORM_LLM_API_KEY_FILES:-}
       SEOS_PLATFORM_LLM_API_KEY: ${SEOS_PLATFORM_LLM_API_KEY:-}
+      SEOS_STARTER_LLM_ENABLED: ${SEOS_STARTER_LLM_ENABLED:-0}
+      SEOS_STARTER_LLM_PERIOD_SECONDS: ${SEOS_STARTER_LLM_PERIOD_SECONDS:-}
+      SEOS_STARTER_LLM_ACCOUNT_REQUEST_LIMIT: ${SEOS_STARTER_LLM_ACCOUNT_REQUEST_LIMIT:-}
+      SEOS_STARTER_LLM_ACCOUNT_TOKEN_LIMIT: ${SEOS_STARTER_LLM_ACCOUNT_TOKEN_LIMIT:-}
+      SEOS_STARTER_LLM_GLOBAL_REQUEST_LIMIT: ${SEOS_STARTER_LLM_GLOBAL_REQUEST_LIMIT:-}
+      SEOS_STARTER_LLM_GLOBAL_TOKEN_LIMIT: ${SEOS_STARTER_LLM_GLOBAL_TOKEN_LIMIT:-}
+      SEOS_STARTER_LLM_MAX_OUTPUT_TOKENS: ${SEOS_STARTER_LLM_MAX_OUTPUT_TOKENS:-}
+      SEOS_STARTER_LLM_TOKEN_RESERVATION_OVERHEAD: ${SEOS_STARTER_LLM_TOKEN_RESERVATION_OVERHEAD:-}
       # Optional LLM-only egress route for providers that reject this VPS network.
       # Prefer *_FILE when the proxy URL contains credentials.
       SEOS_LLM_EGRESS_PROXY: ${SEOS_LLM_EGRESS_PROXY:-}
@@ -39,7 +48,7 @@ services:
     volumes:
       - /var/lib/student-execution-os:/data
       - /var/backups/student-execution-os:/backups
-      - /etc/student-execution-os/secrets/api:/run/secrets/seos:ro
+      - ${SEOS_API_SECRETS_DIR:-/etc/student-execution-os/secrets/api}:/run/secrets/seos:ro
 
   reminder-worker:
     image: student-execution-os:${SEOS_IMAGE_TAG:-latest}

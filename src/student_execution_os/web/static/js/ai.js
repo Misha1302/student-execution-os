@@ -53,7 +53,15 @@ export function aiSection(llm) {
         <button class="button danger ghost" data-action="ai-delete">${esc(t('ai.remove'))}</button>
       </div>`;
   } else if (llm.source === 'PLATFORM_MANAGED') {
+    const managed = llm.platform_managed || {};
+    const quota = managed.quota;
     body = `<p class="muted">${esc(t('ai.managed'))}</p>
+      <dl class="kv-list">
+        ${managed.model ? kv(t('ai.model'), managed.model) : ''}
+        ${quota ? kv(t('ai.quotaRequests'), `${quota.requests_remaining} / ${quota.requests_limit}`) : ''}
+        ${quota ? kv(t('ai.quotaTokens'), `${quota.tokens_remaining} / ${quota.tokens_limit}`) : ''}
+        ${quota?.resets_at ? kv(t('ai.quotaReset'), fmtDateTime(quota.resets_at)) : ''}
+      </dl>
       ${llm.storage_available ? `<button class="button ghost wide" data-action="ai-edit">${esc(t('ai.ownKey'))}</button>` : ''}`;
   } else {
     body = `<p class="muted">${esc(t('ai.none'))}</p>
