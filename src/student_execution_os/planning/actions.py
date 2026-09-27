@@ -59,6 +59,7 @@ def display_projection(snapshot: PlanningSnapshot, risks: dict[str, RiskResult])
 
 
 def auto_order_task_ids(snapshot: PlanningSnapshot, risks: dict[str, RiskResult]) -> tuple[str, ...]:
+    intent_rank = {task_id: index for index, task_id in enumerate(snapshot.soft_priority_task_ids)}
     def key(task):
         risk = risks.get(task.obligation.id)
         risk_rank = _RISK_RANK[risk.state] if risk else 99
@@ -71,6 +72,7 @@ def auto_order_task_ids(snapshot: PlanningSnapshot, risks: dict[str, RiskResult]
         return (
             risk_rank,
             *relevant,
+            intent_rank.get(task.obligation.id, 99),
             _IMPORTANCE_RANK[task.obligation.importance],
             task.obligation.created_at,
             task.obligation.id,
