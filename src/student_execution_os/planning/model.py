@@ -72,6 +72,8 @@ class PlanningSnapshot:
     dependencies: tuple[Dependency, ...]
     milestones: tuple[Milestone, ...]
     policy: PlanningPolicy
+    soft_priority_task_ids: tuple[str, ...] = ()
+    effort_multipliers: tuple[tuple[str, float], ...] = ()
     cutoff_reconciliation: tuple[CutoffReconciliationContext, ...] = ()
     travel_projection: TravelProjection = TravelProjection()
 
@@ -95,6 +97,11 @@ class PlanningSnapshot:
             raise ValueError("display horizon cannot start before analysis horizon")
         if self.plan_output_horizon_end > self.analysis_horizon_end:
             raise ValueError("display horizon cannot extend beyond analysis horizon")
+        if len(self.soft_priority_task_ids) > 3 or len(set(self.soft_priority_task_ids)) != len(self.soft_priority_task_ids):
+            raise ValueError("soft priority task ids must contain at most three unique tasks")
+        for category, multiplier in self.effort_multipliers:
+            if not category or not 1.0 <= float(multiplier) <= 3.0:
+                raise ValueError("planning effort multiplier is invalid")
 
 
 class FeasibilityStatus(StrEnum):
