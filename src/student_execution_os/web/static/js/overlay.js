@@ -501,7 +501,32 @@ function applyRoutineOccurrenceToTemplates(routines, item) {
 export function projectWorkRoutines(data, ops) {
   const source = data?.routines || [];
   let routines = projectList(source, ops, 'routine.', applyRoutineTemplateOp) || [];
-  for (const item of ops) routines = applyRoutineOccurrenceToTemplates(routines, item);
+  for (const item of ops) {
+    routines = applyRoutineOccurrenceToTemplates(routines, item);
+    const op = item.operation || {};
+    const p = op.payload || {};
+    if (op.type === 'routine.split') {
+      routines = routines.map((routine) => routine.id === p.template_id
+        ? { ...routine, _pending_split: p.original_recurrence_id, _pending: true }
+        : routine);
+      if (!routines.some((routine) => routine.id === op.entity_id)) {
+        const base = routines.find((routine) => routine.id === p.template_id);
+        routines.push({
+          ...(base || {}),
+          id: op.entity_id,
+          title: p.title || base?.title || '',
+          effort_minutes: p.effort_minutes ?? base?.effort_minutes ?? 0,
+          dtstart_local: p.target_local || p.original_recurrence_id,
+          status: 'ACTIVE',
+          version: 1,
+          series_end_before_local: null,
+          occurrences: [],
+          _pending: true,
+          _pending_successor: true,
+        });
+      }
+    }
+  }
   return { ...(data || {}), routines };
 }
 
@@ -673,15 +698,20 @@ function projectDay(data, ops, now) {
   const eOps = eventOps(ops);
   const xOps = executionOps(ops);
   const cOps = constraintOps(ops);
+  const rTaskOps = ops.map(routineTaskProjection).filter(Boolean);
   const out = { ...data };
   out.active_execution = projectExecution(data.active_execution || null, xOps);
   // Today lists active tasks in `tasks` and drafts in `needs_refinement`; a queued
   // change can move a task between the two or out of both.
   const known = [...(data.tasks || []), ...(data.needs_refinement || [])];
-  const touched = new Set([...tOps.map((x) => x.operation.entity_id), ...xOps.map(executionTaskId).filter(Boolean)]);
+  const touched = new Set([
+    ...tOps.map((x) => x.operation.entity_id),
+    ...xOps.map(executionTaskId).filter(Boolean),
+    ...rTaskOps.map((x) => x.operation.entity_id),
+  ]);
   const projected = projectTasks(known, ops) || [];
   const byId = new Map(projected.map((task) => [task.id, task]));
-  if (tOps.length || xOps.length) {
+  if (tOps.length || xOps.length || rTaskOps.length) {
     out.tasks = projected.filter((task) => task.status === 'ACTIVE');
     if ('needs_refinement' in data) out.needs_refinement = projected.filter((task) => task.status === 'DRAFT');
     out.next_actions = (data.next_actions || []).filter((a) => !unschedulable(byId.get(a.task_id), now));
