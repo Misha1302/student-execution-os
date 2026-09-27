@@ -24,6 +24,7 @@ class WorkRoutineTemplate:
     min_chunk_minutes: int | None
     max_chunk_minutes: int | None
     status: str
+    series_end_before_local: datetime | None
     version: int
     created_at: datetime
     updated_at: datetime
@@ -37,6 +38,8 @@ class WorkRoutineTemplate:
             raise ValidationError("work routine effort must be positive")
         if self.status not in {"ACTIVE", "CANCELLED"}:
             raise ValidationError("invalid work routine status")
+        if self.series_end_before_local is not None and self.series_end_before_local.tzinfo is not None:
+            raise ValidationError("work routine split boundary must be local civil time")
         if self.version < 1:
             raise ValidationError("work routine version must be >= 1")
         require_aware(self.created_at, "created_at")
