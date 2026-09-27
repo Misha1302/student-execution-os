@@ -209,7 +209,7 @@ class OfflineEndToEndTest(unittest.TestCase):
         self._wait_synced(page)
         sent = [op for request in self.sync_requests for op in request["operations"]]
         self.assertEqual([op["type"] for op in sent],
-                         ["task.create", "task.update", "task.start", "task.defer", "task.complete", "event.create"])
+                         ["task.create", "task.update", "execution.start", "task.defer", "task.complete", "event.create"])
         self.assertEqual(len({op["op_id"] for op in sent}), len(sent))
         applied = self._db("SELECT op_id, status FROM client_operations WHERE account_id=?", ACCOUNT)
         self.assertEqual(sorted(r["op_id"] for r in applied), sorted(op["op_id"] for op in sent))
@@ -217,6 +217,11 @@ class OfflineEndToEndTest(unittest.TestCase):
         tasks = self._task_row("Прочитать главу")
         self.assertEqual(len(tasks), 1)
         self.assertEqual((tasks[0]["title"], tasks[0]["lifecycle_status"]), ("Прочитать главу 5 и 6 по истории", "COMPLETED"))
+        sessions = self._db(
+            "SELECT state, task_id FROM execution_sessions WHERE account_id=? ORDER BY started_at", ACCOUNT
+        )
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual((sessions[0]["state"], sessions[0]["task_id"]), ("FINISHED", tasks[0]["id"]))
         events = self._db("SELECT o.title, e.starts_at, e.ends_at FROM obligations o JOIN events e "
                           "ON e.obligation_id=o.id WHERE o.account_id=?", ACCOUNT)
         self.assertEqual(len(events), 1)

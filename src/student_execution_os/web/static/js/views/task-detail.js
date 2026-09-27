@@ -4,6 +4,7 @@ import { t, code, fmtDuration, fmtDateTime, fmtRelative, now } from '../i18n.js'
 import { esc, icon, chip, riskChip, kv, empty, setBusy } from '../ui.js';
 import { lifecycle, logProgress, mutate, change, taskPlace } from '../actions.js';
 import { editTaskSheet, rescheduleSheet, deadlineText } from '../capture.js';
+import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 function fileBase64(file) {
   return new Promise((resolve, reject) => {
@@ -37,8 +38,14 @@ export default {
     if (!fresh && !result.data.some((x) => x.id === params[0])) result = await load('/api/v1/tasks', { fresh: true }).catch(() => result);
     const task = result.data.find((x) => x.id === params[0]) || null;
     if (!task) return { ...result, data: null };
-    const attachments = await load(`/api/v1/attachments?owner_kind=OBLIGATION&owner_id=${encodeURIComponent(task.id)}`, { fresh }).catch(() => ({ data: [] }));
-    return { ...result, stale: result.stale || attachments.stale, data: { ...task, attachments: attachments.data } };
+    const [attachments, active, history] = await Promise.all([
+      load(`/api/v1/attachments?owner_kind=OBLIGATION&owner_id=${encodeURIComponent(task.id)}`, { fresh }).catch(() => ({ data: [] })),
+      load('/api/v1/execution/active', { fresh }).catch(() => ({ data: { session: null } })),
+      load(`/api/v1/execution/sessions?task_id=${encodeURIComponent(task.id)}&days=365`, { fresh }).catch(() => ({ data: { sessions: [] } })),
+    ]);
+    const executionActive = active.data?.session?.task_id === task.id ? active.data.session : null;
+    return { ...result, stale: result.stale || attachments.stale || active.stale || history.stale,
+      data: { ...task, attachments: attachments.data, execution_active: executionActive, execution_sessions: history.data?.sessions || [] } };
   },
   render(task) {
     if (!task) return empty(t('task.missing'), t('task.missingHint'), 'tasks');
@@ -57,11 +64,13 @@ export default {
         <div class="chips">${active ? riskChip(task.risk) : chip(place === 'archive' ? t('place.archive') : code('status', task.status), task.status === 'COMPLETED' ? 'ok' : task.status === 'DRAFT' ? 'warn' : 'muted')}
           ${task.importance !== 'NORMAL' ? chip(code('importanceShort', task.importance), task.importance === 'LOW' ? 'muted' : 'warn') : ''}
           ${task.category !== 'GENERAL' ? chip(code('category', task.category)) : ''}
-          ${task.started_at && open ? chip(t('task.inProgress'), 'accent') : ''}</div>
+          ${task.execution_active && open ? chip(t('task.inProgress'), 'accent') : ''}</div>
         <h2 class="detail-title">${esc(task.title)}</h2>
         ${task.description ? `<p class="muted pre">${esc(task.description)}</p>` : ''}
         ${advice ? `<p class="advice">${icon('clock')} ${esc(advice)}</p>` : ''}
       </section>
+
+      ${task.execution_active ? `<section class="section">${executionCard(task.execution_active, task)}</section>` : ''}
 
       ${task.status === 'DRAFT' ? `<section class="card question-card">
         <strong>${esc(t('q.effort'))}</strong>
@@ -75,7 +84,7 @@ export default {
         <span class="progress big" aria-label="${pct}%"><span data-w="${pct}"></span></span>
         ${task.remaining_effort_low_minutes != null && task.remaining_effort_high_minutes != null ? `<p class="help">${esc(t('task.range', { lo: fmtDuration(task.remaining_effort_low_minutes), hi: fmtDuration(task.remaining_effort_high_minutes) }))}</p>` : ''}
         ${active ? `<div class="button-row">
-          ${task.started_at ? '' : `<button class="button primary" data-action="detail-start">${esc(t('today.start'))}</button>`}
+          ${task.execution_active ? '' : `<button class="button primary" data-action="detail-start">${esc(t('today.start'))}</button>`}
           <button class="button ${task.started_at ? 'primary' : ''}" data-action="detail-progress">${icon('check')}${esc(t('task.logProgress'))}</button></div>` : ''}
       </section>`}
 
@@ -105,6 +114,20 @@ export default {
       <p class="help pad">${esc(t(`lifecycle.help.${open ? 'open' : place === 'archive' ? 'ARCHIVED' : task.status}`))}</p>
 
       <section class="card">
+        <h3>${esc(t('execution.history'))}</h3>
+        ${(() => {
+          const sessions = task.execution_sessions || [];
+          const total = sessions.filter((s) => s.state === 'FINISHED').reduce((sum, s) => sum + Number(s.actual_work_seconds || 0), 0);
+          if (!sessions.length) return `<p class="muted">${esc(t('execution.noHistory'))}</p>`;
+          return `<p class="muted">${esc(t('execution.totalWorked', { d: fmtDuration(Math.round(total / 60)) }))}</p>
+            <div class="list">${sessions.slice(0, 10).map((s) => `<div class="row">
+              <span class="row-main"><strong>${esc(fmtDateTime(s.started_at))}</strong><small>${esc(code('executionState', s.state))}</small></span>
+              <span class="row-aside">${esc(fmtDuration(Math.max(1, Math.round(Number(s.actual_work_seconds || 0) / 60))))}</span>
+            </div>`).join('')}</div>`;
+        })()}
+      </section>
+
+      <section class="card">
         <h3>${esc(t('task.attachments'))}</h3>
         <div class="list">${task.attachments?.map((item) => `<a class="row" href="/api/v1/attachments/${encodeURIComponent(item.id)}/download" download>
           <span class="row-main"><strong>${esc(item.original_name)}</strong></span></a>`).join('') || `<p class="muted">${esc(t('task.noAttachments'))}</p>`}</div>
@@ -116,9 +139,25 @@ export default {
     'detail-progress'(_el, ctx) { logProgress(ctx.data); },
     'detail-edit'(el, ctx) { editTaskSheet(ctx.data, { focus: el.dataset.focus }); },
     'detail-reschedule'(_el, ctx) { rescheduleSheet(ctx.data); },
-    async 'detail-start'(el, ctx) {
+    async 'detail-start'(_el, ctx) {
+      await startExecution(ctx.data, null);
+    },
+    async 'execution-pause'(_el, ctx) {
+      if (ctx.data.execution_active) await pauseExecution(ctx.data.execution_active);
+    },
+    async 'execution-resume'(_el, ctx) {
+      if (ctx.data.execution_active) await resumeExecution(ctx.data.execution_active);
+    },
+    async 'execution-finish'(_el, ctx) {
+      if (ctx.data.execution_active) await finishExecution(ctx.data.execution_active, ctx.data);
+    },
+    'execution-review'(_el, ctx) {
+      const session = ctx.data?.execution_active;
       const task = ctx.data;
-      await change('task.start', task.id, {}, { success: t('today.started') });
+      if (session && task) reviewLongExecution(session, task);
+    },
+    async 'execution-complete'(_el, ctx) {
+      if (ctx.data.execution_active) await finishExecution(ctx.data.execution_active, ctx.data, { complete: true });
     },
     async 'detail-effort'(el, ctx) {
       const minutes = Number(el.dataset.minutes);
@@ -128,6 +167,7 @@ export default {
     'detail-lifecycle'(el, ctx) { lifecycle(ctx.data.id, ctx.data.version, el.dataset.op, { title: ctx.data.title, from: ctx.data.status }); },
   },
   mount(root, task, ctx) {
+    mountExecutionTimers(root, task?.execution_active || null, task);
     root.querySelector('[data-attachment-input]')?.addEventListener('change', async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;

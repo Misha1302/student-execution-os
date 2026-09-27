@@ -259,6 +259,18 @@ def create_app(
     async def current_plan(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.plan()
 
+    @app.get("/api/v1/execution/active")
+    async def execution_active(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.execution_active()
+
+    @app.get("/api/v1/execution/sessions")
+    async def execution_sessions(task_id: str | None = None, days: int = 90, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.execution_sessions(task_id, days)
+
+    @app.get("/api/v1/execution/sessions/{session_id}")
+    async def execution_session(session_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.execution_session(session_id)
+
     @app.get("/api/v1/plan/agenda")
     async def plan_agenda(days: int = 7, service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.agenda(days)

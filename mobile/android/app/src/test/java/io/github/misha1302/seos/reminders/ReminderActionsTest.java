@@ -28,14 +28,22 @@ public class ReminderActionsTest {
 
     @Test
     public void startAndDoneAreLifecycleOperationsWithStableIds() throws Exception {
-        JSONObject start = new JSONArray(ReminderActions.operations("START", "rem-2", Collections.singletonList("t"), PRESSED)).getJSONObject(0);
+        String startJson = ReminderActions.operations("START", "rem-2", Collections.singletonList("t"), PRESSED);
+        JSONObject start = new JSONArray(startJson).getJSONObject(0);
         JSONObject done = new JSONArray(ReminderActions.operations("DONE", "rem-2", Collections.singletonList("t"), PRESSED + 5000)).getJSONObject(0);
-        assertEquals("task.start", start.getString("type"));
+        assertEquals("execution.start", start.getString("type"));
+        assertTrue(start.getString("entity_id").startsWith("execution-"));
+        assertEquals("t", start.getJSONObject("payload").getString("task_id"));
+        assertEquals("2026-09-24T16:00:37Z", start.getJSONObject("payload").getString("occurred_at"));
+        assertEquals("rem-2", start.getJSONObject("payload").getString("reminder_message_id"));
+        assertEquals(startJson, ReminderActions.operations("START", "rem-2", Collections.singletonList("t"), PRESSED));
         assertEquals("task.complete", done.getString("type"));
-        assertEquals("push-rem-2-DONE", done.getString("op_id"));
-        // The same button on the same reminder always produces the same operation.
+        assertEquals("push-rem-2-DONE-" + (PRESSED + 5000), done.getString("op_id"));
+        assertEquals("2026-09-24T16:00:42Z", done.getJSONObject("payload").getString("occurred_at"));
+        // A WorkManager retry reuses the exact serialized operation generated on the
+        // original press, including its id and user-reported occurrence time.
         assertEquals(ReminderActions.operations("DONE", "rem-2", Collections.singletonList("t"), PRESSED),
-                ReminderActions.operations("DONE", "rem-2", Collections.singletonList("t"), PRESSED + 5000));
+                ReminderActions.operations("DONE", "rem-2", Collections.singletonList("t"), PRESSED));
     }
 
     @Test

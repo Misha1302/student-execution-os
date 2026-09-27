@@ -47,6 +47,7 @@ from student_execution_os.domain.model import (
 )
 from student_execution_os.persistence import extras
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
+from student_execution_os.execution import SQLiteExecutionStore
 
 from .serialize import event_payload, task_payload
 
@@ -54,7 +55,7 @@ APPLIED, NOOP, CONFLICT, REJECTED = "APPLIED", "NOOP", "CONFLICT", "REJECTED"
 OPEN = {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 MAX_BATCH = 100
-_REMINDER_ACTIONS = {"task.start": "START", "task.complete": "DONE", "reminder.snooze": "SNOOZE",
+_REMINDER_ACTIONS = {"task.start": "START", "execution.start": "START", "task.complete": "DONE", "reminder.snooze": "SNOOZE",
                      "task.defer": "RESCHEDULE", "task.update": "RESCHEDULE", "task.progress": "PROGRESS",
                      "reminder.done": "DONE", "reminder.ack": "DONE", "reminder.update": "RESCHEDULE"}
 
@@ -148,6 +149,11 @@ class Commands:
             "task.unarchive": self.task_unarchive,
             "task.restore": self.task_restore,
             "task.delete": self.task_delete,
+            "execution.start": self.execution_start,
+            "execution.pause": self.execution_pause,
+            "execution.resume": self.execution_resume,
+            "execution.finish": self.execution_finish,
+            "execution.cancel": self.execution_cancel,
             "reminder.snooze": self.reminder_snooze,
             "event.create": self.event_create,
             "event.update": self.event_update,
@@ -180,6 +186,24 @@ class Commands:
 
     def _task(self, task_id: str):
         return self.repo.get_task(self.account_id, task_id)
+
+    def _execution(self) -> SQLiteExecutionStore:
+        return SQLiteExecutionStore(self.repo)
+
+    def _execution_moment(self, payload: dict[str, Any]) -> datetime:
+        raw = payload.get("occurred_at")
+        if raw in (None, ""):
+            return self.now
+        try:
+            moment = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValidationError("occurred_at must be an ISO-8601 instant") from exc
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValidationError("occurred_at must include a UTC offset")
+        # This is a user-reported execution fact, not server conflict ordering.
+        if moment > self.now + timedelta(minutes=5):
+            raise ValidationError("occurred_at is too far in the future")
+        return moment
 
     def _task_out(self, task_id: str, status: str = APPLIED, code: str | None = None, message: str | None = None) -> Outcome:
         from student_execution_os.reminders.store import ReminderStore
@@ -411,23 +435,136 @@ class Commands:
         self._touch(task_id)
         return self._task_out(task_id)
 
+    # ---- actual execution ---------------------------------------------------------------
+
+    def execution_start(self, session_id: str, payload: dict[str, Any]) -> Outcome:
+        task_id = str(payload.get("task_id") or "")
+        if not _ID.match(session_id) or not _ID.match(task_id):
+            raise ValidationError("execution start requires safe session_id and task_id")
+        allowed = {"task_id", "planning_snapshot_id", "source_plan_block_id", "occurred_at"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("execution start fields are not supported: " + ", ".join(sorted(unknown)))
+        active = self._execution().active(self.account_id, self.now)
+        if active is not None and active["id"] != session_id:
+            return Outcome(
+                CONFLICT, active, "EXECUTION_ACTIVE",
+                f"already working on {active.get('task_title') or active['task_id']}",
+            )
+        occurred_at = self._execution_moment(payload)
+        entity, changed = self._execution().start(
+            self.account_id, session_id, task_id, occurred_at, self.actor,
+            planning_snapshot_id=str(payload.get("planning_snapshot_id") or "") or None,
+            source_plan_block_id=str(payload.get("source_plan_block_id") or "") or None,
+        )
+        if changed:
+            task = self._task(task_id)
+            fields = {"last_progress_at": occurred_at}
+            if task.started_at is None:
+                fields["started_at"] = occurred_at
+            self._update(task_id, **fields)
+            self._touch(task_id)
+        return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_STARTED")
+
+    def execution_pause(self, session_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("execution.pause only accepts occurred_at")
+        entity, changed = self._execution().pause(
+            self.account_id, session_id, self._execution_moment(payload), self.actor
+        )
+        return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_PAUSED")
+
+    def execution_resume(self, session_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("execution.resume only accepts occurred_at")
+        entity, changed = self._execution().resume(
+            self.account_id, session_id, self._execution_moment(payload), self.actor
+        )
+        return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_ACTIVE")
+
+    def execution_finish(self, session_id: str, payload: dict[str, Any]) -> Outcome:
+        allowed = {"outcome", "remaining_effort_minutes", "task_id", "occurred_at"}
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("execution finish fields are not supported: " + ", ".join(sorted(unknown)))
+        outcome = str(payload.get("outcome") or "KEEP_REMAINING")
+        if outcome not in {"KEEP_REMAINING", "CONTINUE_LATER", "UPDATE_REMAINING", "COMPLETE"}:
+            raise ValidationError("invalid execution finish outcome")
+        before = self._execution().payload(self.account_id, session_id, self.now)
+        task_id = str(before["task_id"])
+        supplied_task_id = str(payload.get("task_id") or "")
+        if supplied_task_id and supplied_task_id != task_id:
+            raise ValidationError("execution finish task_id does not match the session")
+        task = self._task(task_id)
+        if outcome in {"UPDATE_REMAINING", "COMPLETE"} and task.obligation.lifecycle_status not in OPEN:
+            if outcome == "COMPLETE" and task.obligation.completed_at is not None:
+                pass
+            else:
+                raise VersionConflict("task changed while the execution session was active")
+        remaining = None
+        if outcome == "UPDATE_REMAINING":
+            remaining = _minutes(payload.get("remaining_effort_minutes"), "remaining_effort_minutes", allow_zero=True)
+        occurred_at = self._execution_moment(payload)
+        entity, changed = self._execution().finish(
+            self.account_id, session_id, occurred_at, self.actor
+        )
+        if outcome == "COMPLETE":
+            current = self._task(task_id).obligation
+            if current.completed_at is None:
+                self._transition(task_id, "complete")
+            self._touch(task_id)
+        elif self._task(task_id).obligation.lifecycle_status in OPEN:
+            fields: dict[str, Any] = {"last_progress_at": occurred_at}
+            if outcome == "UPDATE_REMAINING":
+                fields["remaining_effort_minutes"] = remaining
+                fields["remaining_effort_low_minutes"] = None
+                fields["remaining_effort_high_minutes"] = None
+                current = self._task(task_id)
+                if current.estimated_total_effort_minutes is None:
+                    if remaining == 0:
+                        raise ValidationError("complete the task instead of setting unknown-effort draft remaining to zero")
+                    fields["estimated_total_effort_minutes"] = remaining
+                elif remaining is not None and remaining > current.estimated_total_effort_minutes:
+                    fields["estimated_total_effort_minutes"] = remaining
+            self._update(task_id, **fields)
+            self._touch(task_id)
+        return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_FINISHED")
+
+    def execution_cancel(self, session_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("execution.cancel only accepts occurred_at")
+        entity, changed = self._execution().cancel(
+            self.account_id, session_id, self._execution_moment(payload), self.actor
+        )
+        return Outcome(APPLIED if changed else NOOP, entity, None if changed else "ALREADY_CANCELLED")
+
     def task_complete(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("task.complete only accepts occurred_at")
         current = self._task(task_id).obligation
         # An archived task keeps completed_at: archived-after-done is still done.
         if current.completed_at is not None:
             return self._task_out(task_id, NOOP, "ALREADY_COMPLETED")
         if current.lifecycle_status not in OPEN:
             return self._task_out(task_id, CONFLICT, "TASK_CANCELLED", "task was cancelled; reopen it first")
+        execution_time = self._execution_moment(payload)
+        self._execution().finish_active_for_task(self.account_id, task_id, execution_time, self.actor)
         self._transition(task_id, "complete")
         self._touch(task_id)
         return self._task_out(task_id)
 
     def task_cancel(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("task.cancel only accepts occurred_at")
         current = self._task(task_id).obligation
         if current.completed_at is not None:
             return self._task_out(task_id, CONFLICT, "TASK_COMPLETED", "task was completed; reopen it first")
         if current.lifecycle_status not in OPEN:  # cancelled, or archived after cancelling
             return self._task_out(task_id, NOOP, "ALREADY_CANCELLED")
+        occurred_at = self._execution_moment(payload)
+        active_execution = self._execution().active(self.account_id, self.now)
+        if active_execution is not None and active_execution["task_id"] == task_id:
+            self._execution().cancel(self.account_id, active_execution["id"], occurred_at, self.actor)
         self._transition(task_id, "cancel")
         self._touch(task_id)
         return self._task_out(task_id)
@@ -458,11 +595,17 @@ class Commands:
         return self._task_out(task_id)
 
     def task_archive(self, task_id: str, payload: dict[str, Any]) -> Outcome:
+        if set(payload) - {"occurred_at"}:
+            raise ValidationError("task.archive only accepts occurred_at")
         status = self._task(task_id).obligation.lifecycle_status
         if status is LifecycleStatus.ARCHIVED:
             return self._task_out(task_id, NOOP, "ALREADY_ARCHIVED")
         if status in OPEN:
-            # Put away something still open: it is "not doing it" first.
+            # Put away something still open: stop actual execution before closing it.
+            occurred_at = self._execution_moment(payload)
+            active_execution = self._execution().active(self.account_id, self.now)
+            if active_execution is not None and active_execution["task_id"] == task_id:
+                self._execution().cancel(self.account_id, active_execution["id"], occurred_at, self.actor)
             self._transition(task_id, "cancel")
         self._transition(task_id, "archive")
         return self._task_out(task_id)

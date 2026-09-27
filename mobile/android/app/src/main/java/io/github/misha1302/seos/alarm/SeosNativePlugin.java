@@ -1,13 +1,17 @@
 package io.github.misha1302.seos.alarm;
 
+import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
+import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.work.WorkManager;
+import io.github.misha1302.seos.MainActivity;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -100,6 +104,93 @@ public class SeosNativePlugin extends Plugin {
         JSObject out = new JSObject();
         out.put("removed", removed);
         call.resolve(out);
+    }
+
+    private static final String EXECUTION_CHANNEL = "execution";
+    private static final int EXECUTION_NOTIFICATION_ID = 4301;
+
+    private PendingIntent executionIntent(String action, String sessionId, int requestCode) {
+        Uri uri = Uri.parse("seos://open/today?execution_action=" + Uri.encode(action)
+                + "&session_id=" + Uri.encode(sessionId));
+        Intent intent = new Intent(getContext(), MainActivity.class)
+                .setAction("io.github.misha1302.seos.EXECUTION_" + action)
+                .setData(uri)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        return PendingIntent.getActivity(
+                getContext(), requestCode, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+    }
+
+    /**
+     * One ongoing phone surface for the account's current execution session. The
+     * chronometer is entirely OS-side: no second-by-second bridge/server writes.
+     * Action intents reopen the explicit app flow; Finish never guesses Task outcome.
+     */
+    @PluginMethod
+    public void showExecution(PluginCall call) {
+        String sessionId = call.getString("id");
+        String title = call.getString("title", "Execution OS");
+        String state = call.getString("state", "ACTIVE");
+        Long startedAt = call.getLong("started_at_ms");
+        Long actualSeconds = call.getLong("actual_work_seconds", 0L);
+        if (sessionId == null || sessionId.isEmpty()) {
+            call.reject("execution id is required", "INVALID");
+            return;
+        }
+        NotificationManager manager = getContext().getSystemService(NotificationManager.class);
+        if (manager == null) {
+            call.reject("notification manager unavailable", "UNAVAILABLE");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    EXECUTION_CHANNEL, "Current work", NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Ongoing Execution OS work session");
+            channel.setShowBadge(false);
+            manager.createNotificationChannel(channel);
+        }
+        boolean paused = "PAUSED".equals(state);
+        long elapsed = Math.max(0L, actualSeconds == null ? 0L : actualSeconds);
+        long base = System.currentTimeMillis() - elapsed * 1000L;
+        if (!paused && startedAt != null && startedAt > 0) {
+            // actual_work_seconds excludes prior pauses; the current active segment
+            // begins at started_at_ms supplied by the web execution projection.
+            base = System.currentTimeMillis() - elapsed * 1000L;
+        }
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(getContext(), EXECUTION_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentTitle(title)
+                .setContentText(paused ? "Paused" : "Execution OS")
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setSilent(true)
+                .setContentIntent(executionIntent("open", sessionId, 43010))
+                .addAction(
+                        paused ? android.R.drawable.ic_media_play : android.R.drawable.ic_media_pause,
+                        paused ? "Resume" : "Pause",
+                        executionIntent(paused ? "resume" : "pause", sessionId, paused ? 43012 : 43011)
+                )
+                .addAction(
+                        android.R.drawable.ic_menu_close_clear_cancel,
+                        "Finish",
+                        executionIntent("finish", sessionId, 43013)
+                );
+        if (!paused) {
+            builder.setWhen(base).setUsesChronometer(true).setShowWhen(true);
+        } else {
+            long minutes = elapsed / 60L;
+            builder.setContentText("Paused · " + minutes + " min");
+        }
+        manager.notify("seos-execution", EXECUTION_NOTIFICATION_ID, builder.build());
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void clearExecution(PluginCall call) {
+        NotificationManagerCompat.from(getContext()).cancel("seos-execution", EXECUTION_NOTIFICATION_ID);
+        call.resolve();
     }
 
     /** A local alarm in five seconds (not a reminder on the server) to hear and see it. */

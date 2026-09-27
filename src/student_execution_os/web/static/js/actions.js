@@ -60,10 +60,14 @@ export function lifecycle(id, _version, action, { title, kind = 'task', from = n
   // Undo puts the item back where it was: an archived open task returns to work.
   const undoOf = { complete: 'reopen', cancel: 'reopen', archive: from && from !== 'COMPLETED' ? 'restore' : 'unarchive',
     restore: from === 'ARCHIVED' ? 'archive' : from === 'CANCELLED' ? 'cancel' : null }[action];
-  const run = () => change(`${kind}.${action}`, id, {}, {
-    success: t(`lifecycle.done.${action}`),
-    undo: undoOf ? () => change(`${kind}.${undoOf}`, id, {}) : null,
-  });
+  const run = () => {
+    const payload = kind === 'task' && ['complete', 'cancel', 'archive'].includes(action)
+      ? { occurred_at: new Date().toISOString() } : {};
+    return change(`${kind}.${action}`, id, payload, {
+      success: t(`lifecycle.done.${action}`),
+      undo: undoOf ? () => change(`${kind}.${undoOf}`, id, {}) : null,
+    });
+  };
   if (action === 'delete') {
     return confirmSheet({
       title: t(kind === 'event' ? 'lifecycle.deleteEventTitle' : 'lifecycle.deleteTitle'),

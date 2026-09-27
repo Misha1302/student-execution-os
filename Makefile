@@ -6,6 +6,7 @@ restore:
 static:
 	PYTHONPATH=src python -m compileall -q src tests
 	find src/student_execution_os/web/static -name '*.js' -print0 | xargs -0 -n1 node --check
+	node tests/js/execution_overlay_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
 
 worker:

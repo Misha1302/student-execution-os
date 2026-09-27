@@ -237,7 +237,7 @@ function syncSheet() {
   const { items } = syncState();
   const pending = items.filter((x) => x.state === 'PENDING');
   const problems = items.filter((x) => x.state !== 'PENDING');
-  const titleOf = (op, item) => item.result?.entity?.title || op.payload?.title
+  const titleOf = (op, item) => item.result?.entity?.title || item.result?.entity?.task_title || op.payload?.title
     || (peek('/api/v1/tasks') || []).find((x) => x.id === op.entity_id)?.title
     || (peek('/api/v1/today')?.plan?.canonical_events || []).find((x) => x.id === op.entity_id)?.title || t('sync.someTask');
   const row = (item, problem) => {
@@ -250,7 +250,8 @@ function syncSheet() {
       : new Date(item.queued_at).toLocaleString();
     return `<article class="row"><span class="row-main"><strong>${esc(t(`sync.op.${op.type}`))} · ${esc(titleOf(op, item))}</strong>
       <small>${esc(detail)}</small></span>
-      ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(t('sync.dismiss'))}</button>` : ''}</article>`;
+      ${problem && item.result?.code === 'EXECUTION_ACTIVE' ? `<button type="button" class="button ghost" data-nav="today" data-close-sheet>${esc(t('sync.openCurrentExecution'))}</button>` : ''}
+      ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(item.result?.code === 'EXECUTION_ACTIVE' ? t('sync.keepCurrentExecution') : t('sync.dismiss'))}</button>` : ''}</article>`;
   };
   const dialog = openSheet({
     title: t('sync.title'),
@@ -361,7 +362,7 @@ function handleBack() {
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
 const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
-  '/api/v1/reminders', '/api/v1/notifications/health'];
+  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/notifications/health'];
 let lastPrefetch = 0;
 function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
