@@ -18,6 +18,7 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _
 from student_execution_os.planning.model import CutoffReconciliationContext
 from student_execution_os.reconciliation.repository import SQLiteReconciliationRepository
 from student_execution_os.recurrence import SQLiteRecurrenceRepository
+from student_execution_os.reflection import SQLiteReflectionStore
 from student_execution_os.travel.projection import TravelProjectionBuilder
 from student_execution_os.travel.repository import SQLiteTravelRepository
 
@@ -31,6 +32,7 @@ class PlanningStateSource(Protocol):
     def list_time_constraints(self, account_id: str) -> list[UserTimeConstraint]: ...
     def list_cutoff_reconciliation(self, account_id: str) -> list[CutoffReconciliationContext]: ...
     def build_travel_projection(self, account_id: str, events: tuple[Event, ...], analysis_horizon_start, analysis_horizon_end): ...
+    def planning_signals(self, account_id: str, at): ...
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,9 @@ class SQLitePlanningStateSource:
 
     def get_server_revision(self, account_id: str) -> int:
         return self.repository.get_server_revision(account_id)
+
+    def planning_signals(self, account_id: str, at):
+        return SQLiteReflectionStore(self.repository).planning_signals(account_id, at)
 
     def list_tasks(self, account_id: str) -> list[Task]:
         self.repository._require_account(account_id)
