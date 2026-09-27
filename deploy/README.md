@@ -365,8 +365,11 @@ sudo chown 10001:10001 ~/seos-staging/shared/secrets/api \
 sudo chmod 0700 ~/seos-staging/shared/secrets/api
 sudo chmod 0400 ~/seos-staging/shared/secrets/api/platform-groq-1.key \
   ~/seos-staging/shared/secrets/api/platform-groq-2.key
+```
 
-cat >>deploy/.env <<'EOF'
+Set or replace these exact entries in `deploy/.env` (do not append duplicate names):
+
+```dotenv
 SEOS_API_SECRETS_DIR=../../shared/secrets/api
 SEOS_STARTER_LLM_ENABLED=1
 SEOS_PLATFORM_LLM_PROVIDER=openai-compatible
@@ -380,8 +383,11 @@ SEOS_STARTER_LLM_GLOBAL_REQUEST_LIMIT=10000
 SEOS_STARTER_LLM_GLOBAL_TOKEN_LIMIT=10000000
 SEOS_STARTER_LLM_MAX_OUTPUT_TOKENS=1200
 SEOS_STARTER_LLM_TOKEN_RESERVATION_OVERHEAD=256
-EOF
+```
 
+Then validate and recreate only the API service:
+
+```bash
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env config
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build api
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env exec api \
