@@ -1150,7 +1150,7 @@ class Commands:
     # ---- daily intent / reflection calibration -----------------------------------------
 
     def intent_set(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
-        allowed = {"local_date", "priority_task_ids", "note"}
+        allowed = {"local_date", "priority_task_ids", "note", "expected_version"}
         unknown = set(payload) - allowed
         if unknown:
             raise ValidationError("daily intent fields are not supported: " + ", ".join(sorted(unknown)))
@@ -1161,14 +1161,16 @@ class Commands:
         item = SQLiteReflectionStore(self.repo).set_intent(
             self.account_id, local_date, [str(value) for value in raw],
             _description(payload.get("note")), self.actor,
+            expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
         )
         return Outcome(APPLIED, item)
 
     def intent_close(self, _entity_id: str, payload: dict[str, Any]) -> Outcome:
-        if set(payload) - {"local_date"}:
-            raise ValidationError("intent.close only accepts local_date")
+        if set(payload) - {"local_date", "expected_version"}:
+            raise ValidationError("intent.close only accepts local_date and expected_version")
         item = SQLiteReflectionStore(self.repo).close_intent(
-            self.account_id, str(payload.get("local_date") or ""), self.actor
+            self.account_id, str(payload.get("local_date") or ""), self.actor,
+            expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
         )
         return Outcome(APPLIED, item)
 
