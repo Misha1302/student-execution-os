@@ -227,16 +227,20 @@ class SQLiteReflectionStore:
         )
 
     def _baseline_plan_for_day(self, account_id: str, start: datetime, end: datetime):
+        # Prefer the first plan actually generated during the day. This is the
+        # observable morning baseline; later replans belong to churn, not "planned".
         row = self.connection.execute(
-            "SELECT id FROM plan_snapshots WHERE account_id=? AND generated_at<=? "
-            "AND horizon_start<? AND horizon_end>? ORDER BY generated_at DESC LIMIT 1",
-            (account_id, _iso(start), _iso(end), _iso(start)),
+            "SELECT id FROM plan_snapshots WHERE account_id=? AND generated_at>=? AND generated_at<? "
+            "AND horizon_start<? AND horizon_end>? ORDER BY generated_at ASC,id ASC LIMIT 1",
+            (account_id, _iso(start), _iso(end), _iso(end), _iso(start)),
         ).fetchone()
         if row is None:
+            # If the app never planned during this local day, fall back to the last
+            # plan already in force at midnight instead of inventing zero planned work.
             row = self.connection.execute(
-                "SELECT id FROM plan_snapshots WHERE account_id=? AND generated_at>? AND generated_at<? "
-                "AND horizon_start<? AND horizon_end>? ORDER BY generated_at ASC LIMIT 1",
-                (account_id, _iso(start), _iso(end), _iso(end), _iso(start)),
+                "SELECT id FROM plan_snapshots WHERE account_id=? AND generated_at<? "
+                "AND horizon_start<? AND horizon_end>? ORDER BY generated_at DESC,id DESC LIMIT 1",
+                (account_id, _iso(start), _iso(end), _iso(start)),
             ).fetchone()
         return None if row is None else row["id"]
 
