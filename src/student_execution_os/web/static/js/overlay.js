@@ -787,6 +787,12 @@ function projectDay(data, ops, now) {
     if (out.current_action && unschedulable(byId.get(out.current_action.task_id), now)) out.current_action = null;
   }
   out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, cOps, now);
+  const preferenceOps = ops.filter((x) => ['intent.set', 'intent.close', 'calibration.set'].includes(x.operation?.type));
+  if (preferenceOps.length && out.plan) {
+    out.plan = { ...out.plan, blocks: (out.plan.blocks || []).filter((b) => b.type !== 'WORK'), pending_preferences: true };
+    out.next_actions = [];
+    if (!out.active_execution) out.current_action = null;
+  }
   if (ops.length) out.pending_changes = ops.filter((x) => x.state === 'PENDING').length;
   return out;
 }
