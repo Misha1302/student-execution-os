@@ -204,7 +204,7 @@ class SQLiteReflectionStore:
 
     def planning_signals(self, account_id: str, at: datetime) -> tuple[tuple[str, ...], dict[str, float]]:
         current = self.intent(account_id, self.local_date(account_id, at))
-        priorities = tuple(current["priority_task_ids"]) if current is not None else ()
+        priorities = tuple(current["priority_task_ids"]) if current is not None and current["closed_at"] is None else ()
         prefs = self.calibration_preferences(account_id)
         multipliers = {
             category: float(item["safety_multiplier"])
