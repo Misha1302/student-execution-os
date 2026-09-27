@@ -594,6 +594,40 @@ function projectReflection(data, ops) {
   return out;
 }
 
+
+function newNote(id, payload, at) {
+  return {
+    kind: 'NOTE', id, content: String(payload.content || ''), transcript: null,
+    transcription_state: 'NONE', transcription_error: null, lifecycle_status: 'ACTIVE',
+    source_kind: payload.source_kind || 'CAPTURE', source_id: payload.source_id || null,
+    created_at: at, updated_at: at, version: 1, audio: null, links: [], _pending: true,
+  };
+}
+export function applyNoteOp(note, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  const at = item.queued_at || new Date().toISOString();
+  if (op.type === 'note.create') return note || newNote(op.entity_id, p, at);
+  if (!note) return note;
+  if (op.type === 'note.delete') return null;
+  const next = { ...note, links: [...(note.links || [])], updated_at: at, _pending: true };
+  if (op.type === 'note.update') next.content = String(p.content || '');
+  else if (op.type === 'note.archive') next.lifecycle_status = 'ARCHIVED';
+  else if (op.type === 'note.unarchive') next.lifecycle_status = 'ACTIVE';
+  else if (op.type === 'note.transcript.set') {
+    next.transcript = String(p.transcript || ''); next.transcription_state = 'READY'; next.transcription_error = null;
+  } else if (op.type === 'note.transcript.fail') {
+    next.transcription_state = 'FAILED'; next.transcription_error = p.error_code || 'TRANSCRIPTION_FAILED';
+  } else if (op.type === 'note.link') {
+    if (!next.links.some((x) => x.target_kind === p.target_kind && x.target_id === p.target_id)) {
+      next.links.push({ target_kind: p.target_kind, target_id: p.target_id, created_at: at });
+    }
+  } else return note;
+  next.version = Number(note.version || 1) + (op.type === 'note.link' ? 0 : 1);
+  return next;
+}
+export const projectNotes = (list, ops) => projectList(list, ops, 'note.', applyNoteOp);
+
 export function applyEventOp(event, item) {
   const op = item.operation;
   const p = op.payload || {};
@@ -755,6 +789,7 @@ function taskOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('
 function eventOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('event.')); }
 function executionOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('execution.')); }
 function constraintOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('constraint.')); }
+function noteOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('note.')); }
 
 // Today-shaped models: /api/v1/today and /api/v1/plan/agenda.
 function projectDay(data, ops, now) {
@@ -762,6 +797,7 @@ function projectDay(data, ops, now) {
   const eOps = eventOps(ops);
   const xOps = executionOps(ops);
   const cOps = constraintOps(ops);
+  const nOps = noteOps(ops);
   const rTaskOps = ops.map(routineTaskProjection).filter(Boolean);
   const out = { ...data };
   out.active_execution = projectExecution(data.active_execution || null, xOps);
@@ -786,6 +822,8 @@ function projectDay(data, ops, now) {
     out.unplanned_pending = projected.filter((task) => task.status === 'ACTIVE' && touched.has(task.id) && !planned.has(task.id)).map((task) => task.id);
     if (out.current_action && unschedulable(byId.get(out.current_action.task_id), now)) out.current_action = null;
   }
+  if (Array.isArray(data.events)) out.events = (projectEvents(data.events, eOps) || []).filter((e) => e.status === 'ACTIVE');
+  if (Array.isArray(data.inbox_notes)) out.inbox_notes = (projectNotes(data.inbox_notes, nOps) || []).filter((n) => n.lifecycle_status === 'ACTIVE' && !(n.links || []).length);
   out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, cOps, now);
   const preferenceOps = ops.filter((x) => ['intent.set', 'intent.close', 'calibration.set'].includes(x.operation?.type));
   if (preferenceOps.length && out.plan) {
@@ -805,6 +843,11 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   const base = clone(data);
   if (route === '/api/v1/tasks') return projectTasks(base, ops);
   if (route === '/api/v1/events') return projectEvents(base, eventOps(ops));
+  if (route === '/api/v1/notes') return projectNotes(base, noteOps(ops));
+  if (route.startsWith('/api/v1/notes/')) {
+    const projected = projectNotes(base ? [base] : [], noteOps(ops));
+    return projected[0] || base;
+  }
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
   if (route === '/api/v1/reminders') return projectReminders(base, ops);

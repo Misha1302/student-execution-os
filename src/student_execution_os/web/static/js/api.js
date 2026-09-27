@@ -115,6 +115,50 @@ export async function api(path, { method = 'GET', body, server, timeoutMs = 2000
   return payload;
 }
 
+
+export async function apiUpload(path, blob, { mimeType = 'application/octet-stream', filename = null, timeoutMs = 60000 } = {}) {
+  const base = session.server;
+  if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
+  const headers = { Accept: 'application/json', 'Content-Type': mimeType };
+  if (filename) headers['X-Filename'] = String(filename).slice(0, 255);
+  if (session.token) headers.Authorization = `Bearer ${session.token}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${base}${path}`, { method: 'PUT', headers, body: blob, signal: controller.signal });
+  } catch (err) {
+    throw new ApiError(err?.name === 'AbortError' ? 'Request timed out' : 'Network unavailable', { code: 'NETWORK', retryable: true });
+  } finally { clearTimeout(timer); }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = payload?.error || {};
+    throw new ApiError(error.message || `HTTP ${response.status}`, { code: error.code || `HTTP_${response.status}`, status: response.status, retryable: Boolean(error.retryable) });
+  }
+  return payload;
+}
+
+export async function apiBlob(path, { timeoutMs = 60000 } = {}) {
+  const base = session.server;
+  if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
+  const headers = {};
+  if (session.token) headers.Authorization = `Bearer ${session.token}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${base}${path}`, { headers, signal: controller.signal });
+  } catch (err) {
+    throw new ApiError(err?.name === 'AbortError' ? 'Request timed out' : 'Network unavailable', { code: 'NETWORK', retryable: true });
+  } finally { clearTimeout(timer); }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const error = payload?.error || {};
+    throw new ApiError(error.message || `HTTP ${response.status}`, { code: error.code || `HTTP_${response.status}`, status: response.status, retryable: Boolean(error.retryable) });
+  }
+  return response.blob();
+}
+
 export async function probeServer(url) {
   const health = await api('/api/v1/health', { server: normalizeServer(url), timeoutMs: 8000 });
   if (health?.service !== 'student-execution-os') throw new ApiError('Not a Student Execution OS server', { code: 'NOT_SEOS' });
