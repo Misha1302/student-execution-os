@@ -392,6 +392,14 @@ def create_app(
     async def work_routines(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.work_routines()
 
+    @app.get("/api/v1/reflection")
+    async def reflection(days: int = 7, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.reflection(days)
+
+    @app.get("/api/v1/reflection/daily")
+    async def reflection_daily(local_date: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.reflection_daily(local_date)
+
     @app.get("/api/v1/calendar")
     async def calendar(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.calendar()
