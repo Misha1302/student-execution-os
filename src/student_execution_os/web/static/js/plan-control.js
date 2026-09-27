@@ -1,7 +1,7 @@
 import { api } from './api.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
-import { t, code, fmtDateTime, fmtDuration } from './i18n.js';
+import { t, fmtDateTime, fmtDuration } from './i18n.js';
 import { esc, openSheet, toast, errorMessage, localInputValue, isoFromLocalInput } from './ui.js';
 
 function previewCopy(preview) {
@@ -11,8 +11,8 @@ function previewCopy(preview) {
   const after = preview.after?.feasibility_status || 'UNKNOWN';
   const changed = Number(preview.delta?.added_blocks || 0) + Number(preview.delta?.removed_blocks || 0);
   const worse = before !== 'INFEASIBLE' && after === 'INFEASIBLE';
-  return `<div class="banner ${worse ? 'danger' : 'info'}"><div>
-      <strong>${esc(t('plan.previewStatus', { before: code('feasibility', before), after: code('feasibility', after) }))}</strong>
+  return `<div class="banner ${worse ? 'warn' : ''}"><div>
+      <strong>${esc(t('plan.previewStatus', { before: t('status.title.' + before), after: t('status.title.' + after) }))}</strong>
       <p>${esc(t('plan.previewChanged', { n: changed }))}</p>
     </div></div>`;
 }
