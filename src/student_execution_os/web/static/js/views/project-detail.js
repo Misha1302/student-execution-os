@@ -8,7 +8,7 @@ function taskRow(task) {
   const done = task.status === 'COMPLETED';
   return `<div class="row" data-id="${esc(task.id)}">
     <button class="icon-button" data-action="${done ? 'project-reopen-task' : 'project-complete-task'}" data-id="${esc(task.id)}"
-      aria-label="${esc(done ? t('lifecycle.reopen') : t('lifecycle.complete'))}">${icon(done ? 'check' : 'circle')}</button>
+      aria-label="${esc(done ? t('lifecycle.reopen') : t('lifecycle.complete'))}">${icon(done ? 'check' : 'task')}</button>
     <button class="row-main" data-action="open-task" data-id="${esc(task.id)}">
       <strong>${esc(task.title)}</strong>
       <small>${task.remaining_effort_minutes == null ? esc(t('card.effort.unknown')) : esc(t('tasks.left', { d: fmtDuration(task.remaining_effort_minutes) }))}</small>
@@ -26,7 +26,7 @@ function milestoneRow(m) {
     <span class="row-main"><strong>${esc(m.title)}</strong>
       <small>${esc(fmtDateTime(m.marker_at))} · ${esc(fmtRelative(m.marker_at))}${m.consequence ? ` · ${esc(m.consequence)}` : ''}</small></span>
     ${m.overdue && m.status === 'ACTIVE' ? chip(t('project.overdueMilestone'), 'danger') : chip(code('milestoneRole', m.role), 'muted')}
-    <button class="icon-button" data-action="milestone-delete" data-id="${esc(m.id)}" aria-label="${esc(t('common.delete'))}">×</button>
+    <button class="icon-button" data-action="milestone-delete" data-id="${esc(m.id)}" aria-label="${esc(t('project.removeMilestone'))}">×</button>
   </div>`;
 }
 
@@ -144,10 +144,9 @@ export default {
       if (m) await change('milestone.delete', m.id, { expected_version: m.version }, { success: t('project.milestoneRemoved') });
     },
     'open-task'(el) { shell.go('task', { params: [el.dataset.id] }); },
-    'open-event'(el) { import('../events.js').then(({ eventSheet }) => {
-      const event = (this._events || []).find((x) => x.id === el.dataset.id);
+    'open-event'(el, ctx) { import('../events.js').then(({ eventSheet }) => {
+      const event = (ctx.data.members || []).find((x) => x.kind === 'EVENT' && x.id === el.dataset.id);
       if (event) eventSheet(event);
     }); },
   },
-  mount(_root, project) { this._events = (project.members || []).filter((x) => x.kind === 'EVENT'); },
 };
