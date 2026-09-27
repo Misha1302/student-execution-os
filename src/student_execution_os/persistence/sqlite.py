@@ -1491,3 +1491,30 @@ class SQLiteCanonicalRepository:
                 actor=actor,
             )
         return self.get_time_constraint(account_id, constraint_id)
+
+    def delete_time_constraint(
+        self,
+        *,
+        account_id: str,
+        constraint_id: str,
+        expected_version: int,
+        actor: ActorCategory,
+    ) -> None:
+        current = self.get_time_constraint(account_id, constraint_id)
+        if current.version != expected_version:
+            raise VersionConflict(f"expected constraint version {expected_version}, current {current.version}")
+        with self._tx() as conn:
+            cur = conn.execute(
+                "DELETE FROM user_time_constraints WHERE account_id=? AND id=? AND version=?",
+                (account_id, constraint_id, expected_version),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("constraint version changed before delete")
+            self._record_change(
+                conn,
+                account_id=account_id,
+                entity_type="USER_TIME_CONSTRAINT",
+                entity_id=constraint_id,
+                action="DELETE_CONSTRAINT",
+                actor=actor,
+            )
