@@ -219,6 +219,11 @@ _DIRECT_ACCOUNT_TABLES = (
     "work_routine_occurrences",
     "daily_intents",
     "calibration_preferences",
+    "notes",
+    "note_audio",
+    "note_links",
+    "deleted_notes",
+    "beta_feedback",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

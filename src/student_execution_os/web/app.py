@@ -303,6 +303,38 @@ def create_app(
     async def get_project(project_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.project(project_id)
 
+
+    @app.get("/api/v1/notes")
+    async def list_notes(q: str = "", include_archived: bool = False, service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.notes(q, include_archived)
+
+    @app.get("/api/v1/notes/{note_id}")
+    async def get_note(note_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.note(note_id)
+
+    @app.put("/api/v1/notes/{note_id}/audio", status_code=201)
+    async def put_note_audio(note_id: str, request: Request, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        content = await request.body()
+        return service.save_note_audio(
+            note_id,
+            request.headers.get("content-type", "application/octet-stream"),
+            request.headers.get("x-filename"),
+            content,
+        )
+
+    @app.get("/api/v1/notes/{note_id}/audio")
+    async def get_note_audio(note_id: str, service: UiService = Depends(current_service)) -> Response:
+        metadata, content = service.note_audio(note_id)
+        return Response(
+            content=content,
+            media_type=metadata["mime_type"],
+            headers={"Content-Disposition": "inline", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.post("/api/v1/feedback", status_code=201)
+    async def beta_feedback(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.beta_feedback(payload)
+
     @app.get("/api/v1/tasks")
     async def list_tasks(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.tasks()

@@ -37,6 +37,7 @@ from student_execution_os.domain.model import (
 )
 from student_execution_os.persistence import extras
 from student_execution_os.execution import SQLiteExecutionStore
+from student_execution_os.notes import SQLiteNoteRepository
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 from student_execution_os.persistence.product import SQLiteAttachmentRepository, SQLiteSavedViewRepository
 from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
@@ -526,6 +527,19 @@ class UiService:
             from zoneinfo import ZoneInfo
             zone = ZoneInfo(profile.timezone_name)
             local_day = datetime.fromisoformat(local_date).date()
+            day_start = datetime.combine(local_day, datetime.min.time(), zone)
+            day_end = day_start + timedelta(days=1)
+            state_source = SQLitePlanningStateSource(repo)
+            day_models = [
+                *state_source.list_events(self.account_id),
+                *state_source.list_recurring_events(self.account_id, day_start, day_end),
+            ]
+            day_events = self._events_payload(repo, [
+                event for event in day_models
+                if event.obligation.lifecycle_status.value == "ACTIVE"
+                and event.interval.starts_at < day_end and day_start < event.interval.ends_at
+            ])
+            inbox_notes = SQLiteNoteRepository(repo).list_unlinked(self.account_id, limit=3)
             windows = planning_intervals(profile, local_day, 1)
             capacity_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
             occupied_parts: list[tuple[datetime, datetime]] = []
@@ -569,6 +583,8 @@ class UiService:
                 "needs_refinement": needs_refinement,
                 "next_actions": _jsonify(outcome.next_actions),
                 "tasks": tasks,
+                "events": day_events,
+                "inbox_notes": inbox_notes,
                 "travel": {
                     "transitions": transitions,
                     "unknown_reasons": list(snapshot.travel_projection.unknown_reasons),
@@ -1310,6 +1326,46 @@ class UiService:
                     "note": "Exact address and coordinates remain server-side and are not serialized by this endpoint.",
                 },
             }
+
+
+    def notes(self, q: str = "", include_archived: bool = False) -> list[dict[str, Any]]:
+        with self._repo() as repo:
+            return SQLiteNoteRepository(repo).list(
+                self.account_id, q=q, include_archived=include_archived, limit=200
+            )
+
+    def note(self, note_id: str) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteNoteRepository(repo).get(self.account_id, note_id)
+
+    def save_note_audio(self, note_id: str, mime_type: str, original_name: str | None, content: bytes) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteNoteRepository(repo).save_audio(
+                self.account_id, note_id, mime_type, original_name, content, self._now(), ActorCategory.USER_UI
+            )
+
+    def note_audio(self, note_id: str) -> tuple[dict[str, Any], bytes]:
+        with self._repo() as repo:
+            return SQLiteNoteRepository(repo).audio(self.account_id, note_id)
+
+    def beta_feedback(self, payload: dict[str, Any]) -> dict[str, Any]:
+        message = str(payload.get("message") or "").strip()
+        if not message or len(message) > 5000:
+            raise ValueError("feedback message is required and must be at most 5000 characters")
+        allowed = {"client_version", "platform", "app_version", "timestamp"}
+        context = payload.get("technical_context") or {}
+        if not isinstance(context, dict) or set(context) - allowed:
+            raise ValueError("technical_context contains unsupported fields")
+        import json
+        feedback_id = str(uuid4())
+        with self._repo() as repo:
+            revision = repo.get_server_revision(self.account_id)
+            repo.connection.execute(
+                "INSERT INTO beta_feedback(id,account_id,message,technical_context_json,server_revision,created_at) VALUES (?,?,?,?,?,?)",
+                (feedback_id, self.account_id, message, json.dumps(context, sort_keys=True), revision, _jsonify(self._now())),
+            )
+            repo.connection.commit()
+        return {"id": feedback_id, "status": "RECEIVED"}
 
     def account_export(self) -> dict[str, Any]:
         return SQLiteDataLifecycle(self.database, now=self._now).export_account(self.account_id).to_dict()
