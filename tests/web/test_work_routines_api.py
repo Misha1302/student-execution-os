@@ -116,6 +116,59 @@ class WorkRoutinesApiTest(unittest.TestCase):
         self.assertEqual(occurrence["task_id"], task_id)
         self.assertEqual(occurrence["override_target_local"], "2026-10-01T20:00:00")
 
+    def test_split_this_and_future_replaces_untouched_materialized_future(self):
+        self.create_routine()
+        before = self.client.get("/api/v1/work-routines").json()["routines"][0]
+        occurrences = before["occurrences"]
+        boundary = occurrences[1]
+        old_future_ids = {
+            item["task_id"] for item in occurrences
+            if item["original_recurrence_id"] >= boundary["original_recurrence_id"]
+        }
+
+        split = self.sync("op-routine-split", "routine.split", "routine-study-successor", {
+            "template_id": before["id"],
+            "original_recurrence_id": boundary["original_recurrence_id"],
+            "expected_version": before["version"],
+            "title": "Algorithms deep",
+            "effort_minutes": 60,
+            "target_local": "2026-10-02T19:30",
+            "timezone_name": "UTC",
+        })
+        self.assertEqual(split["status"], "APPLIED", split)
+
+        routines = self.client.get("/api/v1/work-routines").json()["routines"]
+        predecessor = next(x for x in routines if x["id"] == "routine-study-1")
+        successor = next(x for x in routines if x["id"] == "routine-study-successor")
+        self.assertEqual(predecessor["series_end_before_local"], boundary["original_recurrence_id"])
+        self.assertEqual(successor["dtstart_local"], "2026-10-02T19:30:00")
+        self.assertEqual(successor["effort_minutes"], 60)
+        # COUNT=3 split at the second occurrence leaves exactly two successor occurrences.
+        self.assertIn("COUNT=2", successor["recurrence_rule"])
+        tasks = {x["id"] for x in self.client.get("/api/v1/tasks").json()}
+        self.assertFalse(old_future_ids & tasks, "untouched old future materializations must be removed")
+        self.assertEqual(len(successor["occurrences"]), 2)
+
+    def test_split_refuses_to_rewrite_started_future_history(self):
+        self.create_routine()
+        routine = self.client.get("/api/v1/work-routines").json()["routines"][0]
+        boundary = routine["occurrences"][1]
+        started = self.sync("op-routine-start", "execution.start", "execution-routine-start", {
+            "task_id": boundary["task_id"], "occurred_at": NOW.isoformat(),
+        })
+        self.assertEqual(started["status"], "APPLIED")
+
+        result = self.sync("op-routine-split-conflict", "routine.split", "routine-conflict-successor", {
+            "template_id": routine["id"],
+            "original_recurrence_id": boundary["original_recurrence_id"],
+            "expected_version": routine["version"],
+            "title": "Changed",
+            "effort_minutes": 50,
+        })
+        self.assertEqual(result["status"], "CONFLICT")
+        current = next(x for x in self.client.get("/api/v1/work-routines").json()["routines"] if x["id"] == routine["id"])
+        self.assertIsNone(current["series_end_before_local"])
+
     def test_task_ref_mismatch_is_rejected(self):
         self.create_routine()
         first = self.client.get("/api/v1/work-routines").json()["routines"][0]["occurrences"][0]
