@@ -77,6 +77,27 @@ tasks = project('/api/v1/tasks', [task], [edit]);
 assert.equal(tasks[0].title, 'Hard algorithms practice');
 assert.equal(tasks[0].remaining_effort_minutes, 60);
 
+const todayBase = {
+  tasks: [task], needs_refinement: [], next_actions: [{ task_id: task.id }],
+  active_execution: null,
+  plan: { blocks: [{ type: 'WORK', obligation_id: task.id, starts_at: '2026-10-01T10:00:00Z', ends_at: '2026-10-01T10:45:00Z' }], canonical_events: [], constraints: [] },
+};
+const todaySkipped = project('/api/v1/today', todayBase, [skip], { now: new Date('2026-09-30T09:00:00Z') });
+assert.equal(todaySkipped.tasks.length, 0, 'offline routine skip must leave Today immediately');
+assert.equal(todaySkipped.plan.blocks.filter((x) => x.type === 'WORK').length, 0);
+
+const split = op('routine.split', 'routine-successor-1', {
+  template_id: 'routine-1',
+  original_recurrence_id: '2026-10-01T18:00:00',
+  title: 'Algorithms deep',
+  effort_minutes: 60,
+  target_local: '2026-10-01T19:30',
+  timezone_name: 'UTC',
+});
+routines = project('/api/v1/work-routines', baseRoutine, [split]);
+assert.equal(routines.routines.find((x) => x.id === 'routine-1')._pending_split, '2026-10-01T18:00:00');
+assert.equal(routines.routines.find((x) => x.id === 'routine-successor-1')._pending_successor, true);
+
 const create = op('routine.create', 'routine-new-1', {
   title: 'Read papers',
   effort_minutes: 30,
