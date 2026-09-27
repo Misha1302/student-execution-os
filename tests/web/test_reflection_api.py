@@ -52,6 +52,9 @@ class ReflectionApiTest(unittest.TestCase):
 
     def test_daily_intent_is_soft_planner_input_and_visible_on_today(self):
         self.create_task("task-priority-a", "A")
+        # Make A observably older: without the soft intent ordering the planner's
+        # deterministic fallback would keep A ahead of B.
+        self.current[0] = NOW + timedelta(minutes=1)
         self.create_task("task-priority-b", "B")
 
         saved = self.sync("op-intent-set", "intent.set", "2026-10-01", {
