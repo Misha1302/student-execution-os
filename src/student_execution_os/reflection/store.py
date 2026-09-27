@@ -190,11 +190,13 @@ class SQLiteReflectionStore:
                     (account_id, normalized, multiplier, int(enabled), int(suppress_suggestion), _iso(now)),
                 )
             else:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE calibration_preferences SET safety_multiplier=?,enabled=?,suppress_suggestion=?,"
-                    "version=version+1,updated_at=? WHERE account_id=? AND category=?",
-                    (multiplier, int(enabled), int(suppress_suggestion), _iso(now), account_id, normalized),
+                    "version=version+1,updated_at=? WHERE account_id=? AND category=? AND version=?",
+                    (multiplier, int(enabled), int(suppress_suggestion), _iso(now), account_id, normalized, current["version"]),
                 )
+                if cur.rowcount != 1:
+                    raise VersionConflict("calibration preference version changed before commit")
             self.repo._record_change(
                 conn, account_id=account_id, entity_type="CALIBRATION_PREFERENCE",
                 entity_id=normalized, action="SET_CALIBRATION", actor=actor,
