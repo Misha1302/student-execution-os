@@ -59,7 +59,7 @@ from student_execution_os.planning.outlook import (
 )
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
-from student_execution_os.sync.commands import SyncService
+from student_execution_os.sync.commands import Commands, SyncService
 
 
 class _AccountLimiter:
@@ -633,6 +633,99 @@ class UiService:
     def execution_session(self, session_id: str) -> dict[str, Any]:
         with self._repo() as repo:
             return SQLiteExecutionStore(repo).payload(self.account_id, session_id, self._now())
+
+    @staticmethod
+    def _constraint(constraint) -> dict[str, Any]:
+        return {
+            "id": constraint.id,
+            "type": constraint.type.value,
+            "starts_at": _jsonify(constraint.interval.starts_at),
+            "ends_at": _jsonify(constraint.interval.ends_at),
+            "obligation_id": constraint.obligation_id,
+            "reason": constraint.reason,
+            "version": constraint.version,
+            "ownership": "CANONICAL",
+        }
+
+    def plan_constraints(self) -> list[dict[str, Any]]:
+        with self._repo() as repo:
+            return [
+                self._constraint(item)
+                for item in SQLitePlanningStateSource(repo).list_time_constraints(self.account_id)
+            ]
+
+    def plan_control_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        operation = payload.get("operation")
+        if not isinstance(operation, dict):
+            raise ValueError("operation is required")
+        kind = str(operation.get("type") or "")
+        if kind not in {"constraint.create", "constraint.update", "constraint.delete"}:
+            raise ValueError("preview only accepts constraint operations")
+        entity_id = str(operation.get("entity_id") or "")
+        op_payload = operation.get("payload") or {}
+        if not isinstance(op_payload, dict):
+            raise ValueError("operation payload must be an object")
+
+        class _PreviewRollback(Exception):
+            pass
+
+        result: dict[str, Any] | None = None
+        with self._repo() as repo:
+            before_snapshot = self._snapshot(repo, hours=24 * 7, output_hours=24 * 7)
+            before_outcome = PlanningService().build(before_snapshot, now=self._now())
+            before_tasks = [self._task(task) for task in before_snapshot.tasks]
+            before_events = self._events_payload(repo, before_snapshot.events)
+            try:
+                with repo._tx():
+                    outcome = Commands(
+                        repo,
+                        account_id=self.account_id,
+                        actor=ActorCategory.USER_UI,
+                        now=self._now(),
+                    ).run(kind, entity_id, dict(op_payload))
+                    if outcome.status not in {"APPLIED", "NOOP"}:
+                        raise ValueError(outcome.message or outcome.code or "preview operation could not be applied")
+                    after_snapshot = self._snapshot(repo, hours=24 * 7, output_hours=24 * 7)
+                    after_outcome = PlanningService().build(after_snapshot, now=self._now())
+                    after_tasks = [self._task(task) for task in after_snapshot.tasks]
+                    after_events = self._events_payload(repo, after_snapshot.events)
+                    before_plan = self._plan_payload(
+                        before_outcome.plan, before_tasks, before_events, before_snapshot.constraints
+                    )
+                    after_plan = self._plan_payload(
+                        after_outcome.plan, after_tasks, after_events, after_snapshot.constraints
+                    )
+                    before_blocks = {
+                        (b["type"], b.get("obligation_id"), b["starts_at"], b["ends_at"])
+                        for b in before_plan["blocks"]
+                    }
+                    after_blocks = {
+                        (b["type"], b.get("obligation_id"), b["starts_at"], b["ends_at"])
+                        for b in after_plan["blocks"]
+                    }
+                    result = {
+                        "operation": {
+                            "type": kind,
+                            "entity_id": entity_id,
+                            "payload": op_payload,
+                        },
+                        "constraint": outcome.entity,
+                        "before": before_plan,
+                        "after": after_plan,
+                        "delta": {
+                            "added_blocks": len(after_blocks - before_blocks),
+                            "removed_blocks": len(before_blocks - after_blocks),
+                            "feasibility_changed": (
+                                before_outcome.plan.feasibility_status.value
+                                != after_outcome.plan.feasibility_status.value
+                            ),
+                        },
+                    }
+                    raise _PreviewRollback()
+            except _PreviewRollback:
+                pass
+        assert result is not None
+        return result
 
     def tasks(self) -> list[dict[str, Any]]:
         with self._repo() as repo:

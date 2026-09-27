@@ -232,6 +232,41 @@ export function projectExecution(session, ops) {
   return current;
 }
 
+function newConstraint(id, payload) {
+  return {
+    id,
+    type: payload.type,
+    starts_at: payload.starts_at,
+    ends_at: payload.ends_at,
+    obligation_id: payload.task_id || null,
+    reason: payload.reason || null,
+    version: 1,
+    ownership: 'CANONICAL',
+    _pending: true,
+  };
+}
+
+export function applyConstraintOp(constraint, item) {
+  const op = item.operation || {};
+  const p = op.payload || {};
+  if (op.type === 'constraint.create') return constraint || newConstraint(op.entity_id, p);
+  if (!constraint) return constraint;
+  if (op.type === 'constraint.delete') return null;
+  if (op.type !== 'constraint.update') return constraint;
+  const next = { ...constraint, _pending: true };
+  if ('starts_at' in p) {
+    const oldDuration = new Date(constraint.ends_at) - new Date(constraint.starts_at);
+    next.starts_at = p.starts_at;
+    if (!('ends_at' in p)) next.ends_at = new Date(new Date(p.starts_at).getTime() + oldDuration).toISOString();
+  }
+  if ('ends_at' in p) next.ends_at = p.ends_at;
+  if ('reason' in p) next.reason = p.reason;
+  next.version = Number(constraint.version || 1) + 1;
+  return next;
+}
+
+export const projectConstraints = (list, ops) => projectList(list, ops, 'constraint.', applyConstraintOp);
+
 export function applyEventOp(event, item) {
   const op = item.operation;
   const p = op.payload || {};
@@ -367,10 +402,17 @@ function unschedulable(task, now) {
   return !task || !OPEN.has(task.status) || (task.actionable_from && new Date(task.actionable_from) > now);
 }
 
-function projectPlan(plan, tasksById, eventOps, now) {
+function projectPlan(plan, tasksById, eventOps, constraints, now) {
   if (!plan) return plan;
   const next = { ...plan };
   next.blocks = (plan.blocks || []).filter((b) => b.type !== 'WORK' || !unschedulable(tasksById.get(b.obligation_id), now));
+  if (constraints.length) {
+    next.constraints = projectConstraints(plan.constraints || [], constraints);
+    // A queued plan-control mutation changes planner inputs. Do not pretend the stale
+    // derived WORK witness is still authoritative while offline; canonical facts stay.
+    next.blocks = next.blocks.filter((b) => b.type !== 'WORK');
+    next.pending_control = true;
+  }
   if (eventOps.length) {
     const events = projectEvents(plan.canonical_events || [], eventOps);
     next.canonical_events = (events || []).filter((e) => e.status === 'ACTIVE');
@@ -383,12 +425,14 @@ function projectPlan(plan, tasksById, eventOps, now) {
 function taskOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('task.')); }
 function eventOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('event.')); }
 function executionOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('execution.')); }
+function constraintOps(ops) { return ops.filter((x) => x.operation?.type?.startsWith('constraint.')); }
 
 // Today-shaped models: /api/v1/today and /api/v1/plan/agenda.
 function projectDay(data, ops, now) {
   const tOps = taskOps(ops);
   const eOps = eventOps(ops);
   const xOps = executionOps(ops);
+  const cOps = constraintOps(ops);
   const out = { ...data };
   out.active_execution = projectExecution(data.active_execution || null, xOps);
   // Today lists active tasks in `tasks` and drafts in `needs_refinement`; a queued
@@ -407,7 +451,7 @@ function projectDay(data, ops, now) {
     out.unplanned_pending = projected.filter((task) => task.status === 'ACTIVE' && touched.has(task.id) && !planned.has(task.id)).map((task) => task.id);
     if (out.current_action && unschedulable(byId.get(out.current_action.task_id), now)) out.current_action = null;
   }
-  out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, now);
+  out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, cOps, now);
   if (ops.length) out.pending_changes = ops.filter((x) => x.state === 'PENDING').length;
   return out;
 }
@@ -423,6 +467,7 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
   if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
+  if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/execution/active') return { ...base, session: projectExecution(base.session || null, executionOps(ops)) };
   if (route === '/api/v1/notifications' && Array.isArray(base)) {
     // A reminder answered from the app (or its notification) shows as answered.

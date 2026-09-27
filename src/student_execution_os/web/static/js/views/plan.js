@@ -2,6 +2,7 @@ import { load } from '../store.js';
 import { t, code, fmtTime, fmtDay, fmtDuration, fmtDateTime, dayKey, now, setServerNow } from '../i18n.js';
 import { esc, icon, chip, kv, empty, openSheet, chipGroup } from '../ui.js';
 import { heroStatus, explainReason } from './today.js';
+import { previewPlanControl, pinOperation, avoidOperation, moveConstraintOperation, deleteConstraintOperation, moveWorkSheet, shiftItem, controlSummary } from '../plan-control.js';
 
 const BLOCK_CLASS = {
   WORK: 'work', EVENT_PROJECTION: 'event-projection', TRAVEL_TRANSITION: 'travel', BUFFER: 'buffer',
@@ -35,6 +36,8 @@ function outlookView(data) {
 
 export function agendaItems(plan) {
   const items = [];
+  const pinById = new Map((plan.constraints || []).filter((c) => c.type === 'PINNED_WORK').map((c) => [c.id, c]));
+  const projectedPins = new Set((plan.blocks || []).flatMap((b) => b.type === 'WORK' ? (b.source_constraint_ids || []) : []));
   for (const r of plan.reminders || []) {
     if (r.status !== 'SCHEDULED' && r.status !== 'FIRED') continue;
     items.push({ kind: 'REMINDER', cls: 'reminder', ownership: 'CANONICAL', starts_at: r.remind_at, ends_at: r.remind_at,
@@ -44,7 +47,10 @@ export function agendaItems(plan) {
     items.push({ kind: 'EVENT', cls: 'canonical', ownership: 'CANONICAL', starts_at: e.starts_at, ends_at: e.ends_at, label: e.title, detail: code('attendance', e.attendance_policy), ref: e });
   }
   for (const c of plan.constraints || []) {
-    items.push({ kind: c.type, cls: 'constraint', ownership: 'CANONICAL', starts_at: c.starts_at, ends_at: c.ends_at, label: code('constraint', c.type), detail: c.reason || '', ref: c });
+    if (c.type === 'PINNED_WORK' && projectedPins.has(c.id)) continue;
+    items.push({ kind: c.type, cls: 'constraint', ownership: 'CANONICAL', starts_at: c.starts_at, ends_at: c.ends_at,
+      label: c.type === 'PINNED_WORK' ? t('plan.pinnedWork') : code('constraint', c.type),
+      detail: c.reason || '', ref: c, control: c });
   }
   for (const o of plan.off_hours || []) {
     items.push({ kind: 'OFF_HOURS', cls: 'sleep', ownership: 'CANONICAL', starts_at: o.starts_at, ends_at: o.ends_at, label: t('plan.offHours'), detail: t('plan.offHoursHelp'), ref: o });
@@ -54,7 +60,9 @@ export function agendaItems(plan) {
     // An EVENT_PROJECTION of an Event already listed as a canonical fact would only repeat the
     // same interval; the canonical row stays, the projection is folded into it.
     if (b.type === 'EVENT_PROJECTION' && shownEvents.has(b.source_event_id || b.obligation_id)) continue;
-    items.push({ kind: b.type, cls: BLOCK_CLASS[b.type] || 'buffer', ownership: 'DERIVED', starts_at: b.starts_at, ends_at: b.ends_at, label: b.label || code('block', b.type), detail: code('block', b.type), ref: b });
+    const control = b.type === 'WORK' ? (b.source_constraint_ids || []).map((id) => pinById.get(id)).find(Boolean) || null : null;
+    items.push({ kind: b.type, cls: BLOCK_CLASS[b.type] || 'buffer', ownership: 'DERIVED', starts_at: b.starts_at, ends_at: b.ends_at,
+      label: b.label || code('block', b.type), detail: control ? t('plan.pinned') : code('block', b.type), ref: b, control });
   }
   return items.sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at) || (a.ownership === 'CANONICAL' ? -1 : 1));
 }
@@ -64,7 +72,10 @@ function openItem(item) {
   if (item.kind === 'REMINDER') { import('../reminders.js').then(({ reminderSheet }) => reminderSheet(item.ref)); return; }
   const b = item.ref;
   const derived = item.ownership === 'DERIVED';
-  openSheet({
+  const isWork = item.kind === 'WORK';
+  const isConstraint = item.ownership === 'CANONICAL' && ['PINNED_WORK', 'UNAVAILABLE', 'FIXED_PERSONAL_BLOCK'].includes(item.kind);
+  const pin = item.control?.type === 'PINNED_WORK' ? item.control : null;
+  const dialog = openSheet({
     eyebrow: derived ? code('block', item.kind) : item.kind === 'EVENT' ? t('legend.event') : code('constraint', item.kind),
     title: item.label,
     body: `<p>${chip(`${fmtTime(item.starts_at)}–${fmtTime(item.ends_at)}`)}</p>
@@ -76,9 +87,44 @@ function openItem(item) {
         ${b.reason && item.kind !== 'OFF_HOURS' ? kv(t('plan.reason'), b.reason) : ''}
       </dl>
       ${derived ? `<p class="help">${esc(t('plan.derivedHelp'))}</p>` : ''}
+      ${isWork ? `<div class="now-actions">
+        ${pin ? '' : `<button type="button" class="button primary wide" data-control-pin>${esc(t('plan.pinThis'))}</button>`}
+        <button type="button" class="button ghost wide" data-control-move>${esc(t('plan.moveWork'))}</button>
+        ${pin ? `<button type="button" class="button ghost wide" data-control-unpin>${esc(t('plan.unpin'))}</button>`
+          : `<button type="button" class="button ghost wide" data-control-avoid>${esc(t('plan.avoidThisTime'))}</button>`}
+      </div>` : ''}
+      ${isConstraint && !isWork ? `<div class="now-actions">
+        <button type="button" class="button ghost wide" data-control-move>${esc(t('plan.moveConstraint'))}</button>
+        <button type="button" class="button ghost wide" data-control-unpin>${esc(t('plan.removeConstraint'))}</button>
+      </div>` : ''}
       ${derived && b.obligation_id ? `<button type="button" class="button ghost wide" data-action="open-task" data-id="${esc(b.obligation_id)}" data-close-sheet>${esc(t('plan.openTask'))}</button>` : ''}`,
   });
+  dialog.querySelector('[data-control-pin]')?.addEventListener('click', async () => {
+    dialog.close('control');
+    const op = pinOperation(item);
+    await previewPlanControl(op, { title: t('plan.pinThis'), summary: controlSummary(item) });
+  });
+  dialog.querySelector('[data-control-avoid]')?.addEventListener('click', async () => {
+    dialog.close('control');
+    const op = avoidOperation(item);
+    await previewPlanControl(op, { title: t('plan.avoidThisTime'), summary: controlSummary(item) });
+  });
+  dialog.querySelector('[data-control-unpin]')?.addEventListener('click', async () => {
+    dialog.close('control');
+    const target = pin || item.control || item.ref;
+    const op = deleteConstraintOperation(target);
+    await previewPlanControl(op, { title: t('plan.removeConstraint'), summary: controlSummary(item) });
+  });
+  dialog.querySelector('[data-control-move]')?.addEventListener('click', () => {
+    dialog.close('move');
+    moveWorkSheet(item, { apply: async (startsAt, endsAt) => {
+      const target = pin || (isConstraint ? item.ref : null);
+      const op = target ? moveConstraintOperation(target, startsAt, endsAt) : pinOperation(item, startsAt, endsAt);
+      await previewPlanControl(op, { title: t('plan.moveWork'), summary: controlSummary(item, startsAt, endsAt) });
+    } });
+  });
 }
+
 
 const DAY_MS = 86400000;
 
@@ -140,7 +186,9 @@ export default {
       }
       const minutes = Math.max(item.kind === 'REMINDER' ? 0 : 5, (new Date(item.ends_at) - new Date(item.starts_at)) / 60000);
       const clipped = Math.max(5, (Math.min(new Date(item.ends_at), dayEnd) - Math.max(new Date(item.starts_at), dayStart)) / 60000);
-      return `${marker}<button class="agenda-item ${item.cls}" data-action="plan-item" data-index="${index}" data-span="${Math.min(6, 1 + clipped / 60).toFixed(2)}">
+      const movable = item.kind === 'WORK' || ['PINNED_WORK', 'UNAVAILABLE'].includes(item.kind);
+      return `${marker}<button class="agenda-item ${item.cls}" data-action="plan-item" data-index="${index}" data-span="${Math.min(6, 1 + clipped / 60).toFixed(2)}"
+        ${movable ? `draggable="true" data-plan-drag="${index}" title="${esc(t('plan.dragHint'))}"` : ''}>
         <span class="agenda-time"><strong>${esc(fmtTime(item.starts_at))}</strong><small>${esc(fmtTime(item.ends_at))}</small></span>
         <span class="agenda-bar" aria-hidden="true"></span>
         <span class="agenda-copy"><strong>${esc(item.label)}</strong><small>${esc(item.detail)}${minutes ? ` · ${esc(fmtDuration(minutes))}` : ''}</small></span>
@@ -151,6 +199,7 @@ export default {
     const dayOptions = days.map((d) => [d, fmtDay(`${d}T12:00:00`)]);
     return `${rangeNav('today')}
       ${heroStatus(plan, plan.tasks)}
+      ${plan.pending_control ? `<div class="banner warn">${icon('sync')}<div><strong>${esc(t('plan.pendingControl'))}</strong><p>${esc(t('plan.pendingControlHelp'))}</p></div></div>` : ''}
       <section class="section">
         <div class="day-nav">
           <button class="icon-button" data-action="plan-prev" aria-label="${esc(t('plan.prevDay'))}" ${index <= 0 ? 'disabled' : ''}>‹</button>
@@ -176,6 +225,34 @@ export default {
       ctx.rerender();
     });
     root.querySelector('.day-strip .chip-toggle.on')?.scrollIntoView?.({ block: 'nearest', inline: 'center' });
+    // Desktop drag is an ergonomic shortcut for the same canonical constraint
+    // mutation as Move. Vertical distance snaps to 15-minute increments; release
+    // always goes through server preview before the queued mutation is accepted.
+    let drag = null;
+    root.querySelectorAll('[data-plan-drag]').forEach((el) => {
+      el.addEventListener('dragstart', (event) => {
+        const item = this._visible?.[Number(el.dataset.planDrag)];
+        if (!item) return;
+        drag = { item, y: event.clientY };
+        el.classList.add('dragging');
+      });
+      el.addEventListener('dragend', async (event) => {
+        el.classList.remove('dragging');
+        if (!drag) return;
+        const { item, y } = drag;
+        drag = null;
+        const dy = Number(event.clientY || y) - y;
+        const minutes = Math.round(dy / 16) * 15;
+        if (!minutes) return;
+        el.dataset.dragged = '1';
+        setTimeout(() => { delete el.dataset.dragged; }, 0);
+        const [startsAt, endsAt] = shiftItem(item, minutes);
+        const target = item.control?.type === 'PINNED_WORK' ? item.control
+          : (item.ownership === 'CANONICAL' ? item.ref : null);
+        const op = target ? moveConstraintOperation(target, startsAt, endsAt) : pinOperation(item, startsAt, endsAt);
+        await previewPlanControl(op, { title: t('plan.moveWork'), summary: controlSummary(item, startsAt, endsAt) });
+      });
+    });
     // Horizontal swipe on the day's agenda moves to the previous/next day.
     const area = root.querySelector('[data-swipe-days]');
     let start = null;
@@ -190,6 +267,7 @@ export default {
   },
   actions: {
     'plan-item'(el, ctx) {
+      if (el.dataset.dragged) return;
       const item = ctx.view._visible?.[Number(el.dataset.index)];
       if (item) openItem(item);
     },
