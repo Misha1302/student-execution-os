@@ -577,7 +577,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       const taskSignals = [
         parsed.estimated_total_effort_minutes, parsed.target_at, parsed.actionable_from, parsed.remind_at, parsed.actual_cutoff?.at,
       ].some((value) => value != null && value !== '')
-        || /(^|\s)(сделать|сдать|решить|купить|позвонить|написать|подготовить|прочитать|закончить|отправить|проверить|заполнить|do|submit|solve|buy|call|write|prepare|read|finish|send|check)(\s|$)/iu.test(raw);
+        || /(^|\s)(сделать|сдать|решить|купить|позвонить|написать|подготовить|прочитать|закончить|отправить|проверить|заполнить|убрать|прибраться|почистить|do|submit|solve|buy|call|write|prepare|read|finish|send|check|tidy|clean)(\s|$)/iu.test(raw);
       const noteSignal = /^(идея|заметка|мысль|наблюдение|note|idea)\b/iu.test(raw.trim());
       if (!kindChosen) kind = (noteSignal || !taskSignals) ? 'NOTE' : 'TASK';
       merge(parsed, 'local');

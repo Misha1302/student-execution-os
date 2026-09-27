@@ -774,7 +774,7 @@ class BrowserUiTest(unittest.TestCase):
         welcome = self._text(page)
         self.assertNotIn("Server address", welcome)
         self.assertEqual(page.locator("input[name=server]").count(), 0)
-        self.assertIn("Type or say what you need to do", welcome)
+        self.assertIn("botay! proposes a Task, Event or Note", welcome)
         self.assertEqual(page.locator('[data-chip-group="auth-mode"] .on').get_attribute("data-value"), "register")
         page.fill("input[name=login]", "newbie")
         page.fill("input[name=password]", "correct horse")
