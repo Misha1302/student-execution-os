@@ -197,11 +197,22 @@ class SQLiteWorkRoutineRepository:
         boundary = datetime.fromisoformat(original_recurrence_id)
         if not self._contains_original(current, boundary):
             raise ValidationError("split boundary is not an occurrence of this routine")
-        next_rule = current.recurrence_rule if recurrence_rule is None else (
-            recurrence_rule if isinstance(recurrence_rule, RecurrenceRule) else RecurrenceRule.parse(recurrence_rule)
-        )
-        if current.recurrence_rule.count is not None and recurrence_rule is None:
-            raise ValidationError("splitting a COUNT-limited routine requires an explicit successor RRULE")
+        if recurrence_rule is None:
+            next_rule = current.recurrence_rule
+            if current.recurrence_rule.count is not None:
+                step = _step(current.recurrence_rule)
+                index = (boundary - current.dtstart_local).days // step.days
+                remaining_count = current.recurrence_rule.count - index
+                if remaining_count < 1:
+                    raise ValidationError("split boundary is beyond COUNT-limited routine")
+                next_rule = RecurrenceRule(
+                    frequency=current.recurrence_rule.frequency,
+                    interval=current.recurrence_rule.interval,
+                    count=remaining_count,
+                    until_local=current.recurrence_rule.until_local,
+                )
+        else:
+            next_rule = recurrence_rule if isinstance(recurrence_rule, RecurrenceRule) else RecurrenceRule.parse(recurrence_rule)
         next_timezone = timezone_name or current.timezone_name
         successor_start = replacement_start_local or boundary
         if successor_start.tzinfo is not None:
