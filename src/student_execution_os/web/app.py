@@ -168,7 +168,7 @@ def create_app(
         response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=(self)"  # dictation in capture
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+            "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
