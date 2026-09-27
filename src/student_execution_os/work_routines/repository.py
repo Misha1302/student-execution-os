@@ -88,7 +88,7 @@ class SQLiteWorkRoutineRepository:
                 "INSERT INTO work_routine_templates("
                 "id,account_id,title,description,category,importance,dtstart_local,effort_minutes,"
                 "recurrence_rule,timezone_name,splittable,min_chunk_minutes,max_chunk_minutes,status,"
-                "version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE',1,?,?)",
+                "series_end_before_local,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE',NULL,1,?,?)",
                 (
                     template_id, account_id, title, description, category.value, importance.value,
                     _local_iso(dtstart_local), effort_minutes, rule.canonical(), timezone_name,
@@ -113,7 +113,8 @@ class SQLiteWorkRoutineRepository:
             dtstart_local=_local_dt(row["dtstart_local"]), effort_minutes=int(row["effort_minutes"]),
             recurrence_rule=RecurrenceRule.parse(row["recurrence_rule"]), timezone_name=row["timezone_name"],
             splittable=bool(row["splittable"]), min_chunk_minutes=row["min_chunk_minutes"],
-            max_chunk_minutes=row["max_chunk_minutes"], status=row["status"], version=int(row["version"]),
+            max_chunk_minutes=row["max_chunk_minutes"], status=row["status"],
+            series_end_before_local=_local_dt(row["series_end_before_local"]), version=int(row["version"]),
             created_at=_dt(row["created_at"]), updated_at=_dt(row["updated_at"]),
         )
 
@@ -145,6 +146,68 @@ class SQLiteWorkRoutineRepository:
             )
         return self.get_template(account_id, template_id)
 
+    def split_this_and_future(
+        self,
+        *,
+        account_id: str,
+        template_id: str,
+        original_recurrence_id: str,
+        successor_id: str,
+        actor: ActorCategory,
+        title: str | None = None,
+        effort_minutes: int | None = None,
+        recurrence_rule: str | RecurrenceRule | None = None,
+        timezone_name: str | None = None,
+        expected_version: int | None = None,
+    ) -> tuple[WorkRoutineTemplate, WorkRoutineTemplate]:
+        current = self.get_template(account_id, template_id)
+        if expected_version is not None and current.version != expected_version:
+            raise VersionConflict("work routine version changed")
+        boundary = datetime.fromisoformat(original_recurrence_id)
+        if not self._contains_original(current, boundary):
+            raise ValidationError("split boundary is not an occurrence of this routine")
+        next_rule = current.recurrence_rule if recurrence_rule is None else (
+            recurrence_rule if isinstance(recurrence_rule, RecurrenceRule) else RecurrenceRule.parse(recurrence_rule)
+        )
+        if current.recurrence_rule.count is not None and recurrence_rule is None:
+            raise ValidationError("splitting a COUNT-limited routine requires an explicit successor RRULE")
+        next_timezone = timezone_name or current.timezone_name
+        resolve_local(boundary, next_timezone)
+        next_effort = current.effort_minutes if effort_minutes is None else int(effort_minutes)
+        if next_effort <= 0:
+            raise ValidationError("effort_minutes must be positive")
+        next_title = current.title if title is None else title.strip()
+        if not next_title:
+            raise ValidationError("title is required")
+        now = self.clock.now()
+        with self.canonical._tx() as conn:
+            cur = conn.execute(
+                "UPDATE work_routine_templates SET series_end_before_local=?,version=version+1,updated_at=? "
+                "WHERE account_id=? AND id=? AND version=?",
+                (_local_iso(boundary), _iso(now), account_id, template_id, current.version),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("work routine version changed before split")
+            conn.execute(
+                "INSERT INTO work_routine_templates("
+                "id,account_id,title,description,category,importance,dtstart_local,effort_minutes,"
+                "recurrence_rule,timezone_name,splittable,min_chunk_minutes,max_chunk_minutes,status,"
+                "series_end_before_local,version,created_at,updated_at"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE',NULL,1,?,?)",
+                (
+                    successor_id, account_id, next_title, current.description,
+                    current.category.value, current.importance.value, _local_iso(boundary),
+                    next_effort, next_rule.canonical(), next_timezone, int(current.splittable),
+                    current.min_chunk_minutes, current.max_chunk_minutes, _iso(now), _iso(now),
+                ),
+            )
+            self.canonical._record_change(
+                conn, account_id=account_id, entity_type="WORK_ROUTINE_TEMPLATE",
+                entity_id=template_id, action="SPLIT_WORK_ROUTINE", actor=actor,
+                payload={"boundary_original_recurrence_id": original_recurrence_id, "successor_id": successor_id},
+            )
+        return self.get_template(account_id, template_id), self.get_template(account_id, successor_id)
+
     def _iter_originals(self, template: WorkRoutineTemplate, start_local: datetime | None = None):
         step = _step(template.recurrence_rule)
         index = 0
@@ -155,6 +218,8 @@ class SQLiteWorkRoutineRepository:
         count = index
         while True:
             rule = template.recurrence_rule
+            if template.series_end_before_local is not None and current >= template.series_end_before_local:
+                return
             if rule.until_local is not None and current > rule.until_local:
                 return
             count += 1
@@ -172,6 +237,8 @@ class SQLiteWorkRoutineRepository:
         if delta.seconds != 0 or delta.microseconds != 0 or delta.days % step.days != 0:
             return False
         index = delta.days // step.days
+        if template.series_end_before_local is not None and original_local >= template.series_end_before_local:
+            return False
         if rule.count is not None and index >= rule.count:
             return False
         if rule.until_local is not None and original_local > rule.until_local:
