@@ -47,7 +47,7 @@ function authStep() {
   const register = mode === 'register';
   return `
     <div class="welcome-card">
-      <div class="brand-mark big">${icon('today')}</div>
+      <div class="brand-mark big">${icon('brand')}</div>
       <h1>${esc(t('app.name'))}</h1>
       <p class="welcome-lead">${esc(t('welcome.tagline'))}</p>
       <ul class="welcome-points">

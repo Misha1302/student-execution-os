@@ -68,7 +68,7 @@ const needsLogin = () => session.authMode === 'session' && !session.token;
 function buildTabbar() {
   const tab = (id, ic, extra = '') => `<button class="tab ${extra}" data-nav="${id}">${icon(ic)}<span>${esc(t(`nav.${id}`))}</span></button>`;
   $('#tabbar').innerHTML = `
-    <div class="rail-brand">${icon('today')}<span>${esc(t('app.short'))}</span></div>
+    <div class="rail-brand">${icon('brand')}<span>${esc(t('app.short'))}</span></div>
     ${tab('today', 'today')}
     ${tab('plan', 'plan')}
     <button class="fab" data-action="compose" aria-label="${esc(t('capture.title'))}">${icon('plus')}<span class="rail-only">${esc(t('compose.new'))}</span></button>
