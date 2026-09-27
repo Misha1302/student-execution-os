@@ -119,8 +119,9 @@ subscription/billing ownership remains future work.
 
 To roll schema v21 code back while retaining the v14 BYOK seam:
 
-1. set `SEOS_STARTER_LLM_ENABLED=0`, remove `SEOS_PLATFORM_LLM_API_KEY_FILES`, and
-   recreate the API container so no new platform request can start;
+1. set `SEOS_STARTER_LLM_ENABLED=0`, clear both
+   `SEOS_PLATFORM_LLM_API_KEY_FILES` and `SEOS_PLATFORM_LLM_API_KEY`, and recreate
+   the API container so no new platform request can start;
 2. stop writers and take/verify a backup;
 3. drop `starter_llm_reservations`, `starter_llm_account_usage`, and
    `starter_llm_global_usage`, then delete `schema_migrations.version=21`;

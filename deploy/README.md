@@ -394,9 +394,9 @@ The two `test -r` commands inspect only file presence/readability, not contents.
 key contents. A normal login can then verify Settings → AI shows Basic AI, the model,
 remaining quota, and reset time.
 
-Rollback STARTER without deleting data: set `SEOS_STARTER_LLM_ENABLED=0`, remove
-`SEOS_PLATFORM_LLM_API_KEY_FILES`, and recreate `api`; STARTER becomes inactive and
-capture falls back to BYOK/local parsing. For a schema rollback, stop all writers, take
+Rollback STARTER without deleting data: set `SEOS_STARTER_LLM_ENABLED=0`, clear both
+`SEOS_PLATFORM_LLM_API_KEY_FILES` and `SEOS_PLATFORM_LLM_API_KEY`, and recreate `api`;
+STARTER becomes inactive and capture falls back to BYOK/local parsing. For a schema rollback, stop all writers, take
 a verified backup, drop the three v21 usage tables, delete migration 21, optionally
 delete only `llm_entitlements WHERE plan='STARTER'`, then deploy the previous image.
 
