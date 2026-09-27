@@ -179,6 +179,7 @@ class Commands:
             "milestone.delete": self.milestone_delete,
             "routine.create": self.routine_create,
             "routine.cancel": self.routine_cancel,
+            "routine.split": self.routine_split,
             "routine.occurrence.skip": self.routine_occurrence_skip,
             "routine.occurrence.reopen": self.routine_occurrence_reopen,
             "routine.occurrence.edit": self.routine_occurrence_edit,
@@ -985,6 +986,7 @@ class Commands:
             "min_chunk_minutes": template.min_chunk_minutes,
             "max_chunk_minutes": template.max_chunk_minutes,
             "status": template.status,
+            "series_end_before_local": None if template.series_end_before_local is None else template.series_end_before_local.isoformat(),
             "version": template.version,
             "created_at": _iso(template.created_at),
             "updated_at": _iso(template.updated_at),
@@ -1054,6 +1056,41 @@ class Commands:
             int(payload.get("expected_version") or current.version), self.actor,
         )
         return Outcome(APPLIED if updated.version != current.version else NOOP, self._routine_out(updated))
+
+    def routine_split(self, successor_id: str, payload: dict[str, Any]) -> Outcome:
+        if not _ID.match(successor_id):
+            raise ValidationError("successor routine id must be a client-generated identifier")
+        allowed = {
+            "template_id", "original_recurrence_id", "title", "effort_minutes",
+            "recurrence_rule", "timezone_name", "expected_version",
+        }
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ValidationError("routine split fields are not supported: " + ", ".join(sorted(unknown)))
+        template_id = str(payload.get("template_id") or "")
+        original = str(payload.get("original_recurrence_id") or "")
+        if not template_id or not original:
+            raise ValidationError("routine split requires template_id and original_recurrence_id")
+        effort = _minutes(payload.get("effort_minutes"), "effort_minutes", allow_none=True)
+        before, successor = SQLiteWorkRoutineRepository(self.repo).split_this_and_future(
+            account_id=self.account_id,
+            template_id=template_id,
+            original_recurrence_id=original,
+            successor_id=successor_id,
+            actor=self.actor,
+            title=_title(payload["title"]) if "title" in payload else None,
+            effort_minutes=effort,
+            recurrence_rule=str(payload["recurrence_rule"]) if payload.get("recurrence_rule") else None,
+            timezone_name=str(payload["timezone_name"]) if payload.get("timezone_name") else None,
+            expected_version=(int(payload["expected_version"]) if payload.get("expected_version") is not None else None),
+        )
+        SQLiteWorkRoutineRepository(self.repo).ensure_horizon(
+            self.account_id, self.now, self.now + timedelta(days=28)
+        )
+        return Outcome(APPLIED, {
+            "previous": self._routine_out(before),
+            "successor": self._routine_out(successor),
+        })
 
     def _routine_occurrence_identity(self, payload: dict[str, Any]) -> tuple[str, str, str | None]:
         template_id = str(payload.get("template_id") or "")
