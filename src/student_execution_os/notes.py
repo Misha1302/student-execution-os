@@ -245,10 +245,16 @@ class SQLiteNoteRepository:
         if exists is None:
             raise EntityNotFound("note conversion target not found")
         with self.repo._tx() as conn:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO note_links(account_id,note_id,target_kind,target_id,created_at) VALUES (?,?,?,?,?)",
                 (account_id, note_id, target_kind, target_id, _iso(now)),
             )
+            if cur.rowcount:
+                self.repo._record_change(
+                    conn, account_id=account_id, entity_type="NOTE", entity_id=note_id,
+                    action="LINK_NOTE", actor=ActorCategory.USER_UI,
+                    payload={"target_kind": target_kind, "target_id": target_id},
+                )
 
     def delete(self, account_id: str, note_id: str, expected_version: int, now: datetime,
                actor: ActorCategory) -> None:

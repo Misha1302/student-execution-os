@@ -134,5 +134,56 @@ class BotayNotesApiTests(unittest.TestCase):
             ).fetchone()[0], 0)
 
 
+    def test_feedback_uses_strict_privacy_allowlist(self):
+        accepted = self.client.post("/api/v1/feedback", json={
+            "message": "Today did not show what I expected",
+            "technical_context": {
+                "client_version": "0.1", "app_version": "0.1",
+                "platform": "web", "timestamp": NOW.isoformat(),
+            },
+        })
+        self.assertEqual(accepted.status_code, 201, accepted.text)
+        rejected = self.client.post("/api/v1/feedback", json={
+            "message": "do not attach private payload",
+            "technical_context": {"task_title": "private task"},
+        })
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        with SQLiteCanonicalRepository(self.database, clock=FrozenClock(NOW)) as repo:
+            rows = repo.connection.execute(
+                "SELECT message,technical_context_json FROM beta_feedback WHERE account_id=?",
+                (ACCOUNT,),
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("private task", rows[0]["technical_context_json"])
+
+    def test_account_deletion_purges_notes_audio_links_and_feedback(self):
+        note = self.sync({
+            "op_id": "op-delete-account-note", "type": "note.create", "entity_id": "note-delete-account",
+            "payload": {"content": "private beta note", "source_kind": "VOICE"},
+        })[0]["entity"]
+        uploaded = self.client.put(
+            "/api/v1/notes/note-delete-account/audio",
+            content=b"private-audio",
+            headers={"content-type": "audio/wav"},
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        self.client.post("/api/v1/feedback", json={
+            "message": "private feedback", "technical_context": {"platform": "web"},
+        })
+        policy = self.client.get("/api/v1/account/deletion-policy").json()
+        deleted = self.client.post("/api/v1/account/delete", json={
+            "expected_server_revision": policy["server_revision"],
+            "confirm_account_id": ACCOUNT,
+        })
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        with SQLiteCanonicalRepository(self.database, clock=FrozenClock(NOW)) as repo:
+            for table in ("notes", "note_audio", "note_links", "deleted_notes", "beta_feedback"):
+                self.assertEqual(
+                    repo.connection.execute(f"SELECT count(*) FROM {table} WHERE account_id=?", (ACCOUNT,)).fetchone()[0],
+                    0,
+                    table,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
