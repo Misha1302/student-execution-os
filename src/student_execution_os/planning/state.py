@@ -49,7 +49,11 @@ class SQLitePlanningStateSource:
         return self.repository.get_server_revision(account_id)
 
     def planning_signals(self, account_id: str, at):
-        return SQLiteReflectionStore(self.repository).planning_signals(account_id, at)
+        # Daily Intent means "today from the user's current local clock", not the
+        # beginning of an arbitrary week/month analysis horizon.
+        return SQLiteReflectionStore(self.repository).planning_signals(
+            account_id, self.repository.clock.now()
+        )
 
     def list_tasks(self, account_id: str) -> list[Task]:
         self.repository._require_account(account_id)
