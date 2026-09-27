@@ -69,8 +69,10 @@ class V22BotayMigrationTests(unittest.TestCase):
             counts = sum(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in
                          ("notes", "note_audio", "note_links", "deleted_notes", "beta_feedback"))
             self.assertEqual(counts, 0)
-            conn.executescript("DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
-                               ""DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;"")
+            conn.executescript(
+                "DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
+                "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;"
+            )
             conn.commit()
             conn.close()
 
