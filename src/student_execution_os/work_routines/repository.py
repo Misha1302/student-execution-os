@@ -131,8 +131,38 @@ class SQLiteWorkRoutineRepository:
             raise VersionConflict(f"expected routine version {expected_version}, current {current.version}")
         if current.status == "CANCELLED":
             return current
+        future_rows = self.connection.execute(
+            "SELECT original_recurrence_id,task_id FROM work_routine_occurrences "
+            "WHERE account_id=? AND template_id=? AND original_recurrence_id>=? ORDER BY original_recurrence_id",
+            (account_id, template_id, original_recurrence_id),
+        ).fetchall()
+        for row in future_rows:
+            task = self.canonical.get_task(account_id, row["task_id"])
+            linked = self.connection.execute(
+                "SELECT 1 FROM project_members WHERE account_id=? AND obligation_id=? LIMIT 1",
+                (account_id, row["task_id"]),
+            ).fetchone()
+            attachment = self.connection.execute(
+                "SELECT 1 FROM attachment_links WHERE account_id=? AND owner_kind='OBLIGATION' AND owner_id=? LIMIT 1",
+                (account_id, row["task_id"]),
+            ).fetchone()
+            if (
+                task.obligation.lifecycle_status not in {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
+                or task.obligation.version != 1
+                or task.started_at is not None
+                or task.last_progress_at is not None
+                or linked is not None
+                or attachment is not None
+            ):
+                raise VersionConflict("future routine occurrence has user history; split before an untouched occurrence")
         now = self.clock.now()
         with self.canonical._tx() as conn:
+            for row in future_rows:
+                task = self.canonical.get_task(account_id, row["task_id"])
+                self.canonical.delete_obligation(
+                    account_id=account_id, obligation_id=row["task_id"],
+                    expected_version=task.obligation.version, actor=actor,
+                )
             cur = conn.execute(
                 "UPDATE work_routine_templates SET status='CANCELLED',version=version+1,updated_at=? "
                 "WHERE account_id=? AND id=? AND version=?",
@@ -156,6 +186,7 @@ class SQLiteWorkRoutineRepository:
         actor: ActorCategory,
         title: str | None = None,
         effort_minutes: int | None = None,
+        replacement_start_local: datetime | None = None,
         recurrence_rule: str | RecurrenceRule | None = None,
         timezone_name: str | None = None,
         expected_version: int | None = None,
@@ -172,7 +203,10 @@ class SQLiteWorkRoutineRepository:
         if current.recurrence_rule.count is not None and recurrence_rule is None:
             raise ValidationError("splitting a COUNT-limited routine requires an explicit successor RRULE")
         next_timezone = timezone_name or current.timezone_name
-        resolve_local(boundary, next_timezone)
+        successor_start = replacement_start_local or boundary
+        if successor_start.tzinfo is not None:
+            raise ValidationError("replacement_start_local must be local civil time")
+        resolve_local(successor_start, next_timezone)
         next_effort = current.effort_minutes if effort_minutes is None else int(effort_minutes)
         if next_effort <= 0:
             raise ValidationError("effort_minutes must be positive")
@@ -196,7 +230,7 @@ class SQLiteWorkRoutineRepository:
                 ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE',NULL,1,?,?)",
                 (
                     successor_id, account_id, next_title, current.description,
-                    current.category.value, current.importance.value, _local_iso(boundary),
+                    current.category.value, current.importance.value, _local_iso(successor_start),
                     next_effort, next_rule.canonical(), next_timezone, int(current.splittable),
                     current.min_chunk_minutes, current.max_chunk_minutes, _iso(now), _iso(now),
                 ),
