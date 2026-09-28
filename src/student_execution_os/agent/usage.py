@@ -223,8 +223,30 @@ class StarterUsageStore:
         }
 
 
+# Provider answers that refuse a request before any generation: nothing was spent.
+_NOT_GENERATED_STATUSES = frozenset({401, 402, 403, 404, 405, 413, 415, 429})
+# Failures raised before the request left this server (configuration, SSRF refusal).
+_NEVER_SENT_REASONS = frozenset({"REQUEST", "BLOCKED_URL"})
+_NO_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def _definitely_not_generated(failure: ProviderUnavailable) -> bool:
+    """True only when the provider cannot have produced (and billed) a completion.
+
+    Timeouts, network errors after connect, 5xx and 400-class answers (Groq returns
+    400 ``json_validate_failed`` *after* generating) stay fully charged: fail closed.
+    """
+    return failure.reason in _NEVER_SENT_REASONS or failure.http_status in _NOT_GENERATED_STATUSES
+
+
 class MeteredStarterProvider:
-    """Quota-protected PLATFORM_MANAGED provider; one reservation per operation."""
+    """Quota-protected PLATFORM_MANAGED provider; one reservation per operation.
+
+    The request counter is never refunded (it bounds attempts against the operator's
+    credential); the token charge is released only for a definite no-generation
+    refusal, so an operator-side outage such as SERVER_BLOCKED does not drain every
+    student's STARTER token budget.
+    """
 
     def __init__(self, provider: Any, usage: StarterUsageStore, account_id: str) -> None:
         self._provider = provider
@@ -241,6 +263,12 @@ class MeteredStarterProvider:
             raise ProviderUnavailable("STARTER quota is exhausted", "STARTER_QUOTA") from None
         try:
             result = self._provider.interpret(text, context)
-        finally:
+        except ProviderUnavailable as failure:
+            usage = getattr(self._provider, "last_usage", None)
+            self._usage.reconcile(reservation, _NO_USAGE if _definitely_not_generated(failure) else usage)
+            raise
+        except BaseException:
             self._usage.reconcile(reservation, getattr(self._provider, "last_usage", None))
+            raise
+        self._usage.reconcile(reservation, getattr(self._provider, "last_usage", None))
         return result

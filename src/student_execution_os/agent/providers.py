@@ -9,9 +9,13 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import math
 import os
 import socket
+import time
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -19,6 +23,15 @@ from urllib.parse import urlsplit
 import httpx
 
 from student_execution_os.domain.errors import ValidationError
+from student_execution_os.netguard import (
+    IpAddress,
+    PinnedNetworkBackend,
+    PinnedTransport,
+    is_public_address,
+    wire_host,
+)
+
+_log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
@@ -99,12 +112,19 @@ class ProviderUnavailable(ValidationError):
                the operator's LLM egress proxy/relay is misconfigured or refused it
     BLOCKED_URL  a user-supplied address points into a private network
     ========== =============================================================
+
+    ``retry_after`` is the provider's Retry-After in whole seconds (429/503), if any.
+    ``route`` is the egress path taken (DIRECT, DIRECT_PINNED, PROXY, RELAY) or None
+    when the request never left the server.
     """
 
-    def __init__(self, message: str, reason: str = "NETWORK", http_status: int | None = None) -> None:
+    def __init__(self, message: str, reason: str = "NETWORK", http_status: int | None = None,
+                 *, retry_after: int | None = None, route: str | None = None) -> None:
         super().__init__(message)
         self.reason = reason
         self.http_status = http_status
+        self.retry_after = retry_after
+        self.route = route
 
 
 def _error_fields(response: httpx.Response) -> tuple[bool, str]:
@@ -243,6 +263,11 @@ def _reason(status: int, response: httpx.Response | None = None, *, custom_addre
     provider_error, text = _error_fields(response) if response is not None else (False, "")
     mentions_model = "model" in text
     quota = any(word in text for word in ("insufficient_quota", "quota", "billing", "credit balance", "credits"))
+    if status == 429 and "rate_limit" in text and "insufficient_quota" not in text:
+        # Groq's per-minute/per-day limits say "rate_limit_exceeded" and append an
+        # upsell link to .../settings/billing: that is a transient limit, not an
+        # exhausted account, and must neither stick on a key nor trigger key failover.
+        return "RATE_LIMITED"
     if status in (401, 403):
         # Providers such as Groq use 403 for organization/project model
         # permissions. That says the credential was understood but this model is
@@ -269,7 +294,7 @@ def _reason(status: int, response: httpx.Response | None = None, *, custom_addre
                                           "unsupported parameter", "unsupported_parameter", "not supported")):
             return "FORMAT"
         if mentions_model and any(word in text for word in ("not found", "not_found", "does not exist", "invalid model",
-                                                            "unknown model", "model_not_found")):
+                                                            "unknown model", "model_not_found", "decommissioned")):
             return "NOT_FOUND"
         return "REJECTED"
     if 300 <= status < 400:
@@ -277,26 +302,60 @@ def _reason(status: int, response: httpx.Response | None = None, *, custom_addre
     return "UPSTREAM" if status >= 500 else "REJECTED"
 
 
-def assert_public_base_url(url: str) -> None:
+def assert_public_base_url(url: str) -> tuple[IpAddress, ...] | None:
     """Refuse a user-supplied API address that points into the server's own network.
 
     A per-user base URL makes the server issue requests on the user's behalf, so it
     must not reach loopback, private, link-local (cloud metadata) or other
     non-global addresses. Checked when saved and again before every request.
+
+    Returns the validated address set; a direct request pins its connection to it
+    (see ``netguard``), so DNS cannot change between this check and the connect.
+    ``None`` only in the local-development override.
     """
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         raise ProviderUnavailable("the API address must be an https:// URL without credentials", "BLOCKED_URL")
-    if os.environ.get("SEOS_LLM_ALLOW_PRIVATE_BASE_URL") == "1":  # local development only
-        return
     try:
-        infos = socket.getaddrinfo(parts.hostname, parts.port or 443, proto=socket.IPPROTO_TCP)
+        port = parts.port or 443
+    except ValueError:
+        raise ProviderUnavailable("the API address must be an https:// URL without credentials", "BLOCKED_URL") from None
+    if os.environ.get("SEOS_LLM_ALLOW_PRIVATE_BASE_URL") == "1":  # local development only
+        return None
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, UnicodeError) as exc:
         raise ProviderUnavailable("the API address could not be resolved", "NETWORK") from exc
+    addresses: set[IpAddress] = set()
     for info in infos:
         address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
-        if not address.is_global:
+        if not is_public_address(address):
             raise ProviderUnavailable("the API address must be a public internet host", "BLOCKED_URL")
+        addresses.add(address)
+    if not addresses:
+        raise ProviderUnavailable("the API address could not be resolved", "NETWORK")
+    return tuple(sorted(addresses, key=lambda address: (address.version, int(address))))
+
+
+def _retry_after(response: httpx.Response) -> int | None:
+    """Retry-After (delta-seconds or HTTP-date) as bounded whole seconds, else None."""
+    raw = response.headers.get("retry-after")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    raw = raw.strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if not math.isfinite(seconds):  # "nan", "inf", "1e309": not a usable delay
+        return None
+    return max(0, min(3600, math.ceil(seconds)))
 
 
 def _content_json(text: str) -> dict[str, Any]:
@@ -345,14 +404,75 @@ def probe_context(now: str) -> dict[str, object]:
     return {"now": now, "timezone": "UTC", "obligations": [], "locale": "ru"}
 
 
+def _log_request(name: str, route: str | None, started: float, result: str, http_status: int | None) -> None:
+    # Operator diagnostics only: provider id, egress route, outcome class and timing.
+    # Never the URL, key, relay token, prompt or provider body.
+    _log.log(logging.INFO if result == "OK" else logging.WARNING,
+             "llm_request provider=%s route=%s result=%s http_status=%s latency_ms=%d",
+             name, route or "NONE", result, http_status if http_status is not None else "-",
+             round((time.monotonic() - started) * 1000))
+
+
 def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: float, name: str,
-          public_only: bool = False, custom_address: bool = False) -> httpx.Response:
-    if public_only:
-        assert_public_base_url(url)  # the user's own address, before any egress choice
+          public_only: bool = False, custom_address: bool = False,
+          observed: dict[str, Any] | None = None) -> httpx.Response:
+    started = time.monotonic()
+    route: str | None = None
+    try:
+        response, route, relayed = _send(url, headers=headers, body=body, timeout=timeout, name=name,
+                                         public_only=public_only)
+        if observed is not None:
+            observed["route"] = route
+        relay_error = response.headers.get("X-SEOS-Relay-Error") if relayed else None
+        if relay_error and response.status_code >= 300:
+            # The relay refused or failed by itself; the provider never saw the request,
+            # so this must not read as a verdict on the user's key.
+            raise ProviderUnavailable(
+                f"the LLM egress relay for assistant provider {name} answered HTTP {response.status_code}",
+                _RELAY_ERRORS.get(relay_error.strip().lower(), "REQUEST"),
+                response.status_code, route=route,
+            )
+        if response.status_code >= 300:
+            # The provider's body is not echoed: some providers quote part of the key.
+            raise ProviderUnavailable(
+                f"assistant provider {name} answered HTTP {response.status_code}",
+                _reason(response.status_code, response, custom_address=custom_address),
+                response.status_code, retry_after=_retry_after(response), route=route,
+            )
+    except ProviderUnavailable as exc:
+        if exc.route is None:
+            exc.route = route
+        _log_request(name, exc.route, started, exc.reason, exc.http_status)
+        raise
+    _log_request(name, route, started, "OK", response.status_code)
+    return response
+
+
+def _post_pinned(url: str, addresses: tuple[IpAddress, ...], *, headers: dict[str, str],
+                 json: dict[str, Any], timeout: float, follow_redirects: bool) -> httpx.Response:
+    """POST over a connection that may only reach ``addresses`` (validated just before)."""
+    port = urlsplit(url).port or 443
+    transport = PinnedTransport(PinnedNetworkBackend(wire_host(url), addresses, port=port))
+    with httpx.Client(transport=transport, trust_env=False, timeout=timeout,
+                      follow_redirects=follow_redirects) as client:
+        return client.post(url, headers=headers, json=json)
+
+
+def _send(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: float, name: str,
+          public_only: bool) -> tuple[httpx.Response, str, bool]:
+    """Choose exactly one egress route and send; returns (response, route, relayed).
+
+    Routes are deterministic and never come from ambient ``HTTPS_PROXY``-style
+    variables (``trust_env=False`` everywhere): an operator selects PROXY or RELAY
+    per exact host; everything else is DIRECT. A user-supplied address is
+    DIRECT_PINNED: connected only to the addresses validated just before.
+    """
+    pinned = assert_public_base_url(url) if public_only else None  # before any egress choice
     proxy = _llm_egress_proxy(url)
     relay = _llm_egress_relay(url)
     if proxy and relay:
         raise ProviderUnavailable("configure only one LLM egress mechanism", "REQUEST")
+    route = "PROXY" if proxy else "RELAY" if relay else "DIRECT_PINNED" if pinned else "DIRECT"
     try:
         # Redirects are not followed: a redirect must not carry the key elsewhere.
         # A configured egress proxy or relay is used only for an explicit host
@@ -364,32 +484,22 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         elif relay:
             with httpx.Client(trust_env=False, timeout=timeout, follow_redirects=False) as client:
                 response = client.post(relay.url, headers={**headers, "X-SEOS-Relay-Token": relay.token}, json=body)
+        elif pinned:
+            response = _post_pinned(url, pinned, headers=headers, json=body, timeout=timeout,
+                                    follow_redirects=False)
         else:
-            response = httpx.post(url, headers=headers, json=body, timeout=timeout, follow_redirects=False)
+            response = httpx.post(url, headers=headers, json=body, timeout=timeout,
+                                  follow_redirects=False, trust_env=False)
     except httpx.TimeoutException:
-        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "NETWORK") from None
-    except (httpx.LocalProtocolError, httpx.UnsupportedProtocol):
+        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "NETWORK",
+                                  route=route) from None
+    except (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL, UnicodeError):
         # Refused by httpx before anything was sent: a bug here, not the network.
-        raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST") from None
+        raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST",
+                                  route=route) from None
     except httpx.HTTPError:
-        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK") from None
-    relay_error = response.headers.get("X-SEOS-Relay-Error") if relay else None
-    if relay_error and response.status_code >= 300:
-        # The relay refused or failed by itself; the provider never saw the request,
-        # so this must not read as a verdict on the user's key.
-        raise ProviderUnavailable(
-            f"the LLM egress relay for assistant provider {name} answered HTTP {response.status_code}",
-            _RELAY_ERRORS.get(relay_error.strip().lower(), "REQUEST"),
-            response.status_code,
-        )
-    if response.status_code >= 300:
-        # The provider's body is not echoed: some providers quote part of the key.
-        raise ProviderUnavailable(
-            f"assistant provider {name} answered HTTP {response.status_code}",
-            _reason(response.status_code, response, custom_address=custom_address),
-            response.status_code,
-        )
-    return response
+        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route) from None
+    return response, route, bool(relay)
 
 
 def _user_message(text: str, context: dict[str, object]) -> str:
@@ -407,15 +517,21 @@ class OpenAICompatibleProvider:
     public_only: bool = False  # user-supplied base URL: refuse non-public hosts
     max_output_tokens: int | None = None
     last_usage: dict[str, int] | None = field(default=None, init=False, repr=False)
+    # Egress route of the last request that got an HTTP answer (diagnostics only).
+    last_route: str | None = field(default=None, init=False, repr=False)
 
     def _chat(self, messages: list[dict[str, str]], **extra: Any) -> httpx.Response:
         body: dict[str, Any] = {"model": self.model, "messages": messages, **extra}
-        return _post(
-            f"{self.base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            body=body, timeout=self.timeout, name=self.name, public_only=self.public_only,
-            custom_address=self.public_only or self.name == "openai-compatible",
-        )
+        observed: dict[str, Any] = {}
+        try:
+            return _post(
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                body=body, timeout=self.timeout, name=self.name, public_only=self.public_only,
+                custom_address=self.public_only or self.name == "openai-compatible", observed=observed,
+            )
+        finally:
+            self.last_route = observed.get("route")
 
     def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         # No temperature: OpenAI reasoning models reject a non-default one, and Groq's
@@ -453,14 +569,19 @@ class AnthropicProvider:
     public_only: bool = False
     max_output_tokens: int = 1200
     last_usage: dict[str, int] | None = field(default=None, init=False, repr=False)
+    last_route: str | None = field(default=None, init=False, repr=False)
 
     def _messages(self, body: dict[str, Any]) -> httpx.Response:
-        return _post(
-            f"{self.base_url.rstrip('/')}/v1/messages",
-            headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
-            body={"model": self.model, **body}, timeout=self.timeout, name=self.name, public_only=self.public_only,
-            custom_address=self.public_only,
-        )
+        observed: dict[str, Any] = {}
+        try:
+            return _post(
+                f"{self.base_url.rstrip('/')}/v1/messages",
+                headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"},
+                body={"model": self.model, **body}, timeout=self.timeout, name=self.name,
+                public_only=self.public_only, custom_address=self.public_only, observed=observed,
+            )
+        finally:
+            self.last_route = observed.get("route")
 
     def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         self.last_usage = None
@@ -566,24 +687,26 @@ class PlatformProviderPool:
         self.name = providers[0].name
         self.model = providers[0].model
         self.last_usage: dict[str, int] | None = None
+        self.last_route: str | None = None
+        self.last_credential: str | None = None  # "primary" or "standby" (diagnostics)
+
+    def _attempt(self, index: int, text: str, context: dict[str, object]):
+        provider = self._providers[index]
+        self.last_credential = "primary" if index == 0 else "standby"
+        try:
+            return provider.interpret(text, context)
+        finally:
+            self.last_usage = provider.last_usage
+            self.last_route = getattr(provider, "last_route", None)
 
     def interpret(self, text: str, context: dict[str, object]):
         self.last_usage = None
         try:
-            result = self._providers[0].interpret(text, context)
-            self.last_usage = self._providers[0].last_usage
-            return result
+            return self._attempt(0, text, context)
         except ProviderUnavailable as primary:
-            self.last_usage = self._providers[0].last_usage
             if len(self._providers) == 1 or primary.reason not in self._ALTERNATE_REASONS:
                 raise
-        try:
-            result = self._providers[1].interpret(text, context)
-            self.last_usage = self._providers[1].last_usage
-            return result
-        except ProviderUnavailable:
-            self.last_usage = self._providers[1].last_usage
-            raise
+        return self._attempt(1, text, context)
 
 
 def _platform_keys_from_environment() -> list[str]:

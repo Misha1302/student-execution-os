@@ -1,7 +1,7 @@
 import { load, clearAll, invalidate } from '../store.js';
 import { api, session, clearAuth } from '../api.js';
 import { t, code, fmtDateTime, getLocale, setLocale, LOCALES } from '../i18n.js';
-import { esc, icon, chip, kv, openSheet, chipGroup, toast, errorMessage, setBusy, confirmSheet } from '../ui.js';
+import { esc, icon, chip, kv, openSheet, chipGroup, toast, errorMessage, setBusy, confirmSheet, focusSoon } from '../ui.js';
 import { isNative, saveJson, prefGet, prefSet } from '../native.js';
 import { getTheme, setTheme } from '../theme.js';
 import { shell } from '../actions.js';
@@ -85,7 +85,7 @@ function feedbackSheet(diag) {
       <button type="button" class="button primary" data-send>${esc(t('settings.feedbackSend'))}</button>`,
   });
   const input = dialog.querySelector('[data-feedback]');
-  setTimeout(() => input.focus(), 80);
+  focusSoon(input);
   dialog.querySelector('[data-send]').addEventListener('click', async (event) => {
     const message = input.value.trim();
     if (!message) return;

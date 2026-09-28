@@ -203,7 +203,9 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R4.1 — Academic calendar SSRF / DNS-rebinding hardening
 
-- **STATUS:** IMPLEMENTED on `fix/r4-academic-dns-pinning`; PR/CI/merge recorded below.
+- **STATUS:** MERGED. PR #33 (`fix/r4-academic-dns-pinning`), head `3d4352b`, merge
+  `ff0867c` on `main`. Remote CI `verify` green on `3d4352b` (both push and PR runs);
+  `android`/`apk` not triggered (path-filtered to `mobile/**` and static web assets).
 - **BASELINE (`a3d45c6`), reproduced, not assumed:** `HttpIcsReader` validated
   `getaddrinfo` answers, then handed the *hostname* to a default `httpx.Client`. A
   socket-level spy showed the transport connecting to `('calendar.example', 443)` — i.e.
@@ -234,4 +236,78 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   `academic_schedule_e2e` 1/1; focused R4+R4.1 32/32.
 - **KNOWN LIMITATION:** calendar egress is always direct; an operator cannot route it
   through a proxy (by design — the proxy would perform its own resolution).
+
+## R5 — Production Groq / AI path
+
+- **STATUS:** IMPLEMENTED on `feature/r5-production-groq`; PR/CI/merge recorded below.
+  LIVE GROQ: **NOT VERIFIED** (exact blocker below).
+- **BASELINE (`ff0867c`), observed in code, not assumed:** resolution is
+  `USER_BYOK > PLATFORM_MANAGED (STARTER) > deterministic local parser`
+  (`agent/credentials.py::resolve`); a stored BYOK key keeps precedence even when it
+  fails. Platform primary/standby via `SEOS_PLATFORM_LLM_API_KEY_FILES`, standby only
+  after `AUTH`/`QUOTA` (`PlatformProviderPool`). STARTER limits/reservation/reconciliation
+  in `agent/usage.py` (atomic `BEGIN IMMEDIATE`). Egress: direct, host-scoped proxy
+  (Tor/Privoxy, Squid) or Cloudflare relay, per exact host, both-for-one-host = `REQUEST`.
+  Degraded answers already labelled `engine: LOCAL` + `fallback_reason`.
+- **DEFECTS FOUND (each reproduced by a test that fails on `ff0867c`):**
+  1. Groq 429 (`rate_limit_exceeded` + `…/settings/billing` upsell) → `QUOTA`: sticky key
+     status and platform standby failover on a transient limit;
+  2. Groq `model_decommissioned` (400) → `REJECTED` instead of `NOT_FOUND`;
+  3. STARTER charged the full reservation on refusals that generated nothing, so a
+     `SERVER_BLOCKED` outage drained every student's token budget;
+  4. direct egress used `trust_env=True`: an ambient `HTTPS_PROXY` silently rerouted
+     platform/BYOK traffic (route not deterministic);
+  5. user-supplied OpenAI-compatible address: validate-then-re-resolve DNS rebinding
+     window, and NAT64/IPv4-compatible private forms accepted;
+  6. hostile `Retry-After: 1e309` would raise `OverflowError` (HTTP 500) once parsed;
+  7. no sanitized route/result record and no operator live probe.
+- **OWNERS / IMPLEMENTATION (no new subsystem):** `agent/providers.py` (classification,
+  `Retry-After`, deterministic routes `DIRECT`/`DIRECT_PINNED`/`PROXY`/`RELAY`,
+  `student_execution_os.llm` log line without URL/key/token/prompt/body);
+  `agent/usage.py` (token refund only for certain no-generation: 401/402/403/404/405/
+  413/415/429 or never-sent; request counter never refunded; timeouts/5xx/400 stay
+  charged); `netguard.py` (pinning shared with R4.1 calendar reader);
+  `agent/smoke.py` + CLI `llm-smoke`; `retry_after_seconds` in interpret and
+  connection-test responses (additive). ADR 0029; deploy/README updated.
+- **TESTS (MOCKED unless stated):**
+  - `tests.unit.test_r5_llm_egress_matrix` 12 new: success + usage + route log;
+    401/403 (JSON and HTML)/404/decommissioned/429 Groq/429 insufficient_quota/500/503/
+    400 json_validate_failed/302; Retry-After (seconds, date, garbage, nan/inf/1e309,
+    bounds); connect timeout/read timeout/DNS/protocol error → `NETWORK` without cause
+    chain; empty choices/no choices/HTML 200/null content → `MALFORMED`, non-JSON/no
+    actions/actions not list/truncated (`finish_reason=length`) → `FORMAT`; standby only
+    for 401/402; operator smoke report (OK/`SERVER_BLOCKED`/`FORMAT`, standby named,
+    NOT_CONFIGURED); real socket layer: platform DIRECT ignores `HTTPS_PROXY`/`ALL_PROXY`,
+    BYOK custom address resolved once and connected only to the validated literal under a
+    rebinding resolver; embedded-private IPv6/CGNAT refused; relay route + relay-vs-Groq
+    error classes; secrets (key, relay token, prompt, URL) absent from errors/repr/logs.
+  - `tests.integration.test_v21_starter_llm` 17 (7 new, LOCAL INTEGRATION through the
+    real API + SQLite): Groq 429 → `RATE_LIMITED`, `retry_after_seconds=7`, no failover,
+    tokens 0, labelled LOCAL; `SERVER_BLOCKED` ×3 → no failover, 3 requests / 0 tokens;
+    read-timeout/503/400 stay fully charged; standby used for 401 and 402 only, its
+    429/success accounted exactly; revoked BYOK → LOCAL `AUTH`, status `INVALID_KEY`, key
+    absent, no platform call, no STARTER row; off-switch → no outbound, entitlement kept,
+    re-enable restores; 8-thread account-cap race → exactly 3 reservations, counters ==
+    ledger, global == account. Existing: global-cap race, period reset, secrets never in
+    API/log/DB/export, deletion.
+  - `tests.web.test_llm_credentials_api` fake now enforces `trust_env=False` and
+    public-only pinned addresses; relay Worker `node --test` 16/16 (4 new: path
+    confusion, streamed oversize body, response-header allowlist, token length/case).
+- **LOCAL VERIFICATION (Python 3.13):** `make static` OK; relay 16/16; `make test`
+  459/459; `make api` 29/29; `make smoke` OK; focused AI suites 80/80. `make browser`
+  33/34: `test_explicit_alarm_survives_model_omission_and_conflict_up_to_the_queued_create`
+  (page-stubbed API; "timed out waiting for a fresh /api/v1/sync request") fails
+  identically 2/2 on unmodified `main` in this container — environmental; CI decides.
+- **LIVE GROQ: NOT VERIFIED.** Blockers: (a) this build container's network policy
+  refuses `CONNECT api.groq.com:443` (agent proxy `connect_rejected`) and holds no
+  platform key; (b) the production API container (which holds the key files and relay
+  settings) was not accessed — the only SSH credential available was pasted into chat
+  and is treated as compromised, so it was not used. Exact next action for an operator
+  with legitimate access: deploy this SHA, then
+  `docker compose -f deploy/docker-compose.yml exec api python -m student_execution_os llm-smoke`
+  and record `result`/`route`/`model`/`latency_ms` here (expected route `RELAY`).
+- **KNOWN LIMITATIONS:** request counters are charged for every attempt (abuse bound);
+  a `NETWORK` failure is charged in full even when the connect never happened (httpx
+  error classes are merged); relay/proxy endpoints are operator-trusted and not pinned.
+- **NEXT DEPENDENCY:** R6 external capability API + MCP.
 

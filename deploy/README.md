@@ -95,7 +95,22 @@ period, 100 requests/100,000 tokens per account, and global hard caps of 10,000
 requests/10,000,000 tokens. A conservative maximum is atomically reserved before the
 outbound request and reconciled from provider usage afterward. Exhaustion or provider
 failure returns the local parser, not HTTP 500. BYOK bypasses this ledger entirely.
-STARTER does not implement paid billing.
+STARTER does not implement paid billing. Every attempt counts one request. The token
+reservation is released only when the provider certainly generated nothing (HTTP
+401/402/403/404/405/413/415/429, or a request refused before leaving the server), so a
+`SERVER_BLOCKED` outage does not drain student token budgets; timeouts, network errors
+after connect, 5xx and 400 answers stay fully charged (fail closed). Groq 429s
+(`rate_limit_exceeded`, even with the billing upsell link) are `RATE_LIMITED`, never
+`QUOTA`: no standby failover, no sticky key status, and `retry_after_seconds` is passed
+to the client from `Retry-After`.
+
+Egress is chosen per request and is deterministic: `RELAY` or `PROXY` only for exact
+hosts listed by the operator, otherwise `DIRECT`; ambient `HTTPS_PROXY`/`ALL_PROXY`
+variables are ignored. A user-supplied API address is `DIRECT_PINNED`: resolved once,
+every answer must be public, and the connection goes only to those addresses (TLS and
+`Host` keep the name). Each request logs one line on `student_execution_os.llm`:
+`llm_request provider=… route=… result=… http_status=… latency_ms=…` — never the URL,
+key, relay token, prompt or provider body.
 
 ### Provider rejects the server but the key works elsewhere
 
@@ -296,7 +311,8 @@ Errors the Worker produces carry `X-SEOS-Relay-Error` and are never reported as 
 user's key: `unauthorized`/`invalid_request`/`relay_misconfigured` → `REQUEST` (operator
 configuration), `provider_unreachable` → `NETWORK`, `upstream_redirect` → `UPSTREAM`.
 Answers from Groq itself have no such header and keep the normal classification (401 →
-`AUTH`, region 403 → `SERVER_BLOCKED`, model 403 → `NOT_FOUND`, 429 → `RATE_LIMITED`/`QUOTA`).
+`AUTH`, region 403 → `SERVER_BLOCKED`, model 403/404/decommissioned → `NOT_FOUND`,
+429 → `RATE_LIMITED`, or `QUOTA` only for `insufficient_quota`).
 
 **Rollback A (direct):** empty the three `SEOS_LLM_EGRESS_RELAY_*` variables and run the
 normal nginx deployment command above with `--remove-orphans`.
@@ -457,6 +473,21 @@ reminder-worker heartbeat (and, with `--expect-push`, that the worker has FCM co
 `--expect-byok` saves a deliberately invalid AI key, checks that it is masked and absent
 from every response, that the real provider rejects it (`INVALID_KEY`) and that capture
 falls back to the local parser, then removes it. The account is deleted at the end.
+
+### Live platform LLM smoke
+
+Inside the API container (it has the platform key files and egress settings):
+
+```bash
+docker compose -f deploy/docker-compose.yml exec api python -m student_execution_os llm-smoke
+```
+
+sends one real probe through the configured primary/standby credentials and egress route
+and prints only `{"result", "route", "provider", "model", "http_status", "latency_ms",
+"total_tokens", "credential"}` (exit 0 = `OK`, 2 = provider/egress failure, 3 = not
+configured). It never uses the local parser, so `OK` means the provider returned a typed
+action. It spends one small request on the platform key and does not touch STARTER
+counters or the database.
 
 ## Not yet covered
 

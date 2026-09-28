@@ -399,7 +399,8 @@ class LlmCredentialStore:
             raise RateLimited("too many connection tests; try again in a minute")
         resolved = self.resolve(account_id)
         if resolved.source is not CredentialSource.USER_BYOK:
-            return {"ok": False, "status": "UNREADABLE", "reason": None, "http_status": None, "checked": [],
+            return {"ok": False, "status": "UNREADABLE", "reason": None, "http_status": None,
+                    "retry_after_seconds": None, "checked": [],
                     "latency_ms": None, "settings": self.public(account_id)}
         started = time.monotonic()
         failure: ProviderUnavailable | None = None
@@ -416,6 +417,7 @@ class LlmCredentialStore:
         return {"ok": failure is None, "status": status,
                 "reason": None if failure is None else failure.reason,
                 "http_status": None if failure is None else failure.http_status,
+                "retry_after_seconds": None if failure is None else failure.retry_after,
                 "checked": list(CHECKED) if failure is None else _passed_before(failure.reason),
                 "latency_ms": latency, "settings": self.public(account_id)}
 

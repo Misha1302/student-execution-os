@@ -2,7 +2,7 @@
 // device's cached lists, so it also works offline. Same projection as «Дела».
 import { load, peek } from './store.js';
 import { t, now } from './i18n.js';
-import { esc, openSheet, icon } from './ui.js';
+import { esc, openSheet, icon, focusSoon } from './ui.js';
 import { commitments } from './agenda.js';
 import { commitmentRow } from './views/tasks.js';
 
@@ -35,5 +35,5 @@ export async function openSearch() {
   // Opening a result closes the search.
   results.addEventListener('click', (e) => { if (e.target.closest('[data-action]')) setTimeout(() => dialog.close('open'), 0); });
   draw();
-  setTimeout(() => input.focus(), 60);
+  focusSoon(input, 60);
 }

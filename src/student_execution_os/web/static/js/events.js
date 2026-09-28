@@ -4,7 +4,7 @@
 // like task changes.
 import { peek } from './store.js';
 import { t, code, fmtDay, fmtTime, fmtDuration, sameDay, now } from './i18n.js';
-import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, kv, chip } from './ui.js';
+import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, kv, chip, focusSoon } from './ui.js';
 import { change, lifecycle } from './actions.js';
 import { newEntityId } from './sync.js';
 
@@ -155,7 +155,7 @@ export function newEventSheet(prefill = {}) {
       <button type="button" class="button primary" data-save>${esc(t('compose.create'))}</button>`,
   });
   bindEventFields(dialog);
-  setTimeout(() => dialog.querySelector('[data-e="title"]').focus(), 80);
+  focusSoon(() => dialog.querySelector('[data-e="title"]'));
   dialog.querySelector('[data-save]').addEventListener('click', async () => {
     let fields;
     try { fields = readEventFields(dialog); } catch (err) { toast(err.message, { error: true }); return; }

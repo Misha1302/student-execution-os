@@ -756,6 +756,11 @@ def build_parser() -> argparse.ArgumentParser:
     action.add_argument("--revoke", action="store_true")
     entitlement.add_argument("--expires", help="ISO offset datetime; omit for no expiry")
 
+    subparsers.add_parser(
+        "llm-smoke",
+        help="one real probe through the platform LLM credential and egress route (prints no secrets)",
+    )
+
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
     account.add_argument("--account", required=True)
@@ -900,6 +905,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store.grant_entitlement(account_id, args.grant, _dt(args.expires) if args.expires else None)
             print(json.dumps({"account_id": account_id, "entitlement": store.entitlement(account_id)}, sort_keys=True))
         return 0
+
+    if args.command == "llm-smoke":
+        from student_execution_os.agent.smoke import platform_llm_smoke
+
+        report = platform_llm_smoke()
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report["result"] == "OK" else 3 if report["result"] == "NOT_CONFIGURED" else 2
 
     if args.command == "account-init":
         with SQLiteCanonicalRepository(args.database) as repo:

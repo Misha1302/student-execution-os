@@ -54,7 +54,13 @@ class FakeLlm:
         self.error_body: dict | None = None  # what a non-2xx answer carries
         self.during_call = None  # runs while a request is "in flight"
 
-    def __call__(self, url, *, headers, json, timeout, follow_redirects):
+    def pinned(self, url, addresses, **kwargs):
+        # A user-supplied address may only be reached at its validated public addresses.
+        assert addresses and all(address.is_global for address in addresses), addresses
+        return self(url, trust_env=False, **kwargs)
+
+    def __call__(self, url, *, headers, json, timeout, follow_redirects, trust_env=True):
+        assert trust_env is False, "LLM egress must not use ambient proxy variables"
         key = headers.get("x-api-key") or headers.get("Authorization", "").removeprefix("Bearer ")
         self.calls.append((url, key))
         self.bodies.append(json)
@@ -82,6 +88,8 @@ class LlmCredentialsApiTest(unittest.TestCase):
         self.fake = FakeLlm()
         self.post = patch("student_execution_os.agent.providers.httpx.post", side_effect=self.fake)
         self.post.start()
+        self.pinned = patch("student_execution_os.agent.providers._post_pinned", side_effect=self.fake.pinned)
+        self.pinned.start()
         TEST_LIMITER._hits.clear()
         self.client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
         self.log = io.StringIO()
@@ -95,6 +103,7 @@ class LlmCredentialsApiTest(unittest.TestCase):
     def tearDown(self) -> None:
         logging.getLogger().removeHandler(self.handler)
         self.post.stop()
+        self.pinned.stop()
         self.env.stop()
         self.tmp.cleanup()
 

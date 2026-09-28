@@ -10,7 +10,7 @@
 import { api } from './api.js';
 import { load, peek } from './store.js';
 import { t, code, fmtDuration, fmtDateTime, fmtTime, fmtDay, now, getLocale, sameDay } from './i18n.js';
-import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, errorMessage } from './ui.js';
+import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, errorMessage, focusSoon } from './ui.js';
 import { mutate, change, shell } from './actions.js';
 import { newEntityId, settled } from './sync.js';
 import { parseTask, captureKind } from './nlparse.js';
@@ -826,7 +826,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
 
   render();
   if (text) { parseLocal(); if (initialKind === 'EVENT' && !eventDraft) { eventDraft = eventFromTask(draft); kind = 'EVENT'; render(); } enrich(); }
-  setTimeout(() => input.focus(), 80);
+  focusSoon(input);
   if (listenNow && voiceSupported()) listen();
   return dialog;
 }
@@ -868,7 +868,7 @@ export function editTaskSheet(task, { focus } = {}) {
   });
   bindFields(dialog);
   if (focus === 'effort') setTimeout(() => focusDurationOther(dialog, 'f-effort'), 80);
-  else if (focus) setTimeout(() => dialog.querySelector(`[data-field="${focus}"]`)?.querySelector('input,select,button')?.focus(), 80);
+  else if (focus) focusSoon(() => dialog.querySelector(`[data-field="${focus}"]`)?.querySelector('input,select,button'));
   dialog.querySelector('[data-save]').addEventListener('click', async (e) => {
     let fields;
     try { fields = readFields(dialog); } catch (err) { toast(err.message, { error: true }); return; }
