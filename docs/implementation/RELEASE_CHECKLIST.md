@@ -1,14 +1,16 @@
 # Release checklist and release-candidate gates
 
-This file is the **single canonical list** of release gates. `RC_LEDGER.md` records the
-evidence; any other summary (PR text, chat report) that disagrees with this list is wrong.
+This file is the **single canonical list** of release gates. `RC_LEDGER.md` records
+implementation-time evidence only. Live evidence for a frozen release is an external,
+immutable GitHub Release record as described in **Immutable live evidence** below; any
+summary (PR text, chat report) that disagrees with this list is wrong.
 
 ## Status definitions
 
 | Status | Means | Requires |
 |---|---|---|
 | **CLOSED-BETA READY** | The code at a given SHA may be deployed by the owner to invited testers. Nothing is claimed about production behaviour. | Gates **G1–G4** all VERIFIED on that SHA. |
-| **RELEASE-CANDIDATE READY** | That SHA has been proven in production-equivalent conditions and could be offered to all students. | **G1–G13** all VERIFIED on the *same* SHA (G5–G13 recorded in `RC_LEDGER.md` with date, operator, output). |
+| **RELEASE-CANDIDATE READY** | That SHA has been proven in production-equivalent conditions and could be offered to all students. | **G1–G13** all VERIFIED on the *same* SHA in a published immutable `rc-evidence-<release-sha>` GitHub Release. |
 
 A gate is **VERIFIED** only with recorded evidence for the named SHA/tree. "Tested on the
 PR head" counts for a merge commit only when `git rev-parse <merge>^{tree}` equals the tested
@@ -29,7 +31,7 @@ Evidence labels: MOCKED · LOCAL · CI · PRODUCTION-LIKE · LIVE.
 
 ### Owner-only (production authority; each *mutation* needs its own go-ahead right before it)
 
-| # | Gate | Evidence to record in `RC_LEDGER.md` |
+| # | Gate | Evidence to record in the external RC evidence bundle |
 |---|---|---|
 | G5 | Every credential that ever appeared in a chat, ticket or log is rotated (VPS SSH password included; key-based SSH only) *(mutation)* | Date + list of rotated credential *names* (never values). |
 | G6 | Secrets live only in secret files | `docker compose ... config` shows paths, never values *(read-only)*; relay `RELAY_TOKEN` matches the API secret file. |
@@ -40,6 +42,48 @@ Evidence labels: MOCKED · LOCAL · CI · PRODUCTION-LIKE · LIVE.
 | G11 | Production-signed APK | `android-release.yml` run for the SHA: `provenance.json` (commit, tree, APK sha256, signing certificate SHA-256, `fcm_config: true`) attached to the `v<version>` release; certificate SHA-256 equals the owner's recorded release key. |
 | G12 | Real phone | That APK installed **over the previous production-signed build**: data kept; update prompt from the signed policy; a real FCM push reminder arrives (worker `push_configured: true`, delivery row `SENT`, notification seen) and its buttons act on the server. |
 | G13 | Live HSE calendar | A consenting student's real HSE `.ics` feed (or a sanitized current copy) imports: classes appear with correct local times, a re-import is idempotent, a personal note survives it. |
+
+## Immutable live evidence
+
+Committing G5–G13 results would change the source SHA and invalidate the same-revision
+claim. The source tree therefore defines only the schema and procedure. Live results are
+written outside the Git worktree, every gate repeats the frozen `release_sha`, and the
+completed record is published as an immutable GitHub Release asset.
+
+Repository setting **Release immutability** must be enabled before evidence collection.
+Use a draft so every safe asset is present before publication; publication locks the tag
+and assets and creates GitHub's release attestation. Never publish a partial bundle.
+
+```bash
+RELEASE_SHA=$(git rev-parse origin/main)
+RELEASE_TREE=$(git rev-parse "$RELEASE_SHA^{tree}")
+EVIDENCE_DIR=$(mktemp -d)
+python tools/rc_evidence.py new --release-sha "$RELEASE_SHA" \
+  --release-tree "$RELEASE_TREE" --operator <operator> \
+  --output "$EVIDENCE_DIR/rc-evidence.json"
+
+# Fill the JSON as G1-G13 run. Store only non-secret results, identities, hashes and links.
+python tools/rc_evidence.py validate "$EVIDENCE_DIR/rc-evidence.json" \
+  --expect-sha "$RELEASE_SHA" --expect-tree "$RELEASE_TREE" --require-all-verified
+sha256sum "$EVIDENCE_DIR/rc-evidence.json" >"$EVIDENCE_DIR/rc-evidence.sha256"
+
+TAG="rc-evidence-$RELEASE_SHA"
+gh release create "$TAG" --draft --prerelease --target "$RELEASE_SHA" \
+  --title "RC evidence $RELEASE_SHA" --notes "Immutable G1-G13 evidence for $RELEASE_SHA"
+gh release upload "$TAG" "$EVIDENCE_DIR/rc-evidence.json" \
+  "$EVIDENCE_DIR/rc-evidence.sha256"
+gh release edit "$TAG" --draft=false
+
+# The record is valid only when the API reports immutable=true and target_commitish is
+# RELEASE_SHA. Asset digests and GitHub's release attestation make it replayable.
+gh api "repos/{owner}/{repo}/releases/tags/$TAG" \
+  --jq '{tag_name,target_commitish,immutable,assets:[.assets[]|{name,digest,size}]}'
+```
+
+`tools/rc_evidence.py` rejects missing/duplicate gates, mixed SHAs, incomplete publication,
+secret-bearing field names and common secret shapes. This is defense in depth, not a
+substitute for operator review: never include passwords, tokens, API keys, private feed
+URLs, private keys, or unredacted command output.
 
 ## Commands for owner-only gates
 
