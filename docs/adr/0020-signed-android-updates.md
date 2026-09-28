@@ -45,12 +45,15 @@ Android library supplies verification across the existing minSdk. Public keys ar
 injected into a signed APK as a key-id map. The release private key exists only in
 the protected promotion environment.
 
-Versioned GitHub Release assets are immutable byte hosting. A mutable
-`updates-stable` or `updates-beta` release tag hosts only the signed `policy.json`.
-It is not a trust root: tampering, expiry and lower sequences are rejected. Release
-promotion uploads and re-downloads the APK first, verifies its hash, signs policy,
-and replaces the channel policy last. Pause/withdraw changes only signed metadata
-with a larger sequence; it never downgrades installed clients.
+Versioned GitHub Release assets are immutable byte hosting. Mutable discovery metadata
+lives instead on the dedicated `update-stable` / `update-beta` Git branches as a
+single signed `policy.json`; published immutable Releases are never reused as mutable
+channels. The metadata branch is not a trust root: tampering, expiry and lower sequences
+are rejected by the client. Release promotion uploads and re-downloads the APK first,
+verifies its hash, signs policy, then updates the channel branch last. Publisher workflows
+also reject a non-increasing sequence and re-fetch both the GitHub Contents API bytes and
+the public raw URL before success. Pause/withdraw changes only signed metadata with a
+larger sequence; it never downgrades installed clients.
 
 ## Data and migrations
 
