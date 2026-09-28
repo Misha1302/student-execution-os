@@ -9,6 +9,7 @@ import { aiSection, aiActions, loadAiSettings } from '../ai.js';
 import { healthSection, healthActions, loadHealth } from '../health.js';
 import { syncSection, syncActions, loadConnectors } from '../sync-panel.js';
 import { appUpdateService, UpdateChannel, UpdateState } from '../update-service.js';
+import { academicScheduleSection, academicScheduleActions, loadAcademicSchedule } from '../academic-schedule.js';
 
 async function loadUpdates() {
   if (!isNative()) return null;
@@ -202,7 +203,7 @@ export default {
   detail: true,
   title: () => t('nav.settings'),
   async load({ fresh }) {
-    const [diag, deletion, prefs, llm, profile, health, connectors, updates] = await Promise.all([
+    const [diag, deletion, prefs, llm, profile, health, connectors, updates, academic] = await Promise.all([
       load('/api/v1/settings/diagnostics', { fresh }),
       load('/api/v1/account/deletion-policy', { fresh }),
       load('/api/v1/notification-preferences', { fresh }).catch(() => ({ data: null })),
@@ -211,10 +212,11 @@ export default {
       loadHealth({ fresh }),
       loadConnectors(),
       loadUpdates(),
+      loadAcademicSchedule(),
     ]);
-    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors, updates }, stale: diag.stale, fetchedAt: diag.fetchedAt };
+    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors, updates, academic }, stale: diag.stale, fetchedAt: diag.fetchedAt };
   },
-  render({ diag, deletion, prefs, llm, profile, health, connectors, updates }) {
+  render({ diag, deletion, prefs, llm, profile, health, connectors, updates, academic }) {
     this._deletion = deletion;
     this._prefs = prefs;
     this._profile = profile;
@@ -264,6 +266,8 @@ export default {
             <small class="help" data-optional-help>${esc(t(`settings.optionalHelp.${profile.optional_event_policy}`))}</small></div>
         </div>
       </section>` : ''}
+
+      ${academicScheduleSection(academic)}
 
       ${aiSection(llm)}
 
@@ -373,5 +377,6 @@ export default {
     ...aiActions,
     ...healthActions,
     ...syncActions,
+    ...academicScheduleActions,
   },
 };

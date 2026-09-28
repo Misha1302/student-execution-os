@@ -22,14 +22,15 @@ execution state separately from its leased technical delivery retries.
 
 ## Secrets
 
-Two secrets exist, each as a file in a directory mounted read-only into exactly the one
-container that needs it (files, not environment variables: variables show up in
+Secrets are files in directories mounted read-only into only the containers that need
+them (files, not environment variables: variables show up in
 `docker inspect`, `/proc/*/environ` and `docker compose config`).
 
 | File | Container | Purpose |
 |---|---|---|
 | `secrets/worker/fcm-service-account.json` | reminder-worker | Firebase Admin SDK service account for FCM push |
 | `secrets/api/credential.key` | api | master key that encrypts every account's own AI key (ADR 0017) |
+| `secrets/academic/academic-feed.key` | api + reminder-worker | dedicated master key for private iCalendar URLs (ADR 0028); the worker receives no LLM key |
 | `secrets/api/platform-groq-1.key` | api | primary platform LLM credential (never copied into `.env`) |
 | `secrets/api/platform-groq-2.key` | api | standby platform LLM credential (never copied into `.env`) |
 | `secrets/api/llm-egress-proxy.url` | api | optional HTTP(S) proxy URL for LLM-only egress; needed only when a provider rejects the VPS network |
@@ -41,12 +42,15 @@ nginx variant it is `/etc/student-execution-os/secrets/`. The container user is 
 ```bash
 S=/etc/student-execution-os/secrets            # or deploy/secrets
 install -d -m 0755 "$S"
-install -d -o 10001 -g 10001 -m 0700 "$S/api" "$S/worker"
+install -d -o 10001 -g 10001 -m 0700 "$S/api" "$S/worker" "$S/academic"
 install -o 10001 -g 10001 -m 0400 /path/to/firebase-adminsdk.json "$S/worker/fcm-service-account.json"
 # The key never appears on a terminal: the command writes the file (mode 0600).
 docker run --rm -u 10001 -v "$S/api:/k" student-execution-os:release \
   python -m student_execution_os credential-key-generate --output /k/credential.key
-chmod 0400 "$S/api/credential.key" && chmod 0500 "$S/api" "$S/worker"
+docker run --rm -u 10001 -v "$S/academic:/k" student-execution-os:release \
+  python -m student_execution_os credential-key-generate --output /k/academic-feed.key
+chmod 0400 "$S/api/credential.key" "$S/academic/academic-feed.key"
+chmod 0500 "$S/api" "$S/worker" "$S/academic"
 ```
 
 Back up `credential.key` separately from database backups (a database backup alone must
@@ -54,6 +58,12 @@ not be enough to read users' AI keys). Losing it only means users re-enter their
 Rotate with `credential-key-generate --rotate`, restart, then
 `python -m student_execution_os credentials-rekey --database /data/student-execution-os.db`
 in the api container, and finally delete the old (second) line.
+
+Back up `academic-feed.key` separately as well. Losing it does not damage the last
+imported canonical timetable, but automatic refresh remains unavailable until users
+reconnect their subscription. Keep an older key as an additional line during rotation;
+new connections use the first key and existing connections continue to decrypt with the
+older one.
 
 Verify push credentials end to end without showing anything on a phone:
 

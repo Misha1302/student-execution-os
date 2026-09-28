@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ssh *)"
+      "Bash(ssh *)",
+      "Bash(gh pr *)",
+      "Bash(git fetch *)",
+      "Bash(git merge *)"
     ]
   }
 }

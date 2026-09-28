@@ -116,17 +116,21 @@ export async function api(path, { method = 'GET', body, server, timeoutMs = 2000
 }
 
 
-export async function apiUpload(path, blob, { mimeType = 'application/octet-stream', filename = null, timeoutMs = 60000 } = {}) {
+export async function apiUpload(path, blob, {
+  mimeType = 'application/octet-stream', filename = null, timeoutMs = 60000,
+  method = 'PUT', extraHeaders = {},
+} = {}) {
   const base = session.server;
   if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
   const headers = { Accept: 'application/json', 'Content-Type': mimeType };
   if (filename) headers['X-Filename'] = String(filename).slice(0, 255);
+  Object.assign(headers, extraHeaders);
   if (session.token) headers.Authorization = `Bearer ${session.token}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
-    response = await fetch(`${base}${path}`, { method: 'PUT', headers, body: blob, signal: controller.signal });
+    response = await fetch(`${base}${path}`, { method, headers, body: blob, signal: controller.signal });
   } catch (err) {
     throw new ApiError(err?.name === 'AbortError' ? 'Request timed out' : 'Network unavailable', { code: 'NETWORK', retryable: true });
   } finally { clearTimeout(timer); }

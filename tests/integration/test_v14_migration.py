@@ -80,6 +80,7 @@ class V14MigrationTest(unittest.TestCase):
                 repo.create_account("a")
             conn = sqlite3.connect(db)
             # Newer releases are rolled back first (see their ADRs), then v14.
+            conn.executescript((ROLLBACK_DIR / "024_academic_schedule_down.sql").read_text(encoding="utf-8"))
             conn.executescript((ROLLBACK_DIR / "023_series_exceptions_down.sql").read_text(encoding="utf-8"))
             conn.executescript("DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
                                "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;")

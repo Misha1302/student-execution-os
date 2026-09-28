@@ -48,7 +48,21 @@ def _google_calendar(repo: SQLiteCanonicalRepository, state: dict[str, Any]):
     return connector.sync()
 
 
-RUNNERS: dict[str, Runner] = {"GOOGLE_CALENDAR": _google_calendar}
+def _academic_ical(repo: SQLiteCanonicalRepository, state: dict[str, Any]):
+    from student_execution_os.academic.credentials import academic_feed_cipher_from_environment
+    from student_execution_os.academic.service import AcademicScheduleService
+
+    return AcademicScheduleService(
+        repo,
+        account_id=state["account_id"],
+        cipher=academic_feed_cipher_from_environment(),
+    ).refresh()
+
+
+RUNNERS: dict[str, Runner] = {
+    "GOOGLE_CALENDAR": _google_calendar,
+    "ACADEMIC_ICAL": _academic_ical,
+}
 _MIN_INTERVAL = 10.0
 _last_run: dict[tuple[str, str], float] = {}
 _lock = threading.Lock()

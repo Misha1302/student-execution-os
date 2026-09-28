@@ -68,9 +68,10 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
     That moves in R3.
 - **NEXT STEP:** R3 — recurrence exceptions on the command boundary with stable external identity.
 
-## R3 — Class series exceptions and stable external identity (schema v23)
+## R3 — Class series exceptions and stable external identity (schema v23, PR #31)
 
-- **STATUS:** DONE on `feature/r3-recurrence-exceptions`, PR open.
+- **STATUS:** DONE, merged to main as `e1087cb` (PR #31). Review fixes are `51fd474`;
+  documentation follow-up is `4a468b8`.
 - **BASELINE:**
   - One override per occurrence (CANCEL, or MODIFY start/duration).
   - No room or teacher.
@@ -132,3 +133,39 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   - Series-level user edits (rename, delete a whole series) are not in scope. Users can
     split or cancel classes.
 - **NEXT STEP:** R4 — `AcademicScheduleProvider` + iCalendar/HSE provider feeding `SourceApplier`.
+
+## R4 — AcademicScheduleProvider + iCalendar connection (schema v24)
+
+- **STATUS:** IMPLEMENTED on `feature/r4-academic-ical`; full-suite/PR evidence pending.
+- **OBSERVED REALITY:** official current HSE material points students to ЕЛК / HSE App X
+  and calendar integration; RUZ is internal/VPN-only. No current public HSE API or live
+  student feed was available. A direct HSE login integration is therefore not claimed.
+- **OWNER:** `academic/AcademicScheduleProvider` normalizes a source;
+  `recurrence/SourceApplier` remains the only canonical SOURCE writer; `/api/v1/sync`
+  remains the USER mutation boundary (ADR 0028).
+- **IMPLEMENTATION:**
+  - RFC 5545 provider for UID, TZID, DTSTART/DTEND/DURATION, DAILY/WEEKLY RRULE,
+    EXDATE, RECURRENCE-ID move/cancel, all-day, location, teacher, sequence/update;
+  - deterministic per-account connector/source identity and schema-v24 connection state;
+  - HTTPS URL (encrypted dedicated key) and `.ics` upload UI in Settings;
+  - manual and scheduled refresh, safe status/diagnostics, disconnect;
+  - SSRF/redirect/body/timeout/retry controls; URL absent from APIs, logs and export;
+  - deploy key mounted only into API + worker; worker receives no LLM credential.
+- **FOCUSED TESTS EXECUTED:**
+  - `tests.unit.test_academic_ical`: 6/6 (duplicate/reorder/revision conflict,
+    unsupported RRULE, SSRF, redirects/auth, bounded retry, 5 MiB limit);
+  - `tests.integration.test_v24_academic_schedule`: 10/10 (realistic fixture,
+    repeat zero duplicates, move/cancel/room/source-wide/stale ordering, USER survival,
+    disappearance/restore, scheduled failure/recovery, v23→v24 + rollback,
+    concurrent stale completion ordering, backup→clean restore, export secret exclusion,
+    and account-deletion purge with another account preserved);
+  - `tests.web.test_academic_schedule_api`: 2/2 (provider→SourceApplier→Today,
+    account isolation, malformed/oversize preservation);
+  - `tests.browser.academic_schedule_e2e`: 1/1 (390px RU, real server/database,
+    Settings upload→Today, repeat import, disconnect, no horizontal overflow).
+- **RESULT:** locally focused path is green; exact commit/PR/CI will be added after full
+  verification and review.
+- **EXTERNAL BLOCKER:** live HSE authentication/subscription validation requires a
+  consenting student account or sanitized current feed. Fixture validation is not
+  represented as live HSE evidence.
+- **NEXT DEPENDENCY:** full regression, PR/CI/merge, then R5 production Groq path.

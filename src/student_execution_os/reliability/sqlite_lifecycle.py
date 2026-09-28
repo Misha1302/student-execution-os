@@ -264,7 +264,8 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
 }
 
 
-# Login credentials, session token hashes and encrypted AI provider keys are
+# Login credentials, session token hashes, encrypted AI provider keys and private
+# academic subscription URLs are
 # account-scoped and purged with the account, but they are never part of the user
 # data export contract.
 _ACCOUNT_CREDENTIAL_TABLES = (
@@ -272,6 +273,7 @@ _ACCOUNT_CREDENTIAL_TABLES = (
     "auth_users",
     "mobile_devices",
     "llm_credentials",
+    "academic_schedule_connections",
 )
 SECRET_REVOCATION_STATUS = "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER"
 
@@ -491,7 +493,7 @@ class SQLiteDataLifecycle:
             ],
             "retained_audit_or_provenance": False,
             "raw_source_store": "NONE_CONFIGURED",
-            "secret_store": "LLM_CREDENTIALS_AES_GCM_MASTER_KEY_OUTSIDE_DATABASE",
+            "secret_store": "LLM_AND_ACADEMIC_FEED_CREDENTIALS_AES_GCM_KEYS_OUTSIDE_DATABASE",
             # The stored ciphertext is deleted immediately; only the provider can
             # revoke the key itself, which the user does in their provider account.
             "secret_revocation": SECRET_REVOCATION_STATUS,

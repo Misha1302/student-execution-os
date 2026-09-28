@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.academic.credentials import academic_feed_cipher_from_environment
+from student_execution_os.academic.service import refresh_due_academic_schedules
 
 from student_execution_os.reliability.retention import purge_expired
 
@@ -114,6 +116,9 @@ def main() -> int:
                          "push_configured": provider.configured}
         try:
             if started >= next_tick:
+                summary["academic_sync"] = refresh_due_academic_schedules(
+                    args.database, cipher=academic_feed_cipher_from_environment(), now=_now()
+                )
                 results = engine.tick_all(_now())
                 summary["accounts"] = len(results)
                 summary["messages"] = sum(len(r.messages) for r in results)

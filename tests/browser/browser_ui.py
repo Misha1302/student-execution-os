@@ -63,6 +63,15 @@ class BrowserUiTest(unittest.TestCase):
                 "message": "No live LLM provider is configured in this release.",
             },
             "/api/v1/settings/llm": self.llm_settings(None),
+            "/api/v1/settings/academic-schedule": {
+                "connected": False, "mode": None, "display_name": None,
+                "default_timezone": None, "feed_host": None,
+                "sync_interval_minutes": None, "next_sync_at": None,
+                "last_content_sha256": None, "health": None,
+                "last_successful_sync_at": None, "latest_failure_reason": None,
+                "last_attempt_at": None, "last_attempt_status": None,
+                "live_hse_validated": False,
+            },
         }
         self.posts: list[tuple[str, dict]] = []
         self.overrides: dict[tuple[str, str], tuple[int, dict]] = {}
