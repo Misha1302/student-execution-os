@@ -77,7 +77,8 @@ class ConnectAppBrowserTest(unittest.TestCase):
         authorize = "/oauth/authorize?" + urlencode({
             "response_type": "code", "client_id": client_id, "redirect_uri": callback, "state": "s1",
             "code_challenge": challenge, "code_challenge_method": "S256",
-            "scope": "today:read tasks:read tasks:write calendar:read"})
+            "scope": "today:read tasks:read tasks:write calendar:read",
+            "resource": f"{self.origin}/mcp"})
 
         context = self.browser.new_context(viewport={"width": 390, "height": 844}, timezone_id="Europe/Moscow",
                                            reduced_motion="reduce")
@@ -108,7 +109,8 @@ class ConnectAppBrowserTest(unittest.TestCase):
 
         token = self.http.post("/oauth/token", data={
             "grant_type": "authorization_code", "code": query["code"][0], "redirect_uri": callback,
-            "client_id": client_id, "code_verifier": verifier}).json()
+            "client_id": client_id, "code_verifier": verifier,
+            "resource": f"{self.origin}/mcp"}).json()
         self.assertEqual(token["scope"], "tasks:read tasks:write today:read")
         bearer = {"Authorization": f"Bearer {token['access_token']}"}
         call = self.http.post("/mcp", headers=bearer, json={

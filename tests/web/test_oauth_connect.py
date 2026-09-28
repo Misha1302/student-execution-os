@@ -51,10 +51,11 @@ class OAuthConnectTest(unittest.TestCase):
         return response.json()["client_id"]
 
     def authorize(self, client_id, challenge, *, redirect=CHATGPT_REDIRECT, scope="tasks:read tasks:write",
-                  state="xyz", method="S256", response_type="code"):
+                  state="xyz", method="S256", response_type="code",
+                  resource="http://testserver/mcp"):
         params = {"response_type": response_type, "client_id": client_id, "redirect_uri": redirect,
                   "code_challenge": challenge, "code_challenge_method": method, "state": state, "scope": scope,
-                  "resource": "http://testserver/mcp"}
+                  "resource": resource}
         return self.client.get("/oauth/authorize", params=params, follow_redirects=False)
 
     def consent(self, client_id, challenge, scopes=("tasks:read", "tasks:write"), **kwargs) -> dict:
@@ -70,6 +71,7 @@ class OAuthConnectTest(unittest.TestCase):
         return {"request_id": request_id, "redirect": redirect, "query": parse_qs(redirect.query)}
 
     def token(self, **form):
+        form.setdefault("resource", "http://testserver/mcp")
         return self.client.post("/oauth/token", data=form,
                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
 
@@ -82,6 +84,7 @@ class OAuthConnectTest(unittest.TestCase):
         self.assertEqual((server["issuer"], server["code_challenge_methods_supported"],
                           server["token_endpoint_auth_methods_supported"]),
                          ("http://testserver", ["S256"], ["none"]))
+        self.assertTrue(server["authorization_response_iss_parameter_supported"])
         self.assertIn("destructive", server["scopes_supported"])
         denied = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
         self.assertEqual(denied.status_code, 401)
@@ -127,7 +130,8 @@ class OAuthConnectTest(unittest.TestCase):
                                scope="tasks:read tasks:write destructive")
         body = self.client.post("/oauth/token", json={
             "grant_type": "authorization_code", "code": consent["query"]["code"][0], "redirect_uri": loopback,
-            "client_id": client_id, "code_verifier": verifier}).json()
+            "client_id": client_id, "code_verifier": verifier,
+            "resource": "http://testserver/mcp"}).json()
         self.assertEqual(body["scope"], "tasks:read")
         bearer = {"Authorization": f"Bearer {body['access_token']}"}
         denied = self.client.post("/api/v1/ext/operations", headers=bearer, json={"operations": [
@@ -143,10 +147,16 @@ class OAuthConnectTest(unittest.TestCase):
                 "client_id": client_id, "code_verifier": verifier}
         for change in ({"code_verifier": pkce()[0]}, {"client_id": other},
                        {"redirect_uri": CHATGPT_REDIRECT + "/x"}, {"code": "nope"},
-                       {"grant_type": "refresh_token"}, {"code_verifier": "short"}):
+                       {"grant_type": "refresh_token"}, {"code_verifier": "short"},
+                       {"resource": "https://other.example/mcp"}):
             response = self.token(**{**base, **change})
             self.assertEqual(response.status_code, 400, change)
-            self.assertIn(response.json()["error"], {"invalid_grant", "unsupported_grant_type", "invalid_request"})
+            self.assertIn(response.json()["error"],
+                          {"invalid_grant", "unsupported_grant_type", "invalid_request", "invalid_target"})
+        missing_resource = self.client.post("/oauth/token", data=base,
+                                            headers={"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual((missing_resource.status_code, missing_resource.json()["error"]),
+                         (400, "invalid_target"))
         first = self.token(**base)
         self.assertEqual(first.status_code, 200)
         leaked = {"Authorization": f"Bearer {first.json()['access_token']}"}
@@ -172,7 +182,8 @@ class OAuthConnectTest(unittest.TestCase):
             self.assertNotIn("location", response.headers)
         cases = (({"method": "plain"}, "invalid_request"), ({"challenge": "short"}, "invalid_request"),
                  ({"response_type": "token"}, "unsupported_response_type"),
-                 ({"scope": "tasks:read root"}, "invalid_scope"))
+                 ({"scope": "tasks:read root"}, "invalid_scope"),
+                 ({"resource": "https://other.example/mcp"}, "invalid_target"))
         for change, error in cases:
             args = {"challenge": change.pop("challenge", challenge), **change}
             response = self.authorize(client_id, args.pop("challenge"), **args)
@@ -180,6 +191,12 @@ class OAuthConnectTest(unittest.TestCase):
             query = parse_qs(urlsplit(response.headers["location"]).query)
             self.assertTrue(response.headers["location"].startswith(CHATGPT_REDIRECT))
             self.assertEqual((query["error"], query["state"]), ([error], ["xyz"]))
+        missing_resource = self.client.get("/oauth/authorize", params={
+            "response_type": "code", "client_id": client_id, "redirect_uri": CHATGPT_REDIRECT,
+            "code_challenge": challenge, "code_challenge_method": "S256", "state": "xyz",
+        }, follow_redirects=False)
+        self.assertEqual(parse_qs(urlsplit(missing_resource.headers["location"]).query)["error"],
+                         ["invalid_target"])
         # No scope requested: read-only by default.
         request_id = self.authorize(client_id, challenge, scope="").headers["location"].rsplit("/", 1)[1]
         self.assertEqual(self.client.get(f"/api/v1/oauth/requests/{request_id}", headers=self.alice).json()
