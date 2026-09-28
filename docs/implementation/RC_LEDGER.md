@@ -509,3 +509,37 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   travel push (travel is planner input); delivery is FCM-only (no web push).
 - **NEXT DEPENDENCY:** R10 Android release/update/push.
 
+
+## R10 — Android release / update / push in CI
+
+- **STATUS:** IMPLEMENTED on `feature/r10-android-release-ci` (PR #39); merge SHA recorded
+  with R11.
+- **GAP FOUND:** PR CI only assembled a debug APK. Native unit tests, lint, the
+  instrumented device tests (notification buttons, wake alarm, update trust) and the
+  install/upgrade path ran nowhere but the manual release workflow.
+- **`apk` job (CI):** `testDebugUnitTest` + `lintDebug`; `assembleRelease` signed with a
+  one-day throwaway key generated inside the job (no production signing credential exists
+  in CI or the repo), `apksigner verify`, and both APKs scanned by
+  `mobile/scripts/apk_secret_scan.py` for provider keys, private keys, capability tokens,
+  keystores and the build password as a canary (`tests.unit.test_apk_secret_scan`).
+- **`device` job (CI, API 34 x86_64 emulator from the runner's own SDK, KVM):**
+  `native_e2e.py` renders a reminder produced by the real engine + push dispatcher, presses
+  Snooze/Start/Done on the system notification against a real local server and asserts the
+  task reached COMPLETED server-side; `connectedDebugAndroidTest` (wake alarm, update
+  trust, 4 tests); `install_upgrade_check.py`: clean install, offline start, data kept on
+  upgrade 100→101, downgrade refused (`VERSION_DOWNGRADE`), update signed by another key
+  refused, clean reinstall sees no old data. Green on `3270a5c`, both runs, ~5 min each.
+- **DEFECT FOUND ON THE DEVICE (fixed):** `AlarmStore.save` pruned finished alarms in place
+  on the caller's list; an immutable list (`WakeAlarmDeviceTest`, logout/account switch)
+  crashed with `UnsupportedOperationException`. It now prunes a copy.
+- **CI HARDENING (root causes, not retries):** the first device runs hung to the job cap
+  with no output. Job metadata showed the sequence: the emulator exited before boot
+  (avdmanager and the emulator disagreed on the AVD directory; `ANDROID_AVD_HOME` is now
+  pinned), then `adb wait-for-device` / `adb logcat -d` waited forever for a device that
+  never came. Every wait is now bounded and watches the emulator process, each device step
+  has its own timeout, diagnostics run on failure or cancel and are themselves bounded, the
+  device test's HTTP polling has connect/read timeouts, and a device-side shell command in
+  the upgrade check is now quoted as one string (adb joins arguments with spaces).
+- **NOT COVERED (external):** a physical phone; real FCM delivery from Google (the
+  dispatcher's exact FCM payload is exercised, the transport is not); Play/sideload update
+  from a production-signed APK (needs the owner's release key, never in CI).
