@@ -11,6 +11,8 @@ services:
       SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_REGISTRATION: ${SEOS_REGISTRATION:-open}
       SEOS_PROXY_HEADERS: "1"
+      # Public https origin for OAuth/MCP metadata; empty = derived from proxy headers.
+      SEOS_PUBLIC_ORIGIN: ${SEOS_PUBLIC_ORIGIN:-}
       SEOS_FORWARDED_ALLOW_IPS: "*"
       SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
       SEOS_CREDENTIAL_KEY_FILE: /run/secrets/seos/credential.key

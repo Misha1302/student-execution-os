@@ -29,12 +29,13 @@ import welcome from './js/views/welcome.js';
 import reminder from './js/views/reminder.js';
 import notes from './js/views/notes.js';
 import note from './js/views/note-detail.js';
+import connect from './js/views/connect.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome };
+const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -58,6 +59,13 @@ function go(name, { params = [], step, replace = false } = {}) {
 }
 
 shell.go = (name, opts = {}) => go(name, { step: opts.step, params: opts.params || [] });
+
+// An app-connection consent (OAuth from ChatGPT/Codex) must survive signing in first;
+// welcome.js resumes it after sign-in.
+function rememberConnectRoute() {
+  if (route.name !== 'connect') return;
+  try { sessionStorage.setItem('seos.returnTo', location.hash); } catch { /* private mode */ }
+}
 // fresh=false: a local change was queued — redraw from cache + overlay, no network.
 shell.rerender = (fresh = true) => render({ fresh, keepScroll: !fresh });
 
@@ -164,7 +172,11 @@ async function render({ fresh = false, reuse = false, keepScroll = false } = {})
   const navigation = renderedRoute !== routeKey();
   const viewport = navigation ? null : captureViewport();
   const view = VIEWS[route.name] || today;
-  if (!view.bare && needsLogin()) { go('welcome', { replace: true }); return; }
+  if (!view.bare && needsLogin()) {
+    rememberConnectRoute();
+    go('welcome', { replace: true });
+    return;
+  }
   const workspace = $('#workspace');
   updateChrome(view);
   workspace.dataset.view = view.id;
@@ -516,7 +528,7 @@ async function boot() {
     }
   }
   if ((isNative() && !session.server) || needsLogin()) {
-    if (route.name !== 'welcome') { history.replaceState(null, '', '#/welcome'); route = parseHash(); }
+    if (route.name !== 'welcome') { rememberConnectRoute(); history.replaceState(null, '', '#/welcome'); route = parseHash(); }
   } else if (route.name === 'welcome') {
     history.replaceState(null, '', '#/today');
     route = parseHash();

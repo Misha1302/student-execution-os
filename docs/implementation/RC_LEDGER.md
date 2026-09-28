@@ -320,7 +320,9 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R6 — External capability API + MCP (schema v25)
 
-- **STATUS:** IMPLEMENTED on `feature/r6-external-capabilities-mcp`; PR/CI/merge below.
+- **STATUS:** MERGED. PR #35 (`feature/r6-external-capabilities-mcp`), head `7f93ffc`,
+  merge `4afd2b3`. Remote CI `verify` ×2 green on `7f93ffc` (`apk` not triggered: no
+  mobile/static changes).
 - **BASELINE (`dab7081`):** no external-agent surface. Session tokens carry the full
   authority of the app. Canonical owners: reads = `web/queries.py::UiService`;
   mutations = typed operations in `sync/commands.py::SyncService` (op_id log in
@@ -362,4 +364,55 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   comes with R7); no per-grant rate limit; a request already authenticated when a grant
   is revoked completes; the management UI comes with R7.
 - **NEXT DEPENDENCY:** R7 ChatGPT/Codex integration on top of this surface.
+
+## R7 — ChatGPT / Codex integration (schema v26)
+
+- **STATUS:** IMPLEMENTED on `feature/r7-chatgpt-codex-integration`; PR/CI/merge below.
+  LIVE ChatGPT/Codex connection: **NOT VERIFIED** (blocker below).
+- **BASELINE (`4afd2b3`):** R6 grants + `/mcp` exist; tokens could only be created via
+  API; no UI; no OAuth. ChatGPT authenticates remote MCP servers with OAuth (API-key
+  support not confirmable from official docs here); Codex takes `url` +
+  `bearer_token_env_var` in `config.toml`, or OAuth.
+- **OWNER / IMPLEMENTATION (ADR 0031):** `oauth.py` (RFC 9728/8414/7591 metadata and
+  registration, code + PKCE S256, consent → single-use hashed code → token endpoint that
+  returns an R6 capability grant token; replay revokes); `web/app.py` (well-known
+  endpoints, `/oauth/register|authorize|token`, session-only consent API,
+  `resource_metadata` in 401s, per-IP limits, `SEOS_PUBLIC_ORIGIN`); UI
+  `views/connect.js` (consent, survives sign-in) and `connected-apps.js` (Settings list,
+  disconnect, create token shown once with Codex snippet), EN/RU strings; migration
+  `026_oauth_connect.sql` + lossless rollback; `docs/integrations/chatgpt-codex.md`.
+  No vendor-specific business logic: ChatGPT/Codex reach the R6 gateway only.
+- **TESTS:**
+  - `tests.web.test_oauth_connect` 11 (LOCAL INTEGRATION): discovery metadata and 401
+    `resource_metadata`; full connect → token → MCP `create_task` lands in the app's
+    tasks → grant listed with the client's name → disconnect → 401; user narrows scopes,
+    loopback redirect (Codex), JSON token body; code bound to verifier/client/redirect,
+    single use, replay revokes the issued grant, 5-min expiry; authorize validation
+    (unknown client / unregistered redirect never redirect; plain PKCE, short challenge,
+    wrong response_type, unknown scope → redirected errors with state; default read-only
+    scopes); consent needs a session, deny once, 10-min expiry; registration rules and
+    rate limit; authorize rate limit, long state, expired-request purge; v25↔v26
+    lossless rollback keeps OAuth-issued grants; account deletion cascades.
+  - `tests.browser.connect_e2e` 1 (PRODUCTION-LIKE: real uvicorn server, real Chromium,
+    390 px RU): client registers and sends the student to `/oauth/authorize` while signed
+    out → sign in → consent resumes → student unticks a scope → Allow → redirect with
+    code/state → HTTP client exchanges code → MCP `tools/call create_task` → task visible
+    in the app → denied scope 403 → Settings lists "ChatGPT" + MCP URL → Disconnect → 401
+    → create Codex token (shown once, `bearer_token_env_var` snippet) → it reads tasks;
+    no page errors, no horizontal overflow.
+  - R6 and v14/v22/v23/v24 rollback chains extended with the v26 step.
+  - Fixed a flaky R6 test found here: it took the token secret as the text after the last
+    `_`, but `token_urlsafe` secrets may contain `_` (a 1-char fragment then "leaked").
+    Now parsed by the fixed prefix length; 15/15 repeated runs green. Product code was right.
+- **LOCAL VERIFICATION (Python 3.13):** `make static` OK; `make test` 484/484; `make api`
+  29/29; `make smoke` OK; `make browser` 36/36 (incl. `connect_e2e`); Compose configs
+  (default, Tor overlay, nginx) validate.
+- **LIVE VERIFICATION: NOT VERIFIED.** This environment cannot reach chatgpt.com /
+  OpenAI docs (egress policy) and has no ChatGPT/Codex account session; the production
+  server was not accessed. Next action for an operator: deploy, then in ChatGPT add a
+  connector with `https://<server>/mcp` (OAuth) and in Codex add the `config.toml`
+  snippet; record the result here.
+- **KNOWN LIMITATIONS:** limiters are per process; client names are self-asserted
+  (consent shows the return host); no refresh tokens (re-consent on expiry).
+- **NEXT DEPENDENCY:** R8 collaborative groups.
 
