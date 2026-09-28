@@ -19,7 +19,7 @@ Set `SEOS_UPDATE_POLICY_URL_TEMPLATE` to a public HTTPS template containing
 `{channel}`. With the included GitHub workflow it is:
 
 ```text
-https://github.com/OWNER/REPOSITORY/releases/download/updates-{channel}/policy.json
+https://raw.githubusercontent.com/OWNER/REPOSITORY/update-{channel}/policy.json
 ```
 
 The repository/releases must be publicly readable. Never add a GitHub PAT to the
@@ -32,7 +32,9 @@ secrets.
 Run **android-release** manually with a unique SemVer, monotonically increasing
 Android build number and policy sequence. The jobs test, package/sign, publish the
 immutable versioned APK, re-download and verify it, then sign and publish channel
-policy last. Start stable rollouts at 5% unless an explicit decision says otherwise.
+policy last to the dedicated `update-stable` / `update-beta` metadata branch. The
+branch is mutable discovery state; trust still comes exclusively from the Ed25519
+signature and monotonically increasing sequence embedded in `policy.json`. Start stable rollouts at 5% unless an explicit decision says otherwise.
 
 Run **update-release-control** to move rollout 5 → 25 → 50 → 100, or set status to
 `PAUSED`/`WITHDRAWN`. Every control operation must use a sequence larger than the
