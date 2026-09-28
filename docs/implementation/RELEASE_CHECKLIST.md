@@ -126,7 +126,7 @@ keytool -list -v -keystore <release.jks> -alias <alias> | grep 'SHA256:'
 | Build | `docker compose ... up -d --build` on the host from that checkout (no registry; the image is built where it runs) | `android-release.yml` `PACKAGE` job at `github.sha` |
 | Artifact | local image ID from `docker compose ... images` | APK sha256 + size in `provenance.json` and `artifact.sha256`; re-downloaded from the release and byte-compared |
 | Identity | `SEOS_REVISION` on `/api/v1/health`, checked by `smoke.py --expect-revision` | signing certificate SHA-256 in `provenance.json`; update policy signed with `SEOS_UPDATE_SIGNING_KEY_ID`, verified after publish |
-| Deploy | `smoke.py` against the domain | GitHub release `v<version>` (immutable) → `updates-<channel>` policy published last |
+| Deploy | `smoke.py` against the domain | GitHub release `v<version>` (immutable) → signed `policy.json` published last to `update-<channel>` metadata branch |
 
 ## Rollback plan
 
