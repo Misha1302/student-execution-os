@@ -109,7 +109,7 @@ export default {
         : place === 'archive' ? `<button class="button primary" data-action="detail-lifecycle" data-op="restore">${icon('repeat')}${esc(t(task.status === 'ARCHIVED' && task.completed_at ? 'lifecycle.restoreDone' : 'lifecycle.reopen'))}</button>`
         : `<button class="button primary" data-action="detail-lifecycle" data-op="reopen">${icon('repeat')}${esc(t('lifecycle.reopen'))}</button>
            <button class="button" data-action="detail-lifecycle" data-op="archive">${esc(t('lifecycle.archive'))}</button>`}
-        <button class="button danger ghost" data-action="detail-lifecycle" data-op="delete">${esc(t('lifecycle.delete'))}</button>
+        <button class="button danger ghost detail-delete" data-action="detail-lifecycle" data-op="delete">${esc(t('lifecycle.delete'))}</button>
       </section>
       <p class="help pad">${esc(t(`lifecycle.help.${open ? 'open' : place === 'archive' ? 'ARCHIVED' : task.status}`))}</p>
 

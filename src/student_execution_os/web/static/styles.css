@@ -113,7 +113,8 @@ body.bare .main-column { padding-bottom: 0; }
 .view.no-enter { animation: none; }
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } }
 .section { display: flex; flex-direction: column; gap: 10px; }
-.section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 2px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 0 2px; }
+.section-head > div { min-width: 0; flex: 1 1 12em; }
 .section-head h2 { font-size: 17px; font-weight: 700; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 
@@ -200,7 +201,8 @@ body.bare .main-column { padding-bottom: 0; }
 .link { background: none; border: 0; color: var(--accent); font-weight: 650; padding: 6px 2px; display: inline-flex; align-items: center; gap: 6px; }
 .link .icon { width: 18px; height: 18px; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.quick-actions .button { min-width: 0; padding-inline: 10px; text-align: center; overflow-wrap: anywhere; }
 
 .chip {
   display: inline-flex; align-items: center; gap: 4px; flex: none;
@@ -405,9 +407,11 @@ ul.plain { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); }
 .detail-title { font-size: 24px; font-weight: 750; overflow-wrap: anywhere; }
 .effort-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .effort-row span { color: var(--text-2); }
-.detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.detail-actions > :first-child:last-child { grid-column: 1 / -1; }
-.detail-actions .button.danger { grid-column: 1 / -1; }
+/* minmax(0, 1fr): a plain 1fr column is min-content wide, so one long label (RU at
+   320px) pushed the grid — and the whole page — past the viewport. Labels wrap instead. */
+.detail-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.detail-actions .button { min-width: 0; padding-inline: 10px; text-align: center; overflow-wrap: anywhere; }
+.detail-actions > :first-child:last-child, .detail-actions .detail-delete { grid-column: 1 / -1; }
 
 .day-group { display: flex; flex-direction: column; gap: 8px; }
 .day-title { font-size: 14px; color: var(--text-2); padding: 6px 4px 0; }
