@@ -33,6 +33,9 @@ def build_v13(path: str) -> None:
     conn.close()
 
 
+ROLLBACK_DIR = Path("src/student_execution_os/persistence/rollback")
+
+
 class V14MigrationTest(unittest.TestCase):
     def test_populated_v13_database_upgrades_and_keeps_working(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,6 +80,7 @@ class V14MigrationTest(unittest.TestCase):
                 repo.create_account("a")
             conn = sqlite3.connect(db)
             # Newer releases are rolled back first (see their ADRs), then v14.
+            conn.executescript((ROLLBACK_DIR / "023_series_exceptions_down.sql").read_text(encoding="utf-8"))
             conn.executescript("DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
                                "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;")
             conn.executescript("DROP TABLE starter_llm_reservations; DROP TABLE starter_llm_account_usage; "

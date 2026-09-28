@@ -835,6 +835,117 @@ function projectDay(data, ops, now) {
   return out;
 }
 
+// ---- class series (calendar) ---------------------------------------------------------
+// Queued series.* operations shown on the cached calendar until the server confirms them.
+// Local civil times are read in the device zone — the server resolves the series zone.
+
+const localInstant = (local) => new Date(local).toISOString();
+const addMinutes = (iso, minutes) => new Date(new Date(iso).getTime() + minutes * 60000).toISOString();
+
+function pendingOccurrences(template, horizonEnd) {
+  const parts = Object.fromEntries(String(template.recurrence_rule || '').split(';').map((x) => x.split('=')));
+  const step = (parts.FREQ === 'DAILY' ? 1 : 7) * Number(parts.INTERVAL || 1);
+  const count = parts.COUNT ? Number(parts.COUNT) : Infinity;
+  const out = [];
+  const start = new Date(template.dtstart_local);
+  for (let i = 0; i < Math.min(count, 400); i += 1) {
+    const local = new Date(start.getTime());
+    local.setDate(start.getDate() + i * step);
+    if (horizonEnd && local > new Date(horizonEnd)) break;
+    const pad = (n) => String(n).padStart(2, '0');
+    const rid = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}T${pad(local.getHours())}:${pad(local.getMinutes())}:00`;
+    out.push({ template_id: template.id, original_recurrence_id: rid, starts_at: local.toISOString(),
+      ends_at: addMinutes(local.toISOString(), template.duration_minutes), cancelled: false, changed_by: [],
+      identity: [template.id, rid], location_text: template.location_text || null, teacher: template.teacher || null,
+      title: template.title, _pending: true });
+  }
+  return out;
+}
+
+function inRange(rid, p) {
+  const day = String(rid).slice(0, 10);
+  return day >= p.from_date && day <= (p.to_date || p.from_date);
+}
+
+export function projectCalendar(data, ops) {
+  const out = { ...data, events: projectEvents(data.events || [], eventOps(ops)) };
+  let templates = [...(data.recurring_templates || [])];
+  let occurrences = [...(data.occurrences || [])];
+  const templateById = () => new Map(templates.map((t) => [t.id, t]));
+  for (const item of ops) {
+    const op = item.operation || {};
+    if (!op.type?.startsWith('series.')) continue;
+    const p = op.payload || {};
+    if (op.type === 'series.create' && !templates.some((t) => t.id === op.entity_id)) {
+      const template = { id: op.entity_id, ...p, category: p.category || 'LESSON', version: 0, _pending: true };
+      templates.push(template);
+      occurrences.push(...pendingOccurrences(template, data.horizon_end));
+      continue;
+    }
+    if (op.type === 'series.extra.create') {
+      const template = templateById().get(p.template_id);
+      if (!out.events.some((e) => e.id === op.entity_id) && template) {
+        out.events = [...out.events, { id: op.entity_id, kind: 'EVENT', title: p.title || template.title, status: 'ACTIVE',
+          starts_at: p.starts_at, ends_at: p.ends_at || addMinutes(p.starts_at, template.duration_minutes),
+          attendance_policy: 'REQUIRED', location_text: p.location_text || template.location_text || null,
+          series: { template_id: template.id, extra: true }, _pending: true }];
+      }
+      continue;
+    }
+    const matches = (o) => o.template_id === p.template_id && o.original_recurrence_id === p.original_recurrence_id;
+    const template = templateById().get(p.template_id);
+    const duration = template?.duration_minutes || 60;
+    occurrences = occurrences.map((o) => {
+      if (op.type === 'series.holiday' && inRange(o.original_recurrence_id, p) && !o.cancelled
+          && (!p.template_ids || p.template_ids.includes(o.template_id))) {
+        return { ...o, cancelled: true, cancelled_by: 'USER', cancel_reason: 'HOLIDAY', _pending: true };
+      }
+      if (op.type === 'series.holiday.restore' && inRange(o.original_recurrence_id, p) && o.cancel_reason === 'HOLIDAY'
+          && (!p.template_ids || p.template_ids.includes(o.template_id))) {
+        return { ...o, cancelled: false, cancelled_by: null, cancel_reason: null, _pending: true };
+      }
+      if (!matches(o)) return o;
+      const changed = [...new Set([...(o.changed_by || []), 'USER'])];
+      if (op.type === 'series.occurrence.cancel') return { ...o, cancelled: true, cancelled_by: 'USER', cancel_reason: 'USER', changed_by: changed, _pending: true };
+      if (op.type === 'series.occurrence.move') {
+        const starts = localInstant(p.starts_local);
+        return { ...o, starts_at: starts, ends_at: addMinutes(starts, p.duration_minutes || duration), changed_by: changed, _pending: true };
+      }
+      if (op.type === 'series.occurrence.update') {
+        const next = { ...o, changed_by: changed, _pending: true };
+        for (const key of ['title', 'location_text', 'teacher', 'note']) {
+          if (key in p) next[key] = p[key] || (key === 'title' ? template?.title : key === 'note' ? null : template?.[key] ?? null);
+        }
+        return next;
+      }
+      if (op.type === 'series.occurrence.restore') {
+        // Only the user's change goes; a class the timetable cancelled stays cancelled.
+        const starts = localInstant(o.original_recurrence_id);
+        const sourceCancelled = o.cancelled_by === 'SOURCE';
+        return { ...o, starts_at: starts, ends_at: addMinutes(starts, duration), cancelled: sourceCancelled,
+          cancelled_by: sourceCancelled ? 'SOURCE' : null, cancel_reason: sourceCancelled ? o.cancel_reason : null,
+          location_text: template?.location_text ?? o.location_text, teacher: template?.teacher ?? o.teacher,
+          title: template?.title ?? o.title, note: null,
+          changed_by: (o.changed_by || []).filter((x) => x !== 'USER'), _pending: true };
+      }
+      return o;
+    });
+    if (op.type === 'series.split' && template) {
+      occurrences = occurrences.filter((o) => o.template_id !== p.template_id || o.original_recurrence_id < p.original_recurrence_id);
+      if (!templates.some((t) => t.id === op.entity_id)) {
+        const successor = { ...template, id: op.entity_id, dtstart_local: p.starts_local || p.original_recurrence_id,
+          recurrence_rule: p.recurrence_rule || template.recurrence_rule, duration_minutes: p.duration_minutes || template.duration_minutes,
+          location_text: 'location_text' in p ? p.location_text : template.location_text,
+          teacher: 'teacher' in p ? p.teacher : template.teacher, version: 0, _pending: true };
+        templates = [...templates.map((t) => t.id === template.id ? { ...t, series_end_before_local: p.original_recurrence_id, _pending: true } : t), successor];
+        occurrences.push(...pendingOccurrences(successor, data.horizon_end));
+      }
+    }
+  }
+  occurrences.sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
+  return { ...out, recurring_templates: templates, occurrences };
+}
+
 // Entry point used by store.load(). `data` is never modified.
 export function project(path, data, items, { fetchedAt = 0, now = new Date() } = {}) {
   const ops = relevantOps(items, fetchedAt);
@@ -849,7 +960,7 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
     return projected[0] || base;
   }
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
-  if (route === '/api/v1/calendar') return { ...base, events: projectEvents(base.events || [], eventOps(ops)) };
+  if (route === '/api/v1/calendar') return projectCalendar(base, ops);
   if (route === '/api/v1/reminders') return projectReminders(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);

@@ -13,6 +13,7 @@ static:
 	node tests/js/reflection_overlay_cases.mjs
 	node tests/js/capture_kind_cases.mjs
 	node tests/js/upcoming_cases.mjs
+	TZ=UTC node tests/js/series_overlay_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
 
 worker:
@@ -25,7 +26,7 @@ api:
 	PYTHONPATH=src python -m unittest tests.web.web_api tests.web.test_auth_api -v
 
 browser:
-	PYTHONPATH=src python -m unittest tests.browser.browser_ui tests.browser.offline_e2e tests.browser.responsive_e2e tests.browser.today_e2e -v
+	PYTHONPATH=src python -m unittest tests.browser.browser_ui tests.browser.offline_e2e tests.browser.responsive_e2e tests.browser.today_e2e tests.browser.series_e2e -v
 
 smoke:
 	PYTHONPATH=src python -m student_execution_os health

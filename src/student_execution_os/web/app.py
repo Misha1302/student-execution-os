@@ -441,21 +441,6 @@ def create_app(
     async def calendar(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.calendar()
 
-    @app.post("/api/v1/recurrence/templates", status_code=201)
-    async def create_recurring_template(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.create_recurring_template(payload)
-
-    @app.post("/api/v1/recurrence/templates/{template_id}/occurrences/{original_recurrence_id}/override")
-    async def override_recurring_occurrence(
-        template_id: str, original_recurrence_id: str, payload: dict[str, Any] = Body(...),
-        service: UiService = Depends(current_service),
-    ) -> dict[str, Any]:
-        return service.override_recurring_occurrence(template_id, original_recurrence_id, payload)
-
-    @app.post("/api/v1/recurrence/templates/{template_id}/split")
-    async def split_recurring_series(template_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.split_recurring_series(template_id, payload)
-
     @app.get("/api/v1/commitments")
     async def list_commitments(place: str | None = None, q: str = "", service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.commitments(place, q)

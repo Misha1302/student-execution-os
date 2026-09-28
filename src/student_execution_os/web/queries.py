@@ -43,7 +43,7 @@ from student_execution_os.persistence.product import SQLiteAttachmentRepository,
 from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.reminders import ReminderStore, provider_from_environment
-from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
+from student_execution_os.recurrence import SQLiteRecurrenceRepository
 from student_execution_os.planning import (
     PlanningService,
     SQLitePlanStore,
@@ -87,6 +87,16 @@ class _AccountLimiter:
 
 
 TEST_NOTIFICATION_LIMITER = _AccountLimiter(3)
+def _occurrence_details(item) -> dict[str, Any]:
+    """What a class looks like after its SOURCE and USER changes, and who changed it."""
+    return {
+        "title": item.title, "location_text": item.location_text, "teacher": item.teacher, "note": item.note,
+        "cancelled_by": None if item.cancelled_by is None else item.cancelled_by.value,
+        "cancel_reason": None if item.cancel_reason is None else item.cancel_reason.value,
+        "changed_by": [layer.value for layer in item.changed_by],
+    }
+
+
 # Today's "Soon" window for fixed-time events (the client uses the same horizon).
 UPCOMING_HOURS = 12
 
@@ -113,14 +123,6 @@ def _dt(value: str | None) -> datetime | None:
         raise ValueError("datetime must include an offset")
     return parsed
 
-
-def _local_dt(value: str | None) -> datetime | None:
-    if value is None or value == "":
-        return None
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is not None:
-        raise ValueError("local civil datetime must not include an offset")
-    return parsed
 
 
 def _local_iso(value: datetime | None) -> str | None:
@@ -416,7 +418,53 @@ class UiService:
         events = [repo.get_event(self.account_id, e.obligation.id) if e.obligation.id in stored else e for e in events]
         leads = extras.event_leads(repo, self.account_id)
         reminders = ReminderStore(repo).pending_reminders(self.account_id)
-        return [self._event(e, lead=leads.get(e.obligation.id), remind_at=reminders.get(e.obligation.id)) for e in events]
+        out = [self._event(e, lead=leads.get(e.obligation.id), remind_at=reminders.get(e.obligation.id)) for e in events]
+        self._attach_series(repo, out)
+        return out
+
+    def _attach_series(self, repo, payloads: list[dict[str, Any]]) -> None:
+        """Classes carry their series identity, room and teacher (after SOURCE/USER changes)."""
+        occurrence_ids = [p["id"] for p in payloads if str(p["id"]).startswith("rec:")]
+        extra_rows = {row["event_id"]: row for row in repo.connection.execute(
+            "SELECT event_id,template_id FROM series_extra_events WHERE account_id=?", (self.account_id,))}
+        event_details = {row["event_id"]: row for row in repo.connection.execute(
+            "SELECT event_id,location_text,teacher FROM event_details WHERE account_id=?", (self.account_id,))}
+        for payload in payloads:
+            row = event_details.get(str(payload["id"]))
+            if row is not None:
+                payload["location_text"], payload["teacher"] = row["location_text"], row["teacher"]
+        if not occurrence_ids and not extra_rows:
+            return
+        recurrence = SQLiteRecurrenceRepository(repo)
+        templates = {t.id: t for t in recurrence.list_templates(self.account_id)}
+        details: dict[str, dict[str, Any]] = {}
+        for payload in payloads:
+            event_id = str(payload["id"])
+            if event_id in extra_rows:
+                row = extra_rows[event_id]
+                template = templates.get(row["template_id"])
+                payload["series"] = {"template_id": row["template_id"], "extra": True,
+                                     "imported": bool(template and template.source_system_id)}
+                payload["location_text"] = payload.get("location_text") or (template.location_text if template else None)
+                payload["teacher"] = payload.get("teacher") or (template.teacher if template else None)
+                continue
+            if not event_id.startswith("rec:"):
+                continue
+            template = next((t for tid, t in templates.items() if event_id.startswith(f"rec:{tid}:")), None)
+            if template is None:
+                continue
+            original = event_id[len(f"rec:{template.id}:"):]
+            if template.id not in details:
+                starts = [_dt(p["starts_at"]) for p in payloads if str(p["id"]).startswith(f"rec:{template.id}:")]
+                window_start = min(starts) - timedelta(days=1)
+                window_end = max(starts) + timedelta(days=1)
+                details[template.id] = {item.original_recurrence_id: item for item in recurrence.expand(
+                    account_id=self.account_id, template_id=template.id, horizon_start=window_start, horizon_end=window_end)}
+            item = details[template.id].get(original)
+            payload["series"] = {"template_id": template.id, "original_recurrence_id": original,
+                                 "imported": template.source_system_id is not None}
+            if item is not None:
+                payload.update({key: value for key, value in _occurrence_details(item).items() if key in {"location_text", "teacher", "note", "changed_by"}})
 
     def today(self) -> dict[str, Any]:
         with self._repo() as repo:
@@ -1029,6 +1077,10 @@ class UiService:
             "arrival_requirement_minutes": template.arrival_requirement_minutes,
             "resolution_policy": template.resolution_policy.value,
             "series_end_before_local": _local_iso(template.series_end_before_local),
+            "location_text": template.location_text,
+            "teacher": template.teacher,
+            "source_system_id": template.source_system_id,
+            "imported": template.source_system_id is not None,
             "version": template.version,
             "ownership": "CANONICAL_RULE",
         }
@@ -1083,6 +1135,7 @@ class UiService:
                         "override_id": item.override_id,
                         "identity": [item.template_id, item.original_recurrence_id],
                         "ownership": "DERIVED_OCCURRENCE",
+                        **_occurrence_details(item),
                     })
             occurrences.sort(key=lambda item: (item["starts_at"], item["template_id"], item["original_recurrence_id"]))
             return {
@@ -1461,65 +1514,6 @@ class UiService:
         state = "RUNNING" if datetime.now(timezone.utc) - beat < timedelta(minutes=3) else "STALE"
         return {"state": state, "last_beat_at": row["beat_at"], "push_configured": bool(detail.get("push_configured")),
                 "push_provider": detail.get("push_provider")}
-
-    def create_recurring_template(self, payload: dict[str, Any]) -> dict[str, Any]:
-        start = _local_dt(payload.get("dtstart_local"))
-        if start is None:
-            raise ValueError("dtstart_local is required")
-        location = payload.get("location_effect") or {}
-        with self._repo() as repo:
-            template = SQLiteRecurrenceRepository(repo).create_template(
-                account_id=self.account_id,
-                template_id=payload.get("id"),
-                title=str(payload["title"]),
-                description=payload.get("description"),
-                category=ObligationCategory(payload.get("category", ObligationCategory.GENERAL.value)),
-                importance=Importance(payload.get("importance", Importance.NORMAL.value)),
-                dtstart_local=start,
-                duration_minutes=int(payload["duration_minutes"]),
-                recurrence_rule=str(payload["recurrence_rule"]),
-                timezone_name=str(payload["timezone_name"]),
-                attendance_policy=AttendancePolicy(payload.get("attendance_policy", AttendancePolicy.REQUIRED.value)),
-                location_effect=LocationEffect(
-                    kind=LocationEffectKind(location.get("kind", LocationEffectKind.NONE.value)),
-                    origin_place_id=location.get("origin_place_id"),
-                    destination_place_id=location.get("destination_place_id"),
-                ),
-                arrival_requirement_minutes=int(payload.get("arrival_requirement_minutes", 0)),
-                actor=ActorCategory.USER_UI,
-            )
-            return self._recurring_template_payload(template)
-
-    def override_recurring_occurrence(
-        self, template_id: str, original_recurrence_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        with self._repo() as repo:
-            item = SQLiteRecurrenceRepository(repo).set_override(
-                account_id=self.account_id, template_id=template_id,
-                original_recurrence_id=original_recurrence_id,
-                action=OccurrenceOverrideAction(payload["action"]),
-                replacement_start_local=_local_dt(payload.get("replacement_start_local")),
-                replacement_duration_minutes=payload.get("replacement_duration_minutes"),
-                expected_version=int(payload.get("expected_version", 0)),
-                actor=ActorCategory.USER_UI,
-            )
-            return _jsonify(item)
-
-    def split_recurring_series(self, template_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self._repo() as repo:
-            old, successor = SQLiteRecurrenceRepository(repo).split_this_and_future(
-                account_id=self.account_id, template_id=template_id,
-                original_recurrence_id=str(payload["original_recurrence_id"]),
-                successor_id=str(payload.get("successor_id") or uuid4()),
-                replacement_start_local=_local_dt(payload.get("replacement_start_local")),
-                recurrence_rule=payload.get("recurrence_rule"),
-                expected_version=int(payload["expected_version"]),
-                actor=ActorCategory.USER_UI,
-            )
-            return {
-                "old_template": self._recurring_template_payload(old),
-                "successor_template": self._recurring_template_payload(successor),
-            }
 
     def snooze_notification(self, notification_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         until = _dt(payload.get("until"))
