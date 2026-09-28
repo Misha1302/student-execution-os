@@ -15,6 +15,7 @@ from student_execution_os.persistence.sqlite import SCHEMA_VERSION
 from student_execution_os.web.app import create_app
 from student_execution_os.web.auth import AuthConfig
 from tests.asgi_client import TestClient
+from tests.rollback_chain import roll_back_newer_than
 
 NOW = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc)
 def secret_of(token: str) -> str:
@@ -23,7 +24,6 @@ def secret_of(token: str) -> str:
 
 
 ROLLBACK = Path("src/student_execution_os/persistence/rollback/025_capability_grants_down.sql")
-ROLLBACK_V26 = Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql")
 
 
 class CapabilityApiTest(unittest.TestCase):
@@ -351,20 +351,20 @@ class CapabilityApiTest(unittest.TestCase):
             self.assertEqual(repo.connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(repo.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         conn = sqlite3.connect(old)
-        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
+        roll_back_newer_than(conn, 25)
         conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 24)
         conn.close()
         # With a live grant the rollback refuses instead of silently discarding it.
         _token, created = self.grant(["tasks:read"])
         conn = sqlite3.connect(self.db)
-        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
+        roll_back_newer_than(conn, 25)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "revoked first"):
             conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         conn.close()
         self.client.delete(f"/api/v1/settings/capabilities/{created['grant']['id']}", headers=self.alice)
         conn = sqlite3.connect(self.db)
-        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))  # the app re-migrated on its request
+        roll_back_newer_than(conn, 25)  # the app re-migrated on its request
         conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 24)
         conn.close()

@@ -16,13 +16,12 @@ from student_execution_os.domain.model import ActorCategory
 from student_execution_os.persistence.sqlite import SCHEMA_VERSION, SQLiteCanonicalRepository
 from student_execution_os.recurrence import OccurrenceOverrideAction, SQLiteRecurrenceRepository
 from student_execution_os.reliability import SQLiteDataLifecycle
+from tests.rollback_chain import roll_back_newer_than
 
 NOW = datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc)
 ACCOUNT = "academic-student"
 FIXTURE = Path("tests/fixtures/academic_schedule_realistic.ics")
 ROLLBACK = Path("src/student_execution_os/persistence/rollback/024_academic_schedule_down.sql")
-ROLLBACK_V25 = Path("src/student_execution_os/persistence/rollback/025_capability_grants_down.sql")
-ROLLBACK_V26 = Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql")
 
 
 class AcademicScheduleV24Tests(unittest.TestCase):
@@ -420,8 +419,7 @@ class AcademicScheduleV24Tests(unittest.TestCase):
             self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
             self.assertEqual(repo.connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         conn = sqlite3.connect(old)
-        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
-        conn.executescript(ROLLBACK_V25.read_text(encoding="utf-8"))
+        roll_back_newer_than(conn, 24)
         conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 23)
         conn.close()
@@ -429,8 +427,7 @@ class AcademicScheduleV24Tests(unittest.TestCase):
         with self.repo() as repo:
             AcademicScheduleService(repo, account_id=ACCOUNT).import_ics(self.fixture())
         conn = sqlite3.connect(self.database)
-        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
-        conn.executescript(ROLLBACK_V25.read_text(encoding="utf-8"))
+        roll_back_newer_than(conn, 24)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "connections to be removed"):
             conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         self.assertTrue(conn.execute(

@@ -14,6 +14,7 @@ from student_execution_os.persistence import SCHEMA_VERSION, SQLiteCanonicalRepo
 from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.web.app import create_app
 from tests.asgi_client import TestClient
+from tests.rollback_chain import roll_back_newer_than
 
 NOW = datetime(2026, 9, 25, 9, 0, tzinfo=timezone.utc)
 MIGRATIONS = Path(__file__).resolve().parents[2] / "src/student_execution_os/persistence/migrations"
@@ -80,10 +81,7 @@ class V14MigrationTest(unittest.TestCase):
                 repo.create_account("a")
             conn = sqlite3.connect(db)
             # Newer releases are rolled back first (see their ADRs), then v14.
-            conn.executescript((ROLLBACK_DIR / "026_oauth_connect_down.sql").read_text(encoding="utf-8"))
-            conn.executescript((ROLLBACK_DIR / "025_capability_grants_down.sql").read_text(encoding="utf-8"))
-            conn.executescript((ROLLBACK_DIR / "024_academic_schedule_down.sql").read_text(encoding="utf-8"))
-            conn.executescript((ROLLBACK_DIR / "023_series_exceptions_down.sql").read_text(encoding="utf-8"))
+            roll_back_newer_than(conn, 22)
             conn.executescript("DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
                                "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;")
             conn.executescript("DROP TABLE starter_llm_reservations; DROP TABLE starter_llm_account_usage; "

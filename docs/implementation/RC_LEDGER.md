@@ -367,7 +367,9 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R7 — ChatGPT / Codex integration (schema v26)
 
-- **STATUS:** IMPLEMENTED on `feature/r7-chatgpt-codex-integration`; PR/CI/merge below.
+- **STATUS:** MERGED (code/CI). PR #36 (`feature/r7-chatgpt-codex-integration`), head
+  `2981c19`, merge `c2eb652`. Remote CI on `2981c19`: `verify` ×2 (incl. `connect_e2e`) and
+  `apk` ×2 green.
   LIVE ChatGPT/Codex connection: **NOT VERIFIED** (blocker below).
 - **BASELINE (`4afd2b3`):** R6 grants + `/mcp` exist; tokens could only be created via
   API; no UI; no OAuth. ChatGPT authenticates remote MCP servers with OAuth (API-key
@@ -415,4 +417,52 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 - **KNOWN LIMITATIONS:** limiters are per process; client names are self-asserted
   (consent shows the return host); no refresh tokens (re-consent on expiry).
 - **NEXT DEPENDENCY:** R8 collaborative groups.
+
+## R8 — Collaborative academic groups (schema v27)
+
+- **STATUS:** IMPLEMENTED on `feature/r8-collaborative-groups`; PR/CI/merge below.
+- **BASELINE:** `origin/feature/collaborative-groups` = one unmerged commit `b450e13`
+  (schema v18 on a v17 base, 8.1k lines: own shared-event/overlay tables and agenda
+  projection). `main` (`c2eb652`, v26) already owns "reality vs intent" via R3
+  `SourceApplier` + USER layer. Not merged: its semantics were ported (ADR 0032).
+- **PORTED SEMANTICS:** group owns shared facts; members decide personally; roles with a
+  publishing role (old SCHEDULER → STAROSTA); proposals with moderation; invitation codes;
+  membership lifecycle; personal state invisible to the group.
+- **OWNER / IMPLEMENTATION:** `groups/service.py` (only owner of group tables; reaches
+  member accounts only through `SourceApplier`); migration `027_groups.sql` + fail-closed
+  rollback; `/api/v1/groups*` endpoints; UI `views/groups.js` (list, create, join by code,
+  schedule add/edit/remove for staff, suggestions for members, approve/reject/withdraw,
+  members/roles/remove, invite, leave), More entry, EN/RU strings.
+- **ADVERSARIAL FINDING FIXED:** the revision check ran before the write transaction,
+  so two starostas could both publish on the same revision; now a conditional bump inside
+  the transaction (concurrency test: exactly one wins).
+- **TESTS:**
+  - `tests.web.test_groups` 9 (LOCAL INTEGRATION, 4 accounts): invitations (idempotent join,
+    bad/used-up/revoked codes), non-members get 404 and cannot learn a group exists, member
+    list exposes only login/role/joined; role matrix (member cannot publish/invite/moderate/
+    manage; starosta publishes/invites/removes members only; last owner cannot demote or
+    leave; ownership transfer); revision conflict + item validation; **personal overlay**:
+    Bob moves one class, notes it, skips another, adds a private task and reminder → the
+    starosta changes the room, moves a class for everyone and adds an exam → Bob's move,
+    note and skip survive while untouched classes follow the group; Carol sees only group
+    reality; none of Bob's data appears in Carol's views or in the group API; per-account
+    template ids, no duplicates; proposals (pending not published, visibility, idempotent
+    and final decisions, reject/withdraw, validation); leave/remove retract classes and keep
+    personal data, rejoin restores the same identity and personal move, removed cannot
+    rejoin; unpublish removes everywhere; owner account deletion → starosta inherits,
+    integrity + FK checks; concurrent publishers; v26→v27 upgrade and fail-closed rollback.
+  - `tests.browser.groups_e2e` 1 (PRODUCTION-LIKE: real server, two Chromium phones, RU):
+    starosta creates group, adds a class, invites; student joins by code, sees the class in
+    Calendar and no staff controls, suggests an exam; starosta approves; exam reaches the
+    student's events; no page errors or horizontal overflow.
+  - Rollback-chain tests now use `tests/rollback_chain.py` (every documented down-script
+    from the current schema), so later stages need no per-test edits.
+- **LOCAL VERIFICATION (Python 3.13):** `make static` OK; `make test` 493/493; `make api`
+  29/29; `make smoke` OK; `make browser` 36/37 — the one failure is the known container-only
+  `test_explicit_alarm_survives_model_omission_and_conflict_up_to_the_queued_create`
+  (identical on `main` here, green in every CI run; root cause still to be found, R11).
+- **KNOWN LIMITATIONS:** announcements, shared deadline tasks, per-member attendance
+  preferences, diff notices and external-calendar binding from the old branch are not
+  ported; group management is online-only; removed members cannot be re-admitted yet.
+- **NEXT DEPENDENCY:** R9 smart reminders / notifications.
 
