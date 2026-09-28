@@ -320,7 +320,7 @@ class Parser {
     for (const x of this.scan(`(?<![\\w.:])${prep}(\\d{4})-(\\d{2})-(\\d{2})(?![\\w:])`)) {
       this.calendarPiece(x, Number(x.m[4]), Number(x.m[3]), x.m[2], x.m[1]);
     }
-    for (const x of this.scan(`(?<![\\w.:])${prep}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?(?![\\w:]|\\.\\d)`)) {
+    for (const x of this.scan(`(?<![\\w.:])${prep}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?(?![\\w:]|\\.\\d|\\s*(?:${H_UNIT}|${M_UNIT})(?!\\w))`)) {
       const d = Number(x.m[2]); const m = Number(x.m[3]);
       if (m >= 1 && m <= 12 && d >= 1 && d <= 31) this.calendarPiece(x, d, m, x.m[4], x.m[1]);
     }
@@ -432,7 +432,7 @@ class Parser {
       this.take(x.start, x.end);
       if (found == null && minutes > 0) found = Math.round(minutes);
     };
-    for (const x of this.scan(`(?<!\\w)${prefix}(\\d+)\\s*${H_UNIT}\\s*(?:и\\s+)?(\\d+)\\s*${M_UNIT}(?!\\w)${tail}`)) {
+    for (const x of this.scan(`(?<!\\w)${prefix}(\\d+)\\s*${H_UNIT}\\s*(?:и\\s+)?(\\d+)\\s*(?:${M_UNIT}|м)(?!\\w)${tail}`)) {
       record(x, Number(x.m[1]) * 60 + Number(x.m[2]));
     }
     for (const x of this.scan(`(?<!\\w)${prefix}(?:полтора\\s+часа|час\\s+с\\s+половиной|(?:an?\\s+)?hour\\s+and\\s+a\\s+half|1\\.5\\s*(?:h|hours?|ч))(?!\\w)${tail}`)) record(x, 90);

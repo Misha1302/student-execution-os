@@ -2,6 +2,7 @@ import { load } from '../store.js';
 import { api } from '../api.js';
 import { t, code, fmtDuration, fmtDateTime, fmtRelative, now } from '../i18n.js';
 import { esc, icon, chip, riskChip, kv, empty, setBusy } from '../ui.js';
+import { DURATION_PRESETS } from '../duration.js';
 import { lifecycle, logProgress, mutate, change, taskPlace } from '../actions.js';
 import { editTaskSheet, rescheduleSheet, deadlineText } from '../capture.js';
 import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
@@ -74,9 +75,9 @@ export default {
 
       ${task.status === 'DRAFT' ? `<section class="card question-card">
         <strong>${esc(t('q.effort'))}</strong>
-        <div class="chip-row">${[[30, fmtDuration(30)], [60, fmtDuration(60)], [120, fmtDuration(120)], [180, fmtDuration(180)]]
+        <div class="chip-row">${DURATION_PRESETS.map((m) => [m, fmtDuration(m)])
           .map(([m, label]) => `<button type="button" class="chip-toggle" data-action="detail-effort" data-minutes="${m}">${esc(label)}</button>`).join('')}
-          <button type="button" class="chip-toggle" data-action="detail-edit" data-focus="effort">${esc(t('form.custom'))}</button></div>
+          <button type="button" class="chip-toggle" data-action="detail-edit" data-focus="effort">${esc(t('duration.other'))}</button></div>
         <small class="help">${esc(t('task.draftHelp'))}</small>
       </section>` : `<section class="card effort-card">
         <div class="effort-row"><span>${esc(t('task.effort'))}</span><strong>${esc(t('task.effortValue', { left: fmtDuration(left), total: fmtDuration(total) }))}</strong></div>

@@ -1,6 +1,7 @@
 import { load } from '../store.js';
 import { t, code, fmtDuration, fmtDateTime, fmtRelative } from '../i18n.js';
 import { esc, icon, chip, riskChip, empty, openSheet, setBusy, localInputValue, isoFromLocalInput } from '../ui.js';
+import { durationPicker, takeDuration } from '../duration.js';
 import { change, shell } from '../actions.js';
 import { newEntityId } from '../sync.js';
 
@@ -35,15 +36,15 @@ function addTask(project) {
     eyebrow: project.title,
     title: t('project.addTask'),
     body: `<label class="field"><span>${esc(t('form.title'))}</span><input data-project-task-title maxlength="300"></label>
-      <label class="field"><span>${esc(t('form.effort'))}</span><input type="number" min="1" max="100000" value="60" data-project-task-effort></label>`,
+      <div class="field"><span>${esc(t('form.effort'))}</span>${durationPicker('project-task-effort', 60)}</div>`,
     actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
       <button type="button" class="button primary" data-project-task-save>${esc(t('compose.create'))}</button>`,
   });
   dialog.querySelector('[data-project-task-title]')?.focus();
   dialog.querySelector('[data-project-task-save]').addEventListener('click', async (event) => {
     const title = String(dialog.querySelector('[data-project-task-title]').value || '').trim();
-    const effort = Number(dialog.querySelector('[data-project-task-effort]').value || 0);
-    if (!title || effort <= 0) return;
+    const effort = takeDuration(dialog, 'project-task-effort');
+    if (!title || !effort) return;
     setBusy(event.currentTarget, true);
     const result = await change('project.task.create', project.id, {
       task_id: newEntityId('task'),

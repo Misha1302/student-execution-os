@@ -966,6 +966,47 @@ class BrowserUiTest(unittest.TestCase):
         self.assertEqual(self.page_errors, [])
         page.close()
 
+    def test_one_duration_picker_with_hours_and_minutes(self):
+        page = self._open(locale="ru", width=320)
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("Доделать лабораторную")
+        question = sheet.locator('[data-question="effort"]')
+        question.wait_for()
+        self.assertEqual(question.locator(".chip-toggle").all_inner_texts(),
+                         ["15 мин", "30 мин", "45 мин", "1 ч", "1 ч 30 мин", "2 ч", "3 ч", "Другое…", "Не знаю"])
+        question.locator('[data-value="other"]').click()
+        custom = sheet.locator('[data-duration="f-effort"] [data-duration-custom]')
+        custom.wait_for()
+        self.assertTrue(custom.locator("[data-duration-h]").evaluate("(el) => el === document.activeElement"))
+        custom.locator("[data-duration-h]").fill("1")
+        custom.locator("[data-duration-m]").click()  # leaving hours must not snap the picker to the 1 h chip
+        self.assertTrue(custom.is_visible())
+        custom.locator("[data-duration-m]").fill("35")
+        self.assertLessEqual(page.evaluate("document.querySelector('dialog.sheet[open]').scrollWidth"),
+                             page.evaluate("document.querySelector('dialog.sheet[open]').clientWidth"))
+        sheet.locator("[data-create]").click()
+        self._wait_sync(page)
+        created = [o for o in self._queued(page) if o["type"] == "task.create"]
+        self.assertEqual([c["payload"]["estimated_total_effort_minutes"] for c in created], [95])
+
+        # Words that already say "1 час 35 минут" land on Other with 1 h 35 min.
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("Доделать лабораторную, примерно 1 час 35 минут")
+        sheet.locator(".capture-card .capture-title", has_text="Доделать лабораторную").wait_for()
+        sheet.locator("[data-more] summary").click()
+        picker = sheet.locator('[data-duration="f-effort"]')
+        self.assertEqual(picker.locator(".chip-toggle.on").get_attribute("data-value"), "other")
+        self.assertEqual((picker.locator("[data-duration-h]").input_value(), picker.locator("[data-duration-m]").input_value()), ("1", "35"))
+        sheet.locator("[data-create]").click()
+        self._wait_sync(page)
+        created = [o for o in self._queued(page) if o["type"] == "task.create"]
+        self.assertEqual([c["payload"]["estimated_total_effort_minutes"] for c in created], [95, 95])
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
     def test_settings_show_delivery_health_ai_steps_and_sync(self):
         self.responses["/api/v1/notifications/health"] = {
             "reach": "IN_APP", "alarm": "NONE", "problems": ["PUSH_UNCONFIGURED", "NO_DEVICE"], "reminders_enabled": True,

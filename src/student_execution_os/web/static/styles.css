@@ -456,6 +456,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .question strong { font-size: 15px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-row .chip-toggle { min-height: 40px; }
+.duration-custom { display: flex; gap: 12px; margin-top: 8px; }
+.duration-custom[hidden] { display: none; }
+.duration-custom label { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; }
+.duration-custom input { width: 100%; min-width: 0; }
+.duration-custom span { color: var(--text-2); font-weight: 600; }
 /* Task / Event / Reminder / Note: one row where it fits, two rows on a narrow phone. */
 .kind-switch .chip-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.5em, 1fr)); gap: 6px; }
 .kind-switch .chip-toggle { min-width: 0; padding: 0 8px; font-size: 13px; }

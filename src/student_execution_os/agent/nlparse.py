@@ -311,7 +311,7 @@ class _Parser:
             self._calendar_piece(match, int(match.group(2)), _month(match.group(3)), match.group(4), match.group(1))
         for match in self.scan(rf"(?<![\w.:]){prep}(\d{{4}})-(\d{{2}})-(\d{{2}})(?![\w:])"):
             self._calendar_piece(match, int(match.group(4)), int(match.group(3)), match.group(2), match.group(1))
-        for match in self.scan(rf"(?<![\w.:]){prep}(\d{{1,2}})[./](\d{{1,2}})(?:[./](\d{{2,4}}))?(?![\w:]|\.\d)"):
+        for match in self.scan(rf"(?<![\w.:]){prep}(\d{{1,2}})[./](\d{{1,2}})(?:[./](\d{{2,4}}))?(?![\w:]|\.\d|\s*(?:{_H_UNIT}|{_M_UNIT})(?!\w))"):
             day, month = int(match.group(2)), int(match.group(3))
             if 1 <= month <= 12 and 1 <= day <= 31:
                 self._calendar_piece(match, day, month, match.group(4), match.group(1))
@@ -423,7 +423,7 @@ class _Parser:
             if found is None and minutes > 0:
                 found = int(round(minutes))
 
-        for match in self.scan(rf"(?<!\w){prefix}(\d+)\s*{_H_UNIT}\s*(?:и\s+)?(\d+)\s*{_M_UNIT}(?!\w){tail}"):
+        for match in self.scan(rf"(?<!\w){prefix}(\d+)\s*{_H_UNIT}\s*(?:и\s+)?(\d+)\s*(?:{_M_UNIT}|м)(?!\w){tail}"):
             record(match, int(match.group(1)) * 60 + int(match.group(2)))
         for match in self.scan(rf"(?<!\w){prefix}(?:полтора\s+часа|час\s+с\s+половиной|(?:an?\s+)?hour\s+and\s+a\s+half|1\.5\s*(?:h|hours?|ч))(?!\w){tail}"):
             record(match, 90)

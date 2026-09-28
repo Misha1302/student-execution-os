@@ -1,6 +1,7 @@
 import { load } from '../store.js';
 import { t, fmtDateTime, fmtDuration, fmtRelative } from '../i18n.js';
 import { esc, icon, chip, empty, openSheet, chipGroup, chipValue, localInputValue, setBusy } from '../ui.js';
+import { durationPicker, takeDuration } from '../duration.js';
 import { change, shell } from '../actions.js';
 import { newEntityId } from '../sync.js';
 
@@ -30,9 +31,7 @@ function createRoutine() {
     body: `<label class="field"><span>${esc(t('form.title'))}</span>
         <input data-routine-title maxlength="300" autocomplete="off">
       </label>
-      <label class="field"><span>${esc(t('form.effort'))}</span>
-        <input type="number" min="1" max="100000" value="45" data-routine-effort>
-      </label>
+      <div class="field"><span>${esc(t('form.effort'))}</span>${durationPicker('routine-effort', 45)}</div>
       <label class="field"><span>${esc(t('routine.firstTarget'))}</span>
         <input type="datetime-local" value="${esc(localNowInput(1))}" data-routine-start>
       </label>
@@ -51,9 +50,9 @@ function createRoutine() {
   title?.focus();
   dialog.querySelector('[data-routine-create]').addEventListener('click', async (event) => {
     const name = String(title.value || '').trim();
-    const effort = Number(dialog.querySelector('[data-routine-effort]').value || 0);
+    const effort = takeDuration(dialog, 'routine-effort');
     const start = String(dialog.querySelector('[data-routine-start]').value || '');
-    if (!name || effort <= 0 || !start) return;
+    if (!name || !effort || !start) return;
     setBusy(event.currentTarget, true);
     const result = await change('routine.create', newEntityId('routine'), {
       title: name,
@@ -77,9 +76,7 @@ function editOccurrence(routine, occurrence) {
     body: `<label class="field"><span>${esc(t('form.title'))}</span>
         <input data-occurrence-title maxlength="300" value="${esc(occurrence.title || routine.title)}">
       </label>
-      <label class="field"><span>${esc(t('form.effort'))}</span>
-        <input type="number" min="1" max="100000" data-occurrence-effort value="${Number(occurrence.effort_minutes || routine.effort_minutes)}">
-      </label>
+      <div class="field"><span>${esc(t('form.effort'))}</span>${durationPicker('occurrence-effort', Number(occurrence.effort_minutes || routine.effort_minutes))}</div>
       <label class="field"><span>${esc(t('routine.targetLocal'))}</span>
         <input type="datetime-local" data-occurrence-target value="${esc(currentLocal.slice(0, 16))}">
       </label>
@@ -90,9 +87,9 @@ function editOccurrence(routine, occurrence) {
   });
   dialog.querySelector('[data-occurrence-save]').addEventListener('click', async (event) => {
     const title = String(dialog.querySelector('[data-occurrence-title]').value || '').trim();
-    const effort = Number(dialog.querySelector('[data-occurrence-effort]').value || 0);
+    const effort = takeDuration(dialog, 'occurrence-effort');
     const target = String(dialog.querySelector('[data-occurrence-target]').value || '');
-    if (!title || effort <= 0 || !target) return;
+    if (!title || !effort || !target) return;
     setBusy(event.currentTarget, true);
     const result = await change('routine.occurrence.edit', occurrence.task_id, {
       template_id: routine.id,
@@ -106,9 +103,9 @@ function editOccurrence(routine, occurrence) {
   });
   dialog.querySelector('[data-occurrence-future]').addEventListener('click', async (event) => {
     const title = String(dialog.querySelector('[data-occurrence-title]').value || '').trim();
-    const effort = Number(dialog.querySelector('[data-occurrence-effort]').value || 0);
+    const effort = takeDuration(dialog, 'occurrence-effort');
     const target = String(dialog.querySelector('[data-occurrence-target]').value || '');
-    if (!title || effort <= 0 || !target) return;
+    if (!title || !effort || !target) return;
     setBusy(event.currentTarget, true);
     const result = await change('routine.split', newEntityId('routine'), {
       template_id: routine.id,
