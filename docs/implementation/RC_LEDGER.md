@@ -68,9 +68,10 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
     That moves in R3.
 - **NEXT STEP:** R3 — recurrence exceptions on the command boundary with stable external identity.
 
-## R3 — Class series exceptions and stable external identity (schema v23)
+## R3 — Class series exceptions and stable external identity (schema v23, PR #31)
 
-- **STATUS:** DONE on `feature/r3-recurrence-exceptions`, PR open.
+- **STATUS:** DONE, merged to main as `e1087cb` (PR #31). Review fixes are `51fd474`;
+  documentation follow-up is `4a468b8`.
 - **BASELINE:**
   - One override per occurrence (CANCEL, or MODIFY start/duration).
   - No room or teacher.
@@ -132,3 +133,68 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   - Series-level user edits (rename, delete a whole series) are not in scope. Users can
     split or cancel classes.
 - **NEXT STEP:** R4 — `AcademicScheduleProvider` + iCalendar/HSE provider feeding `SourceApplier`.
+
+## R4 — AcademicScheduleProvider + iCalendar connection (schema v24)
+
+- **STATUS:** IMPLEMENTED + REVIEWED on `feature/r4-academic-ical`; PR/CI/merge recorded below.
+- **OBSERVED REALITY:** official current HSE material points students to ЕЛК / HSE App X
+  and calendar integration; RUZ is internal/VPN-only. No current public HSE API or live
+  student feed was available. A direct HSE login integration is therefore not claimed.
+- **OWNER:** `academic/AcademicScheduleProvider` normalizes a source;
+  `recurrence/SourceApplier` remains the only canonical SOURCE writer; `/api/v1/sync`
+  remains the USER mutation boundary (ADR 0028).
+- **IMPLEMENTATION:**
+  - RFC 5545 provider for UID, TZID, DTSTART/DTEND/DURATION, DAILY/WEEKLY RRULE,
+    EXDATE, RECURRENCE-ID move/cancel, all-day, location, teacher, sequence/update;
+  - deterministic per-account connector/source identity and schema-v24 connection state;
+  - HTTPS URL (encrypted dedicated key) and `.ics` upload UI in Settings;
+  - manual and scheduled refresh, safe status/diagnostics, disconnect;
+  - SSRF/redirect/body/timeout/retry controls; URL absent from APIs, logs and export;
+  - deploy key mounted only into API + worker; worker receives no LLM credential.
+- **FOCUSED TESTS EXECUTED:**
+  - `tests.unit.test_academic_ical`: 6/6 (duplicate/reorder/revision conflict,
+    unsupported RRULE, SSRF, redirects/auth, bounded retry, 5 MiB limit);
+  - `tests.integration.test_v24_academic_schedule`: 10/10 (realistic fixture,
+    repeat zero duplicates, move/cancel/room/source-wide/stale ordering, USER survival,
+    disappearance/restore, scheduled failure/recovery, v23→v24 + rollback,
+    concurrent stale completion ordering, backup→clean restore, export secret exclusion,
+    and account-deletion purge with another account preserved);
+  - `tests.web.test_academic_schedule_api`: 2/2 (provider→SourceApplier→Today,
+    account isolation, malformed/oversize preservation);
+  - `tests.browser.academic_schedule_e2e`: 1/1 (390px RU, real server/database,
+    Settings upload→Today, repeat import, disconnect, no horizontal overflow).
+- **HANDOFF REVIEW / FIX (`63a7f87`):** the first commit (`41eb3cb`) was re-read
+  adversarially before PR. Found and fixed:
+  - `RECURRENCE-ID`/`EXDATE` written in UTC named the wrong local instance (DST/zone
+    semantics); now converted to the series zone, duplicate keys normalized to UTC;
+  - unexpected httpx transport errors escaped the reader and could echo the feed URL;
+    now `PROVIDER_PROTOCOL_ERROR` without details; unexpected fetch failures close the
+    sync session instead of leaving it open;
+  - the worker refreshed feeds *before* the reminder tick in the same error boundary
+    (a slow provider delayed reminders); now after the tick, own boundary, ≤20 feeds/pass,
+    per-account isolation;
+  - connect/refresh endpoints blocked the event loop with network I/O; now threadpool;
+  - Cyrillic `.ics` file names broke the upload header (Latin-1); now percent-encoded;
+  - `sync_interval_minutes: null` gave 500; now 422.
+  Reviewed and unchanged: SOURCE/USER precedence stays owned by R3 `SourceApplier`;
+  identities are deterministic uuid5 per account; connection/state version preconditions
+  inside `BEGIN IMMEDIATE` make a disconnect during refresh win (new test); v24 rollback
+  fails closed while a connection exists.
+- **FULL VERIFICATION (`63a7f87`, Python 3.13):** `make static` + relay 12/12 OK;
+  `make test` 427/427 OK (includes v14/v22/v23/v24 migration + rollback chains);
+  `make api` 29/29 OK; `make smoke` OK (incl. reliability backup/restore on v24);
+  Compose config (default/Tor/nginx/nginx+Tor) OK; focused R4 25/25.
+  `make browser` 33/34 locally: the one failure
+  (`test_explicit_alarm_survives_model_omission_and_conflict_up_to_the_queued_create`)
+  also fails 2/3 on unmodified `main` in this container (Chromium 1194 vs Playwright's
+  expected 1200); `academic_schedule_e2e` passes. Remote CI is authoritative for it.
+- **ACCEPTANCE REGISTRY:** the previously reported
+  `AcceptanceRegistryTests.test_first_slice_acceptance_ids_are_explicitly_tracked`
+  failure does not reproduce: registry and test are untouched by R4 and pass in full-suite
+  runs on both `41eb3cb` (422/422) and `63a7f87`. No test was weakened.
+- **REMAINING RISK:** HTTP client re-resolves DNS after validation (sub-second
+  rebinding window); pinning the validated address is a follow-up (ADR 0028).
+- **EXTERNAL BLOCKER:** live HSE authentication/subscription validation requires a
+  consenting student account or sanitized current feed. Fixture validation is not
+  represented as live HSE evidence.
+- **NEXT DEPENDENCY:** full regression, PR/CI/merge, then R5 production Groq path.

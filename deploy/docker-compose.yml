@@ -14,6 +14,7 @@ services:
       SEOS_FORWARDED_ALLOW_IPS: "*"
       SEOS_CORS_ORIGINS: ${SEOS_CORS_ORIGINS:-}
       SEOS_CREDENTIAL_KEY_FILE: /run/secrets/seos/credential.key
+      SEOS_ACADEMIC_FEED_KEY_FILE: /run/secrets/academic/academic-feed.key
       SEOS_PLATFORM_LLM_PROVIDER: ${SEOS_PLATFORM_LLM_PROVIDER:-}
       SEOS_PLATFORM_LLM_MODEL: ${SEOS_PLATFORM_LLM_MODEL:-}
       SEOS_PLATFORM_LLM_BASE_URL: ${SEOS_PLATFORM_LLM_BASE_URL:-}
@@ -41,6 +42,7 @@ services:
       - seos-data:/data
       # Set SEOS_API_SECRETS_DIR=../../shared/secrets/api for release-SHA checkouts.
       - ${SEOS_API_SECRETS_DIR:-./secrets/api}:/run/secrets/seos:ro
+      - ${SEOS_ACADEMIC_SECRETS_DIR:-./secrets/academic}:/run/secrets/academic:ro
     expose:
       - "8765"
 
@@ -63,9 +65,11 @@ services:
       SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_FCM_SERVICE_ACCOUNT_JSON: ${SEOS_FCM_SERVICE_ACCOUNT_JSON:-}
       SEOS_FCM_SERVICE_ACCOUNT_FILE: /run/secrets/seos/fcm-service-account.json
+      SEOS_ACADEMIC_FEED_KEY_FILE: /run/secrets/academic/academic-feed.key
     volumes:
       - seos-data:/data
       - ./secrets/worker:/run/secrets/seos:ro
+      - ${SEOS_ACADEMIC_SECRETS_DIR:-./secrets/academic}:/run/secrets/academic:ro
 
   caddy:
     image: caddy:2

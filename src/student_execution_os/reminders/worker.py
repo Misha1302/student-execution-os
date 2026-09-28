@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
+from student_execution_os.academic.credentials import academic_feed_cipher_from_environment
+from student_execution_os.academic.service import refresh_due_academic_schedules
 
 from student_execution_os.reliability.retention import purge_expired
 
@@ -118,6 +120,13 @@ def main() -> int:
                 summary["accounts"] = len(results)
                 summary["messages"] = sum(len(r.messages) for r in results)
                 next_tick = started + args.tick_seconds
+                # After the reminder tick: a slow or failing calendar never delays reminders.
+                try:
+                    summary["academic_sync"] = refresh_due_academic_schedules(
+                        args.database, cipher=academic_feed_cipher_from_environment(), now=_now()
+                    )
+                except Exception:
+                    log.exception("academic schedule refresh pass failed")
             summary["dispatch"] = dispatcher.run_once(_now(), args.worker_id)
             if started >= next_purge:
                 # Expired assistant input and old operation logs are deleted, not kept.
