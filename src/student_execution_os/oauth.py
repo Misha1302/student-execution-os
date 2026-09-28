@@ -71,6 +71,7 @@ def authorization_server_metadata(origin: str) -> dict[str, Any]:
         "authorization_endpoint": f"{origin}/oauth/authorize",
         "token_endpoint": f"{origin}/oauth/token",
         "registration_endpoint": f"{origin}/oauth/register",
+        "authorization_response_iss_parameter_supported": True,
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
@@ -127,6 +128,8 @@ class OAuthServer:
             raise OAuthError("invalid_request", "state is too long")
         if params.get("response_type") != "code":
             raise RedirectError(redirect_uri, "unsupported_response_type", "response_type must be code", state)
+        if params.get("resource") != f"{self.issuer}/mcp":
+            raise RedirectError(redirect_uri, "invalid_target", "resource must identify this MCP server", state)
         challenge = params.get("code_challenge", "")
         if params.get("code_challenge_method") != "S256" or not 43 <= len(challenge) <= 128:
             raise RedirectError(redirect_uri, "invalid_request", "PKCE S256 code_challenge is required", state)
@@ -206,6 +209,8 @@ class OAuthServer:
     def exchange(self, form: dict[str, str]) -> dict[str, Any]:
         if form.get("grant_type") != "authorization_code":
             raise OAuthError("unsupported_grant_type", "only authorization_code is supported")
+        if form.get("resource") != f"{self.issuer}/mcp":
+            raise OAuthError("invalid_target", "resource must identify this MCP server")
         code, verifier = form.get("code") or "", form.get("code_verifier") or ""
         if not code or not 43 <= len(verifier) <= 128:
             raise OAuthError("invalid_request", "code and a PKCE code_verifier are required")
