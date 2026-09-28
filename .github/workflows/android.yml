@@ -2,10 +2,8 @@ name: android
 
 on:
   push:
-    paths:
-      - 'mobile/**'
-      - 'src/student_execution_os/web/static/**'
-      - '.github/workflows/android.yml'
+    # Every main/release push needs G1/G4 evidence for that exact SHA, including
+    # process-only changes outside mobile/. PRs stay path-filtered below.
   pull_request:
     paths:
       - 'mobile/**'
@@ -170,4 +168,3 @@ jobs:
             ${{ runner.temp }}/emulator.log
             mobile/android/app/build/reports/androidTests/
           if-no-files-found: ignore
-

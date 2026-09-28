@@ -7,6 +7,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class UpdateReleaseContractTests(unittest.TestCase):
+    def test_android_runs_for_every_release_push_but_filters_pull_requests(self):
+        workflow = (ROOT / ".github/workflows/android.yml").read_text()
+        triggers = workflow.split("permissions:", 1)[0]
+        push = triggers.split("  push:", 1)[1].split("  pull_request:", 1)[0]
+        pull_request = triggers.split("  pull_request:", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertNotIn("paths:", push)
+        self.assertIn("paths:", pull_request)
+
     def test_release_pipeline_has_separate_authority_and_metadata_last(self):
         workflow = (ROOT / ".github/workflows/android-release.yml").read_text()
         for phase in ("BUILD", "PACKAGE", "PUBLISH_ARTIFACTS", "PROMOTE_RELEASE"):
