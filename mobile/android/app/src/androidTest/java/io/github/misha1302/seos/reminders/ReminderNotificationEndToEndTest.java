@@ -117,6 +117,8 @@ public class ReminderNotificationEndToEndTest {
         JSONObject task = null;
         for (int attempt = 0; attempt < 90; attempt++) {
             HttpURLConnection connection = (HttpURLConnection) new URL(server + "/api/v1/tasks/" + taskId).openConnection();
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(10_000);
             connection.setRequestProperty("Authorization", "Bearer " + token);
             try (InputStream in = connection.getInputStream()) {
                 task = new JSONObject(read(in));

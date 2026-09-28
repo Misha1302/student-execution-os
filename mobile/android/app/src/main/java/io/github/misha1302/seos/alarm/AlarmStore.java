@@ -2,6 +2,7 @@ package io.github.misha1302.seos.alarm;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import org.json.JSONException;
@@ -30,9 +31,11 @@ public final class AlarmStore {
 
     public static synchronized void save(Context context, List<AlarmState> states) {
         // Finished alarms are kept a day (dedupe of a late push), then forgotten.
+        // Prune a copy: callers may pass an immutable list and keep using their own.
         long cutoff = System.currentTimeMillis() - 24 * 3600_000L;
-        states.removeIf(s -> !s.active() && s.at < cutoff);
-        prefs(context).edit().putString(ALARMS, AlarmState.listToJson(states)).apply();
+        List<AlarmState> kept = new ArrayList<>(states);
+        kept.removeIf(s -> !s.active() && s.at < cutoff);
+        prefs(context).edit().putString(ALARMS, AlarmState.listToJson(kept)).apply();
     }
 
     public static synchronized String owner(Context context) {
