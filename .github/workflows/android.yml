@@ -68,14 +68,28 @@ jobs:
           canary="seos-ci-$(openssl rand -hex 12)"
           keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/ci-release.jks" -alias ci -keyalg RSA \
             -keysize 2048 -validity 1 -storepass "$canary" -keypass "$canary" -dname "CN=botay CI throwaway"
+          # Synthetic Firebase client config (no real project) so push is compiled in the
+          # same way android-release.yml does it with the owner's real file.
+          cat > android/app/google-services.json <<'JSON'
+          {"project_info": {"project_number": "000000000000", "project_id": "seos-ci-synthetic",
+            "storage_bucket": "seos-ci-synthetic.appspot.com"},
+           "client": [{"client_info": {"mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+             "android_client_info": {"package_name": "io.github.misha1302.seos"}},
+             "oauth_client": [], "api_key": [{"current_key": "ci-synthetic-not-a-key"}],
+             "services": {"appinvite_service": {"other_platform_oauth_client": []}}}],
+           "configuration_version": "1"}
+          JSON
           cd android
           SEOS_KEYSTORE="$RUNNER_TEMP/ci-release.jks" SEOS_KEY_ALIAS=ci \
           SEOS_KEYSTORE_PASSWORD="$canary" SEOS_KEY_PASSWORD="$canary" \
           SEOS_VERSION_NAME="0.0.0-ci.${{ github.run_number }}" SEOS_VERSION_CODE="${{ github.run_number }}" \
             ./gradlew assembleRelease --no-daemon --console=plain
-          apksigner="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
-          "$apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
-          python3 ../scripts/apk_secret_scan.py app/build/outputs/apk/release/app-release.apk "$canary"
+          rm app/google-services.json
+          tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          python3 ../scripts/release_evidence.py app/build/outputs/apk/release/app-release.apk \
+            --build-tools "$tools" --output "$RUNNER_TEMP/provenance.json" --require-fcm --require-clean \
+            --expect-version-name "0.0.0-ci.${{ github.run_number }}" \
+            --expect-version-code "${{ github.run_number }}" --canary "$canary"
           python3 ../scripts/apk_secret_scan.py app/build/outputs/apk/debug/app-debug.apk
 
   device:

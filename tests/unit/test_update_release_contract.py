@@ -24,11 +24,33 @@ class UpdateReleaseContractTests(unittest.TestCase):
 
     def test_release_artifacts_are_immutable_and_named_by_version(self):
         workflow = (ROOT / ".github/workflows/android-release.yml").read_text()
-        self.assertIn('student-execution-os-${{ inputs.version }}-android-universal.apk', workflow)
+        self.assertIn('student-execution-os-${VERSION}-android-universal.apk', workflow)
         self.assertIn("immutable release tag already exists", workflow)
         # Only mutable signed policy is clobbered; versioned APK upload is not.
         publish = workflow.split("name: PUBLISH_ARTIFACTS", 1)[1].split("name: PROMOTE_RELEASE", 1)[0]
         self.assertNotIn("--clobber", publish)
+
+    def test_release_apk_has_push_config_evidence_and_provenance(self):
+        workflow = (ROOT / ".github/workflows/android-release.yml").read_text()
+        package = workflow.split("name: PACKAGE", 1)[1].split("name: PUBLISH_ARTIFACTS", 1)[0]
+        publish = workflow.split("name: PUBLISH_ARTIFACTS", 1)[1].split("name: PROMOTE_RELEASE", 1)[0]
+        # Without google-services.json the Gradle build silently compiles push out.
+        self.assertIn('test -n "$GOOGLE_SERVICES_B64"', package)
+        self.assertIn("mobile/android/app/google-services.json", package)
+        self.assertIn("release_evidence.py", package)
+        for flag in ("--require-fcm", "--require-clean", "--expect-version-code", "--canary"):
+            self.assertIn(flag, package)
+        self.assertIn("provenance.json", package)
+        self.assertIn('"$apk" provenance.json', publish)
+
+    def test_free_text_dispatch_inputs_never_become_script_text(self):
+        workflow = (ROOT / ".github/workflows/android-release.yml").read_text()
+        scripts = [block for block in workflow.split("run: |")[1:]]
+        for name in ("summary_en", "summary_ru", "change_en", "change_ru", "version",
+                     "required_after", "minimum_supported_version"):
+            for block in scripts:
+                body = block.split("\n      - ", 1)[0]
+                self.assertNotIn("${{ inputs.%s }}" % name, body)
 
     def test_pause_withdraw_requires_new_signed_sequence(self):
         workflow = (ROOT / ".github/workflows/update-release-control.yml").read_text()
