@@ -3,6 +3,10 @@
 One entry per stage. Each claim links to executed evidence (tests, CI runs, commands);
 "not run" is written as such.
 
+Live G1–G13 results for a frozen release are not committed here: doing so would change the
+revision they describe. `RELEASE_CHECKLIST.md` defines the external immutable GitHub
+Release evidence record keyed to the frozen source SHA.
+
 ## R1 — Notes, voice, Capture Task/Event/Note, Today events (PR #29)
 
 - **STATUS:** DONE, merged to main (c4d4e20).
