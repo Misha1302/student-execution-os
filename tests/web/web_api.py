@@ -74,29 +74,22 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(occurrence["ownership"], "DERIVED_OCCURRENCE")
 
     def test_recurrence_write_surface_moves_one_occurrence_without_changing_identity(self):
-        created = self.client.post(
-            "/api/v1/recurrence/templates",
-            json={
-                "id": "ui-series",
-                "title": "UI recurrence",
-                "dtstart_local": "2026-09-21T20:00:00",
-                "duration_minutes": 30,
-                "recurrence_rule": "FREQ=DAILY;COUNT=2",
-                "timezone_name": "UTC",
-            },
-        )
-        self.assertEqual(created.status_code, 201)
+        def sync(op_id, op_type, entity_id, payload):
+            response = self.client.post("/api/v1/sync", json={"operations": [
+                {"op_id": op_id, "type": op_type, "entity_id": entity_id, "payload": payload}]})
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()["results"][0]
+
+        created = sync("op-series-create", "series.create", "ui-series", {
+            "title": "UI recurrence", "dtstart_local": "2026-09-21T20:00:00", "duration_minutes": 30,
+            "recurrence_rule": "FREQ=DAILY;COUNT=2", "timezone_name": "UTC",
+        })
+        self.assertEqual(created["status"], "APPLIED", created)
         original_id = "2026-09-21T20:00:00"
-        moved = self.client.post(
-            f"/api/v1/recurrence/templates/ui-series/occurrences/{original_id}/override",
-            json={
-                "action": "MODIFY",
-                "replacement_start_local": "2026-09-21T21:00:00",
-                "expected_version": 0,
-            },
-        )
-        self.assertEqual(moved.status_code, 200)
-        self.assertEqual(moved.json()["original_recurrence_id"], original_id)
+        moved = sync("op-series-move", "series.occurrence.move", "ui-series", {
+            "template_id": "ui-series", "original_recurrence_id": original_id, "starts_local": "2026-09-21T21:00:00"})
+        self.assertEqual(moved["status"], "APPLIED", moved)
+        self.assertEqual(moved["entity"]["original_recurrence_id"], original_id)
         body = self.client.get("/api/v1/calendar").json()
         occurrence = next(
             item for item in body["occurrences"]
@@ -104,6 +97,8 @@ class WebApiTest(unittest.TestCase):
         )
         self.assertEqual(occurrence["identity"], ["ui-series", original_id])
         self.assertEqual(occurrence["starts_at"], "2026-09-21T21:00:00+00:00")
+        # The old REST write surface is gone: every series change goes through /sync.
+        self.assertIn(self.client.post("/api/v1/recurrence/templates", json={}).status_code, (404, 405))
 
     def test_reminder_snooze_updates_execution_state_without_advancing_domain_revision(self):
         before_revision = self.client.get("/api/v1/settings/diagnostics").json()["server_revision"]

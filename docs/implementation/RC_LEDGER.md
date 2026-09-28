@@ -67,3 +67,55 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   - Recurring event templates are still edited through REST, not the command boundary.
     That moves in R3.
 - **NEXT STEP:** R3 — recurrence exceptions on the command boundary with stable external identity.
+
+## R3 — Class series exceptions and stable external identity (schema v23)
+
+- **STATUS:** DONE on `feature/r3-recurrence-exceptions`, PR open.
+- **BASELINE:**
+  - One override per occurrence (CANCEL, or MODIFY start/duration).
+  - No room or teacher.
+  - Series mutated through REST endpoints outside the command boundary.
+  - No external identity.
+- **OWNERS / CHANGES** (ADR 0027):
+  - `023_series_exceptions.sql`:
+    - override `layer` (SOURCE/USER), detail fields and `reason`;
+    - template `location_text` / `teacher` / `source_system_id`;
+    - new tables `series_extra_events`, `event_details`, `external_identities`.
+  - `rollback/023_series_exceptions_down.sql`.
+  - `recurrence/`: layered expansion; `remove_override` (restore), `update_template`,
+    `end_series`.
+  - `recurrence/source.py`: `SourceApplier`, the provider-agnostic SOURCE writer with
+    identity, stale-update ordering and removal.
+  - `sync/commands.py`: 9 `series.*` operations. The REST write endpoints are removed.
+  - `web/queries.py`: occurrence details and series identity in the calendar, Today and
+    events payloads.
+  - Client:
+    - `compose.js`: `series.create` with room and teacher;
+    - `views/calendar.js`: edit / move / cancel / restore, "from this class on",
+      extra class, days off;
+    - `overlay.projectCalendar` for offline.
+- **TESTS:**
+  - `test_v23_series_exceptions.py`:
+    - exactly-once `series.create` (replay, op_id reuse, id reuse);
+    - move + room + cancel + restore of one class; a non-member occurrence is rejected;
+    - extra class in Today Soon; holiday range and its undo; split from a date;
+    - import + idempotent resync (no version churn);
+    - source move / cancel / restore / room change / series-time change;
+    - the USER layer survives source updates; a SOURCE cancel survives a user restore;
+    - imported series cannot be split;
+    - late update ignored; removal keeps history; re-added series restored; a partial
+      snapshot never removes;
+    - populated v22 → v23 keeps overrides as the USER layer (integrity, FK check,
+      idempotent init); rollback gives a v22-identical shape.
+  - `tests/js/series_overlay_cases.mjs`.
+  - `tests/browser/series_e2e.py` (real server): create series with room → change one
+    class's room → cancel → restore → day off. Every step is asserted in SQLite and
+    `client_operations`.
+  - Migration tests v14/v22 chain the v23 rollback.
+  - Full suites: unit 400 OK, API OK, browser 33 OK, `make static` OK, `make smoke` OK.
+- **REMAINING RISK:**
+  - Offline projection reads local civil times in the device zone. It is exact when device
+    zone = series zone (the default: the composer uses the device zone).
+  - Series-level user edits (rename, delete a whole series) are not in scope. Users can
+    split or cancel classes.
+- **NEXT STEP:** R4 — `AcademicScheduleProvider` + iCalendar/HSE provider feeding `SourceApplier`.

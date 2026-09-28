@@ -50,7 +50,8 @@ class V22BotayMigrationTests(unittest.TestCase):
 
             client = TestClient(create_app(db, account_id="existing", principal_id="u", now=lambda: NOW))
             health = client.get("/api/v1/health").json()
-            self.assertEqual((SCHEMA_VERSION, health["schema_version"]), (22, 22))
+            self.assertGreaterEqual(SCHEMA_VERSION, 22)
+            self.assertEqual(health["schema_version"], SCHEMA_VERSION)
             created = client.post("/api/v1/sync", json={"operations": [{
                 "op_id": "op-note-after-upgrade", "type": "note.create", "entity_id": "note-upgraded",
                 "payload": {"content": "survived upgrade", "source_kind": "CAPTURE"},
@@ -62,7 +63,7 @@ class V22BotayMigrationTests(unittest.TestCase):
                 check.initialize()
                 self.assertEqual(
                     [r[0] for r in check.connection.execute("SELECT version FROM schema_migrations")],
-                    list(range(1, 23)),
+                    list(range(1, SCHEMA_VERSION + 1)),
                 )
                 self.assertEqual(check.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -90,7 +91,7 @@ class V22BotayMigrationTests(unittest.TestCase):
                 repo.close()
 
             client = TestClient(create_app(db, account_id="acct-v21", principal_id="u", now=lambda: NOW))
-            self.assertEqual(client.get("/api/v1/health").json()["schema_version"], 22)
+            self.assertEqual(client.get("/api/v1/health").json()["schema_version"], SCHEMA_VERSION)
             task = client.get("/api/v1/tasks/task-v21").json()
             self.assertEqual((task["title"], task["version"]), ("Лабораторная", 1))
             today = client.get("/api/v1/today").json()
@@ -122,7 +123,7 @@ class V22BotayMigrationTests(unittest.TestCase):
                 self.assertEqual(after, {k: before[k] for k in after})
                 self.assertEqual(
                     [r[0] for r in check.connection.execute("SELECT version FROM schema_migrations")],
-                    list(range(1, 23)),
+                    list(range(1, SCHEMA_VERSION + 1)),
                 )
                 self.assertEqual(check.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -139,6 +140,8 @@ class V22BotayMigrationTests(unittest.TestCase):
                 for table in ("notes", "note_audio", "note_links", "deleted_notes", "beta_feedback")
             )
             self.assertEqual(counts, 0)
+            # Later releases roll back first (ADR 0027), then v22.
+            conn.executescript(Path("src/student_execution_os/persistence/rollback/023_series_exceptions_down.sql").read_text(encoding="utf-8"))
             conn.executescript(
                 "DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
                 "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;"

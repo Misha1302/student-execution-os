@@ -35,6 +35,19 @@ class OccurrenceOverrideAction(StrEnum):
     MODIFY = "MODIFY"
 
 
+class OverrideLayer(StrEnum):
+    """Who changed an occurrence. The effective occurrence applies SOURCE, then USER."""
+
+    SOURCE = "SOURCE"
+    USER = "USER"
+
+
+class OverrideReason(StrEnum):
+    USER = "USER"
+    HOLIDAY = "HOLIDAY"
+    SOURCE = "SOURCE"
+
+
 @dataclass(frozen=True)
 class RecurrenceRule:
     frequency: RecurrenceFrequency
@@ -107,6 +120,10 @@ class RecurringTemplate:
     version: int
     created_at: datetime
     updated_at: datetime
+    location_text: str | None = None
+    teacher: str | None = None
+    # Imported series: template fields change only through source apply.
+    source_system_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.account_id or not self.title.strip() or not self.timezone_name:
@@ -137,17 +154,30 @@ class OccurrenceOverride:
     version: int
     created_at: datetime
     updated_at: datetime
+    layer: OverrideLayer = OverrideLayer.USER
+    replacement_title: str | None = None
+    location_text: str | None = None
+    teacher: str | None = None
+    note: str | None = None
+    reason: OverrideReason | None = None
+
+    @property
+    def detail_fields(self) -> tuple[object, ...]:
+        return (self.replacement_start_local, self.replacement_duration_minutes, self.replacement_title,
+                self.location_text, self.teacher)
 
     def __post_init__(self) -> None:
         if not all((self.id, self.account_id, self.template_id, self.original_recurrence_id)):
             raise ValidationError("occurrence override identity is required")
         if self.replacement_start_local is not None and self.replacement_start_local.tzinfo is not None:
             raise ValidationError("replacement start must retain local civil semantics")
+        if self.replacement_title is not None and not self.replacement_title.strip():
+            raise ValidationError("replacement title cannot be blank")
         if self.action is OccurrenceOverrideAction.CANCEL:
-            if self.replacement_start_local is not None or self.replacement_duration_minutes is not None:
+            if any(value is not None for value in self.detail_fields):
                 raise ValidationError("CANCEL override cannot carry replacement fields")
-        elif self.replacement_start_local is None:
-            raise ValidationError("MODIFY override requires replacement_start_local")
+        elif all(value is None for value in (*self.detail_fields, self.note)):
+            raise ValidationError("MODIFY override must change something")
         if self.replacement_duration_minutes is not None and self.replacement_duration_minutes <= 0:
             raise ValidationError("replacement duration must be positive")
         if self.version < 1:
@@ -164,6 +194,14 @@ class RecurringOccurrence:
     ends_at: datetime
     cancelled: bool
     override_id: str | None = None
+    title: str | None = None
+    location_text: str | None = None
+    teacher: str | None = None
+    note: str | None = None
+    # Which layer cancelled it (a SOURCE cancel survives a user "restore") and why.
+    cancelled_by: OverrideLayer | None = None
+    cancel_reason: OverrideReason | None = None
+    changed_by: tuple[OverrideLayer, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.template_id or not self.original_recurrence_id:

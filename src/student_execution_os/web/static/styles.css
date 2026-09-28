@@ -620,6 +620,7 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .health-row .row-main .button { margin-top: 6px; align-self: flex-start; }
 .connector-row .button-row { margin-top: 6px; }
 .notes-new { margin: 0 0 12px; }
+.row.cancelled .row-main strong, .row.cancelled .row-time strong { text-decoration: line-through; color: var(--text-3); }
 .text-danger { color: var(--danger); }
 .reminder-fields .chip-group + .chip-group { margin-top: 6px; }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }
