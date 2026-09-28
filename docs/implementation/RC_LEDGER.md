@@ -563,3 +563,6 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
      showed the old role until the detail was opened; the list now applies the same
      ownership hand-over.
 
+- **RELEASE CHECKLIST:** `docs/implementation/RELEASE_CHECKLIST.md` (code gate, secret
+  rotation, backup + restore drill, deploy, post-deploy smoke incl. `llm-smoke` and a live
+  ChatGPT/Codex connection, rollback plan).
