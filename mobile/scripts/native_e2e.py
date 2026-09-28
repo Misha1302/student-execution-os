@@ -95,7 +95,14 @@ def main() -> int:
         task = client.get("/api/v1/tasks/task-native-e2e").json()
         inbox = client.get("/api/v1/notifications").json()
         print(json.dumps({"task_status": task["status"], "acted": [m.get("acted_action") for m in inbox]}, ensure_ascii=False))
-        return run.returncode
+        if run.returncode != 0:
+            return run.returncode
+        # The device test may be skipped (Assume) when arguments are lost; only the
+        # server's final state proves the buttons really ran end to end.
+        if task["status"] != "COMPLETED" or task.get("started_at") is None:
+            print("device test did not drive the task to COMPLETED on the server", file=sys.stderr)
+            return 1
+        return 0
     finally:
         server.terminate()
         server.wait(timeout=10)
