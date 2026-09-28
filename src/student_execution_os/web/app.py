@@ -34,6 +34,7 @@ from student_execution_os.academic.model import AcademicProviderError
 from student_execution_os.academic.ical import MAX_ICS_BYTES
 
 from student_execution_os.capabilities import SCOPES, CapabilityDenied, CapabilityStore, InvalidGrant
+from student_execution_os.groups import GroupService
 from student_execution_os.oauth import (
     OAuthError,
     OAuthServer,
@@ -633,6 +634,74 @@ def create_app(
                 "No AI key is set up for this account. Deterministic task/event capture remains available."
             ),
         }
+
+    # ---- Collaborative groups (shared academic facts; personal state stays personal) --
+    def _groups(service: UiService, action):
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            return action(GroupService(repo, account_id=service.account_id))
+
+    @app.get("/api/v1/groups")
+    def list_groups(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return _groups(service, lambda groups: groups.list())
+
+    @app.post("/api/v1/groups", status_code=201)
+    def create_group(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.create(payload))
+
+    @app.post("/api/v1/groups/join")
+    def join_group(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.join(payload))
+
+    @app.get("/api/v1/groups/{group_id}")
+    def group_detail(group_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return _groups(service, lambda groups: groups.detail(group_id))
+
+    @app.post("/api/v1/groups/{group_id}/invitations", status_code=201)
+    def group_invite(group_id: str, payload: dict[str, Any] = Body(...),
+                     service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.invite(group_id, payload))
+
+    @app.delete("/api/v1/groups/{group_id}/invitations/{invitation_id}")
+    def group_revoke_invite(group_id: str, invitation_id: str, service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.revoke_invitation(group_id, invitation_id))
+
+    @app.post("/api/v1/groups/{group_id}/leave")
+    def group_leave(group_id: str, service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.leave(group_id))
+
+    @app.delete("/api/v1/groups/{group_id}/members/{member_id}")
+    def group_remove_member(group_id: str, member_id: str, service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.remove_member(group_id, member_id))
+
+    @app.post("/api/v1/groups/{group_id}/members/{member_id}/role")
+    def group_set_role(group_id: str, member_id: str, payload: dict[str, Any] = Body(...),
+                       service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.set_role(group_id, member_id, payload))
+
+    @app.put("/api/v1/groups/{group_id}/schedule/{uid}")
+    def group_publish(group_id: str, uid: str, payload: dict[str, Any] = Body(...),
+                      service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.publish(group_id, uid, payload))
+
+    @app.post("/api/v1/groups/{group_id}/schedule/{uid}/remove")
+    def group_unpublish(group_id: str, uid: str, payload: dict[str, Any] = Body(...),
+                        service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.unpublish(group_id, uid, payload))
+
+    @app.post("/api/v1/groups/{group_id}/proposals", status_code=201)
+    def group_propose(group_id: str, payload: dict[str, Any] = Body(...),
+                      service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.propose(group_id, payload))
+
+    @app.post("/api/v1/groups/{group_id}/proposals/{proposal_id}/decide")
+    def group_decide(group_id: str, proposal_id: str, payload: dict[str, Any] = Body(...),
+                     service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.decide(group_id, proposal_id, payload))
+
+    @app.post("/api/v1/groups/{group_id}/proposals/{proposal_id}/withdraw")
+    def group_withdraw(group_id: str, proposal_id: str, service: UiService = Depends(current_service)):
+        return _groups(service, lambda groups: groups.withdraw(group_id, proposal_id))
 
     # ---- External agents (MCP / ChatGPT / Codex): capability grants -----------------
     # Grants are managed only by the signed-in owner (session); a grant token cannot

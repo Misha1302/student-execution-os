@@ -17,6 +17,7 @@ from student_execution_os.domain.model import (
 from student_execution_os.persistence import SCHEMA_VERSION, SQLiteCanonicalRepository
 from student_execution_os.web.app import create_app
 from tests.asgi_client import TestClient
+from tests.rollback_chain import roll_back_newer_than
 
 NOW = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc)
 MIGRATIONS = Path(__file__).resolve().parents[2] / "src/student_execution_os/persistence/migrations"
@@ -141,10 +142,7 @@ class V22BotayMigrationTests(unittest.TestCase):
             )
             self.assertEqual(counts, 0)
             # Later releases roll back first (ADR 0027), then v22.
-            conn.executescript(Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql").read_text(encoding="utf-8"))
-            conn.executescript(Path("src/student_execution_os/persistence/rollback/025_capability_grants_down.sql").read_text(encoding="utf-8"))
-            conn.executescript(Path("src/student_execution_os/persistence/rollback/024_academic_schedule_down.sql").read_text(encoding="utf-8"))
-            conn.executescript(Path("src/student_execution_os/persistence/rollback/023_series_exceptions_down.sql").read_text(encoding="utf-8"))
+            roll_back_newer_than(conn, 22)
             conn.executescript(
                 "DROP TABLE beta_feedback; DROP TABLE deleted_notes; DROP TABLE note_links; "
                 "DROP TABLE note_audio; DROP TABLE notes; DELETE FROM schema_migrations WHERE version=22;"

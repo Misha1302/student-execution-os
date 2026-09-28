@@ -24,6 +24,7 @@ from student_execution_os.recurrence.source import (
 from student_execution_os.sync.commands import SyncService
 from student_execution_os.web.app import create_app
 from tests.asgi_client import TestClient
+from tests.rollback_chain import roll_back_newer_than
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 28, 8, 0, tzinfo=UTC)  # Monday
@@ -31,9 +32,6 @@ ACCOUNT = "student"
 SOURCE = "timetable-feed"
 MIGRATIONS = Path("src/student_execution_os/persistence/migrations")
 ROLLBACK = Path("src/student_execution_os/persistence/rollback/023_series_exceptions_down.sql")
-ROLLBACK_V24 = Path("src/student_execution_os/persistence/rollback/024_academic_schedule_down.sql")
-ROLLBACK_V25 = Path("src/student_execution_os/persistence/rollback/025_capability_grants_down.sql")
-ROLLBACK_V26 = Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql")
 
 
 def seminar(**changes) -> SourceSeries:
@@ -379,9 +377,7 @@ class V23MigrationTests(unittest.TestCase):
                 self.assertEqual(repo.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(repo.connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             conn = sqlite3.connect(db)
-            conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
-            conn.executescript(ROLLBACK_V25.read_text(encoding="utf-8"))
-            conn.executescript(ROLLBACK_V24.read_text(encoding="utf-8"))
+            roll_back_newer_than(conn, 23)
             conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
             conn.commit()
             kept = conn.execute("SELECT id, replacement_start_local FROM occurrence_overrides").fetchall()
@@ -400,9 +396,7 @@ class V23MigrationTests(unittest.TestCase):
                 SourceApplier(repo, account_id=ACCOUNT).apply(
                     SourceSnapshot(source_system_id=SOURCE, series=(seminar(),)))
             conn = sqlite3.connect(db)
-            conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
-            conn.executescript(ROLLBACK_V25.read_text(encoding="utf-8"))
-            conn.executescript(ROLLBACK_V24.read_text(encoding="utf-8"))
+            roll_back_newer_than(conn, 23)
             with self.assertRaisesRegex(sqlite3.IntegrityError, "rollback would discard"):
                 conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
             self.assertTrue(conn.execute(

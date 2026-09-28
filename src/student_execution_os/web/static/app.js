@@ -30,12 +30,13 @@ import reminder from './js/views/reminder.js';
 import notes from './js/views/notes.js';
 import note from './js/views/note-detail.js';
 import connect from './js/views/connect.js';
+import groups, { group } from './js/views/groups.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect };
+const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect, groups, group };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }

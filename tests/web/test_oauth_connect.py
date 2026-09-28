@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 from student_execution_os.web.app import AUTHORIZE_LIMITER, REGISTRATION_LIMITER, create_app
 from student_execution_os.web.auth import AuthConfig
 from tests.asgi_client import TestClient
+from tests.rollback_chain import roll_back_newer_than
 
 NOW = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc)
 CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect"
@@ -225,8 +226,7 @@ class OAuthConnectTest(unittest.TestCase):
         token = self.token(grant_type="authorization_code", code=code, redirect_uri=CHATGPT_REDIRECT,
                            client_id=client_id, code_verifier=verifier).json()["access_token"]
         conn = sqlite3.connect(self.db)
-        conn.executescript(Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql")
-                           .read_text(encoding="utf-8"))
+        roll_back_newer_than(conn, 25)
         self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 25)
         self.assertEqual(conn.execute("SELECT count(*) FROM capability_grants").fetchone()[0], 1)
         conn.close()

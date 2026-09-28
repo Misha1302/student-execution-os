@@ -287,6 +287,13 @@ _GLOBAL_LIFECYCLE_TABLES = {
     # account only after consent and are removed with it (ON DELETE CASCADE).
     "oauth_clients",
     "oauth_authorizations",
+    # Groups are shared by several accounts: a deleted account's memberships cascade;
+    # the group itself (and its shared schedule) belongs to the remaining members.
+    "groups",
+    "group_members",
+    "group_invitations",
+    "group_schedule_items",
+    "group_proposals",
 }
 
 _KNOWN_DATABASE_TABLES = {
