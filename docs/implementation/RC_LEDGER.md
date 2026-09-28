@@ -136,7 +136,7 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R4 — AcademicScheduleProvider + iCalendar connection (schema v24)
 
-- **STATUS:** IMPLEMENTED on `feature/r4-academic-ical`; full-suite/PR evidence pending.
+- **STATUS:** IMPLEMENTED + REVIEWED on `feature/r4-academic-ical`; PR/CI/merge recorded below.
 - **OBSERVED REALITY:** official current HSE material points students to ЕЛК / HSE App X
   and calendar integration; RUZ is internal/VPN-only. No current public HSE API or live
   student feed was available. A direct HSE login integration is therefore not claimed.
@@ -163,8 +163,37 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
     account isolation, malformed/oversize preservation);
   - `tests.browser.academic_schedule_e2e`: 1/1 (390px RU, real server/database,
     Settings upload→Today, repeat import, disconnect, no horizontal overflow).
-- **RESULT:** locally focused path is green; exact commit/PR/CI will be added after full
-  verification and review.
+- **HANDOFF REVIEW / FIX (`63a7f87`):** the first commit (`41eb3cb`) was re-read
+  adversarially before PR. Found and fixed:
+  - `RECURRENCE-ID`/`EXDATE` written in UTC named the wrong local instance (DST/zone
+    semantics); now converted to the series zone, duplicate keys normalized to UTC;
+  - unexpected httpx transport errors escaped the reader and could echo the feed URL;
+    now `PROVIDER_PROTOCOL_ERROR` without details; unexpected fetch failures close the
+    sync session instead of leaving it open;
+  - the worker refreshed feeds *before* the reminder tick in the same error boundary
+    (a slow provider delayed reminders); now after the tick, own boundary, ≤20 feeds/pass,
+    per-account isolation;
+  - connect/refresh endpoints blocked the event loop with network I/O; now threadpool;
+  - Cyrillic `.ics` file names broke the upload header (Latin-1); now percent-encoded;
+  - `sync_interval_minutes: null` gave 500; now 422.
+  Reviewed and unchanged: SOURCE/USER precedence stays owned by R3 `SourceApplier`;
+  identities are deterministic uuid5 per account; connection/state version preconditions
+  inside `BEGIN IMMEDIATE` make a disconnect during refresh win (new test); v24 rollback
+  fails closed while a connection exists.
+- **FULL VERIFICATION (`63a7f87`, Python 3.13):** `make static` + relay 12/12 OK;
+  `make test` 427/427 OK (includes v14/v22/v23/v24 migration + rollback chains);
+  `make api` 29/29 OK; `make smoke` OK (incl. reliability backup/restore on v24);
+  Compose config (default/Tor/nginx/nginx+Tor) OK; focused R4 25/25.
+  `make browser` 33/34 locally: the one failure
+  (`test_explicit_alarm_survives_model_omission_and_conflict_up_to_the_queued_create`)
+  also fails 2/3 on unmodified `main` in this container (Chromium 1194 vs Playwright's
+  expected 1200); `academic_schedule_e2e` passes. Remote CI is authoritative for it.
+- **ACCEPTANCE REGISTRY:** the previously reported
+  `AcceptanceRegistryTests.test_first_slice_acceptance_ids_are_explicitly_tracked`
+  failure does not reproduce: registry and test are untouched by R4 and pass in full-suite
+  runs on both `41eb3cb` (422/422) and `63a7f87`. No test was weakened.
+- **REMAINING RISK:** HTTP client re-resolves DNS after validation (sub-second
+  rebinding window); pinning the validated address is a follow-up (ADR 0028).
 - **EXTERNAL BLOCKER:** live HSE authentication/subscription validation requires a
   consenting student account or sanitized current feed. Fixture validation is not
   represented as live HSE evidence.
