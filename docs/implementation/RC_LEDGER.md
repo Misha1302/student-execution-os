@@ -136,7 +136,9 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R4 — AcademicScheduleProvider + iCalendar connection (schema v24)
 
-- **STATUS:** IMPLEMENTED + REVIEWED on `feature/r4-academic-ical`; PR/CI/merge recorded below.
+- **STATUS:** MERGED. PR #32 (`feature/r4-academic-ical`), final head `5a36b93`, merge
+  commit `a3d45c6` on `main`. Remote CI on `5a36b93` green: `verify` (static, unit/
+  integration, API, smoke, full browser suite) and `apk`. Live HSE feed NOT validated.
 - **OBSERVED REALITY:** official current HSE material points students to ЕЛК / HSE App X
   and calendar integration; RUZ is internal/VPN-only. No current public HSE API or live
   student feed was available. A direct HSE login integration is therefore not claimed.
@@ -192,9 +194,44 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   `AcceptanceRegistryTests.test_first_slice_acceptance_ids_are_explicitly_tracked`
   failure does not reproduce: registry and test are untouched by R4 and pass in full-suite
   runs on both `41eb3cb` (422/422) and `63a7f87`. No test was weakened.
-- **REMAINING RISK:** HTTP client re-resolves DNS after validation (sub-second
-  rebinding window); pinning the validated address is a follow-up (ADR 0028).
+- **REMAINING RISK (at merge):** HTTP client re-resolved DNS after validation
+  (rebinding window) and honoured ambient proxy variables — closed by R4.1 below.
 - **EXTERNAL BLOCKER:** live HSE authentication/subscription validation requires a
   consenting student account or sanitized current feed. Fixture validation is not
   represented as live HSE evidence.
-- **NEXT DEPENDENCY:** full regression, PR/CI/merge, then R5 production Groq path.
+- **NEXT DEPENDENCY:** R4.1 DNS pinning, then R5 production Groq path.
+
+## R4.1 — Academic calendar SSRF / DNS-rebinding hardening
+
+- **STATUS:** IMPLEMENTED on `fix/r4-academic-dns-pinning`; PR/CI/merge recorded below.
+- **BASELINE (`a3d45c6`), reproduced, not assumed:** `HttpIcsReader` validated
+  `getaddrinfo` answers, then handed the *hostname* to a default `httpx.Client`. A
+  socket-level spy showed the transport connecting to `('calendar.example', 443)` — i.e.
+  resolving again — and, with `HTTPS_PROXY` in the environment, connecting to the proxy
+  instead (the proxy resolves the name; the address check is bypassed entirely).
+  `ipaddress.is_global` also accepted `::127.0.0.1` and `64:ff9b::7f00:1`.
+- **OWNER:** `academic/http.py` (the only calendar egress path; ADR 0028).
+- **IMPLEMENTATION:** per attempt resolve once → validate the complete answer set →
+  `PinnedTransport` (httpcore pool, verified TLS only) over `PinnedNetworkBackend`, which
+  connects only to the validated literals and refuses other hosts/ports/Unix sockets;
+  SNI, certificate hostname and `Host` stay the original name; `trust_env=False`;
+  embedded-IPv4 (IPv4-compatible, NAT64 well-known and local-use) checked; redirects still
+  refused; errors remain fixed codes without URL/cause chain. `httpcore==1.0.9` pinned
+  (already the transitive version; now a direct import).
+- **TESTS (`tests.unit.test_academic_ical`, 21/21, 13 new):** public address succeeds;
+  loopback / RFC1918 / link-local / metadata / CGNAT / IPv6 ULA / mapped / compatible /
+  NAT64-embedded-private / mixed public+private rejected before any connection; DNS change
+  after validation not consulted; real socket layer (patched `create_connection` +
+  rebinding `getaddrinfo` + hostile `HTTPS_PROXY`) connects only to the literal; retries
+  use only their own validated set and stop on a rebinding answer; in-attempt failover
+  stays inside the set; redirect not followed; real TLS handshake against a local server
+  proves SNI + `Host` = original name (IDN: its punycode wire name) and a certificate for another name is rejected;
+  unverified TLS contexts refused; URL token absent from `str`/`repr`, no cause chain.
+  Before the fix the reproducer connected by hostname / via the ambient proxy; the IDN test
+  fails if the pin uses the Unicode name instead of the wire name.
+- **LOCAL VERIFICATION (Python 3.13):** `make static` OK; relay `node --test` 12/12;
+  `make test` 440/440 OK; `make api` 29/29 OK; `make smoke` OK;
+  `academic_schedule_e2e` 1/1; focused R4+R4.1 32/32.
+- **KNOWN LIMITATION:** calendar egress is always direct; an operator cannot route it
+  through a proxy (by design — the proxy would perform its own resolution).
+

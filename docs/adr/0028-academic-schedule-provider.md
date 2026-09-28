@@ -49,11 +49,18 @@ Subscription URLs are bearer credentials. They are AES-256-GCM encrypted using a
 dedicated `SEOS_ACADEMIC_FEED_KEY[_FILE]`, bound to account and connector by associated
 data, omitted from APIs/exports/logs, and removed on disconnect/account deletion. The
 reminder worker receives only this dedicated key, not any LLM key. Outbound fetching is
-HTTPS/443 only, does not follow redirects, revalidates public DNS on every attempt,
-limits body size to 5 MiB, and uses bounded timeout/retry. Residual risk: the HTTP client
-resolves the host again after validation, so a sub-second DNS rebinding window remains;
-pinning the validated address in the transport is a follow-up. Transport errors are mapped
-to fixed codes and never echo the URL.
+HTTPS/443 only, does not follow redirects, limits body size to 5 MiB, and uses bounded
+timeout/retry. Transport errors are mapped to fixed codes and never echo the URL.
+
+DNS pinning (R4.1): every attempt resolves the host exactly once and requires *every*
+answer to be public (`is_global`, plus embedded-IPv4 checks for IPv4-compatible and NAT64
+forms). The attempt's transport (`PinnedNetworkBackend` under an httpcore pool) then opens
+TCP only to those validated literals, trying them in order; it refuses any other host,
+port or Unix socket. TLS SNI, certificate verification (always `CERT_REQUIRED` +
+hostname check) and the `Host` header keep the original hostname. A retry re-resolves and
+re-validates and can only use its own validated set. Ambient `HTTPS_PROXY`/`ALL_PROXY`
+are ignored (`trust_env=False`) because a proxy would resolve the name itself; calendar
+egress is direct. The earlier sub-second rebinding window is closed.
 
 The worker refreshes due feeds after the reminder tick, at most 20 per pass and in its own
 error boundary, so a slow or failing provider cannot delay reminders. Each account is
