@@ -74,6 +74,26 @@ class ICalendarProviderUnitTests(unittest.TestCase):
         )
         self.assertFalse(partial.snapshot.complete)
 
+    def test_utc_recurrence_id_names_the_series_local_instance(self):
+        # 10:00 Moscow (UTC+3) written as 07:00Z in RECURRENCE-ID and EXDATE.
+        calendar = (
+            b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+            b"BEGIN:VEVENT\r\nUID:seminar\r\nDTSTART;TZID=Europe/Moscow:20261005T100000\r\n"
+            b"DTEND;TZID=Europe/Moscow:20261005T113000\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\n"
+            b"EXDATE:20261019T070000Z\r\nSUMMARY:Seminar\r\nEND:VEVENT\r\n"
+            b"BEGIN:VEVENT\r\nUID:seminar\r\nRECURRENCE-ID:20261012T070000Z\r\n"
+            b"DTSTART;TZID=Europe/Moscow:20261012T120000\r\nDTEND;TZID=Europe/Moscow:20261012T133000\r\n"
+            b"SUMMARY:Seminar moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        series = parse_icalendar(
+            calendar, source_system_id="source", default_timezone="Europe/Moscow"
+        ).snapshot.series[0]
+        from datetime import datetime
+        self.assertEqual(series.exdates_local, (datetime(2026, 10, 19, 10, 0),))
+        self.assertEqual(len(series.changes), 1)
+        self.assertEqual(series.changes[0].recurrence_local, datetime(2026, 10, 12, 10, 0))
+        self.assertEqual(series.changes[0].starts_local, datetime(2026, 10, 12, 12, 0))
+
 
 class AcademicHttpUnitTests(unittest.TestCase):
     def test_url_policy_blocks_credentials_ports_and_private_addresses(self):
@@ -129,6 +149,21 @@ class AcademicHttpUnitTests(unittest.TestCase):
                     reader()
                 self.assertEqual((raised.exception.code, len(attempts)), (code, 1))
                 self.assertNotIn("private-bearer-token", str(raised.exception))
+
+    def test_unexpected_transport_error_is_contained_without_url(self):
+        def broken(request: httpx.Request) -> httpx.Response:
+            raise httpx.RemoteProtocolError(f"peer closed while reading {request.url}", request=request)
+
+        reader = HttpIcsReader(
+            "https://calendar.example/private-bearer-token.ics",
+            resolver=PUBLIC_DNS,
+            sleep=lambda _seconds: None,
+            client_factory=lambda: httpx.Client(transport=httpx.MockTransport(broken)),
+        )
+        with self.assertRaises(AcademicProviderError) as raised:
+            reader()
+        self.assertEqual(raised.exception.code, "PROVIDER_PROTOCOL_ERROR")
+        self.assertNotIn("private-bearer-token", str(raised.exception))
 
     def test_download_limit_is_enforced(self):
         reader = HttpIcsReader(

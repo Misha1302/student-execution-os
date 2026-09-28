@@ -242,7 +242,10 @@ def _select_components(components: Iterable[Any], default_timezone: str) -> dict
             raise AcademicProviderError("calendar VEVENT has no UID", "PARSE_ERROR")
         rid = ""
         if component.get("RECURRENCE-ID") is not None:
-            rid = _moment(component, "RECURRENCE-ID", default_timezone).local.isoformat()
+            # One instant may be written with a TZID or as UTC; both name the same instance.
+            moment = _moment(component, "RECURRENCE-ID", default_timezone)
+            rid = (moment.local.date().isoformat() if moment.all_day
+                   else moment.aware.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z")
         key = (uid, rid)
         selected[key] = component if key not in selected else _newer(selected[key], component)
     return selected
@@ -292,7 +295,13 @@ def parse_icalendar(
         for (child_uid, child_rid), child in sorted(selected.items()):
             if child_uid != uid or not child_rid:
                 continue
-            original = _moment(child, "RECURRENCE-ID", start.timezone_name).local
+            # The canonical instance key is the original start in the series' own zone,
+            # even when the override writes RECURRENCE-ID in UTC or another TZID.
+            original = (
+                _moment(child, "RECURRENCE-ID", start.timezone_name)
+                .aware.astimezone(ZoneInfo(start.timezone_name))
+                .replace(tzinfo=None)
+            )
             cancelled = method_cancel or str(child.get("STATUS") or "").upper() == "CANCELLED"
             child_start = None if child.get("DTSTART") is None else _moment(child, "DTSTART", start.timezone_name)
             child_starts_local = (

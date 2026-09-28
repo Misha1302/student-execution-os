@@ -50,7 +50,19 @@ dedicated `SEOS_ACADEMIC_FEED_KEY[_FILE]`, bound to account and connector by ass
 data, omitted from APIs/exports/logs, and removed on disconnect/account deletion. The
 reminder worker receives only this dedicated key, not any LLM key. Outbound fetching is
 HTTPS/443 only, does not follow redirects, revalidates public DNS on every attempt,
-limits body size to 5 MiB, and uses bounded timeout/retry.
+limits body size to 5 MiB, and uses bounded timeout/retry. Residual risk: the HTTP client
+resolves the host again after validation, so a sub-second DNS rebinding window remains;
+pinning the validated address in the transport is a follow-up. Transport errors are mapped
+to fixed codes and never echo the URL.
+
+The worker refreshes due feeds after the reminder tick, at most 20 per pass and in its own
+error boundary, so a slow or failing provider cannot delay reminders. Each account is
+isolated: an unexpected failure closes that account's sync session and the pass continues.
+The API connect/refresh endpoints run in the threadpool, not on the event loop.
+
+A `RECURRENCE-ID` or `EXDATE` written in UTC (or another TZID) is converted to the series'
+own zone before it names an instance, so `...T070000Z` and `TZID=Europe/Moscow:...T100000`
+address the same class.
 
 Disconnect applies an empty complete source snapshot and removes connection credentials
 atomically. It does not delete unrelated personal state.

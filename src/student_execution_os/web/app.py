@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import mimetypes
+from urllib.parse import unquote
 from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Request
@@ -465,8 +466,10 @@ def create_app(
     async def academic_schedule(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.academic_schedule()
 
+    # Connect and refresh fetch a remote feed (bounded retries); plain ``def`` runs them in
+    # the threadpool so a slow calendar provider never blocks the event loop.
     @app.put("/api/v1/settings/academic-schedule")
-    async def connect_academic_schedule(
+    def connect_academic_schedule(
         payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)
     ) -> dict[str, Any]:
         return service.connect_academic_schedule(payload)
@@ -484,12 +487,13 @@ def create_app(
             chunks.append(chunk)
         return service.import_academic_schedule(
             b"".join(chunks),
-            display_name=request.headers.get("x-calendar-name", "Imported academic calendar")[:120],
+            # Header values are Latin-1 on the wire, so the client percent-encodes the file name.
+            display_name=unquote(request.headers.get("x-calendar-name", "Imported academic calendar"))[:120],
             default_timezone=request.headers.get("x-calendar-timezone", "Europe/Moscow")[:80],
         )
 
     @app.post("/api/v1/settings/academic-schedule/sync")
-    async def refresh_academic_schedule(service: UiService = Depends(current_service)) -> dict[str, Any]:
+    def refresh_academic_schedule(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.refresh_academic_schedule()
 
     @app.delete("/api/v1/settings/academic-schedule")

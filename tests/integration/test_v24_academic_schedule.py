@@ -239,6 +239,60 @@ class AcademicScheduleV24Tests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "CREDENTIAL_UNREADABLE")
             self.assertEqual(service.status()["health"], "UNAVAILABLE")
 
+    def test_disconnect_during_refresh_wins_and_refresh_cannot_resurrect_classes(self):
+        cipher = CredentialCipher([b"e" * 32])
+        with self.repo() as repo:
+            AcademicScheduleService(
+                repo, account_id=ACCOUNT, cipher=cipher,
+                reader_factory=lambda _url: self.fixture, url_validator=lambda value: value,
+            ).connect_url(url="https://calendar.example.invalid/private.ics")
+
+            def disconnect_mid_fetch(_url: str):
+                def read() -> bytes:
+                    AcademicScheduleService(repo, account_id=ACCOUNT).disconnect()
+                    return self.fixture()
+                return read
+
+            service = AcademicScheduleService(
+                repo, account_id=ACCOUNT, cipher=cipher,
+                reader_factory=disconnect_mid_fetch, url_validator=lambda value: value,
+            )
+            with self.assertRaises(AcademicProviderError) as raised:
+                service.refresh()
+            self.assertEqual(raised.exception.code, "CONCURRENT_SYNC_CONFLICT")
+            self.assertFalse(service.status()["connected"])
+            self.assertEqual(repo.connection.execute(
+                "SELECT count(*) FROM academic_schedule_connections").fetchone()[0], 0)
+            self.assertEqual(repo.connection.execute(
+                "SELECT count(*) FROM connector_sync_sessions WHERE completed_at IS NULL").fetchone()[0], 0)
+
+    def test_scheduled_refresh_isolates_unexpected_account_failure(self):
+        cipher = CredentialCipher([b"f" * 32])
+        with self.repo() as repo:
+            repo.create_account("second-student")
+            for account in (ACCOUNT, "second-student"):
+                AcademicScheduleService(
+                    repo, account_id=account, cipher=cipher,
+                    reader_factory=lambda _url: self.fixture, url_validator=lambda value: value,
+                ).connect_url(url=f"https://calendar.example.invalid/{account}.ics")
+
+        def reader(url: str):
+            if ACCOUNT in url:
+                def explode() -> bytes:
+                    raise RuntimeError(f"unexpected failure for {url}")
+                return explode
+            return self.fixture
+
+        report = refresh_due_academic_schedules(
+            self.database, cipher=cipher, now=NOW.replace(hour=10), reader_factory=reader,
+        )
+        self.assertEqual(report, {"due": 2, "complete": 1, "failed": 1})
+        with self.repo() as repo:
+            status = AcademicScheduleService(repo, account_id=ACCOUNT, cipher=cipher).status()
+            self.assertEqual(status["latest_failure_reason"], "PROVIDER_PROTOCOL_ERROR")
+            self.assertEqual(repo.connection.execute(
+                "SELECT count(*) FROM connector_sync_sessions WHERE completed_at IS NULL").fetchone()[0], 0)
+
     def test_older_failure_cannot_regress_newer_checkpoint_or_retry_schedule(self):
         cipher = CredentialCipher([b"d" * 32])
         with self.repo() as repo:

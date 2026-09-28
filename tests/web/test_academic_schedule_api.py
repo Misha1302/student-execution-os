@@ -99,6 +99,23 @@ class AcademicScheduleApiTests(unittest.TestCase):
         self.assertEqual(huge.status_code, 422, huge.text)
         self.assertNotIn("xxxxx", huge.text)
 
+    def test_percent_encoded_cyrillic_calendar_name_and_bad_interval(self):
+        from urllib.parse import quote
+
+        imported = self.client.post(
+            "/api/v1/settings/academic-schedule/import",
+            content=FIXTURE.read_bytes(),
+            headers={"content-type": "text/calendar", "x-calendar-name": quote("Расписание ВШЭ.ics")},
+        )
+        self.assertEqual(imported.status_code, 200, imported.text)
+        self.assertEqual(imported.json()["display_name"], "Расписание ВШЭ.ics")
+        bad = self.client.put(
+            "/api/v1/settings/academic-schedule",
+            json={"url": "https://calendar.example/feed.ics", "sync_interval_minutes": None},
+        )
+        self.assertEqual(bad.status_code, 422, bad.text)
+        self.assertIn("sync_interval_minutes", bad.text)
+
 
 if __name__ == "__main__":
     unittest.main()

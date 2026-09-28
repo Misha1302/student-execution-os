@@ -91,6 +91,10 @@ class HttpIcsReader:
             except (httpx.TimeoutException, httpx.NetworkError):
                 last = AcademicProviderError("calendar provider could not be reached", "NETWORK")
                 retryable = True
+            except httpx.HTTPError:
+                # Protocol/proxy/decoding errors may embed the request URL; never surface them.
+                last = AcademicProviderError("calendar provider returned an invalid response", "PROVIDER_PROTOCOL_ERROR")
+                retryable = False
             if not retryable or attempt + 1 >= self.attempts:
                 assert last is not None
                 raise last

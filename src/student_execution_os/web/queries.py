@@ -87,6 +87,16 @@ class _AccountLimiter:
 
 
 TEST_NOTIFICATION_LIMITER = _AccountLimiter(3)
+def _int_field(payload: dict[str, Any], name: str, default: int) -> int:
+    value = payload.get(name, default)
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{name} must be an integer") from exc
+
+
 def _occurrence_details(item) -> dict[str, Any]:
     """What a class looks like after its SOURCE and USER changes, and who changed it."""
     return {
@@ -1186,7 +1196,7 @@ class UiService:
                 url=str(payload.get("url", "")),
                 display_name=str(payload.get("display_name", "Academic calendar")),
                 default_timezone=str(payload.get("default_timezone", "Europe/Moscow")),
-                sync_interval_minutes=int(payload.get("sync_interval_minutes", 60)),
+                sync_interval_minutes=_int_field(payload, "sync_interval_minutes", 60),
             )
 
     def import_academic_schedule(

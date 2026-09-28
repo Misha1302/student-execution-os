@@ -6,6 +6,7 @@ connection status commit in one SQLite write transaction.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -29,6 +30,7 @@ PROVIDER = "ACADEMIC_ICAL"
 CONNECTOR_VERSION = "ical-rfc5545-v1"
 SOURCE_KIND = "ACADEMIC_SCHEDULE"
 _UNSET = object()
+_log = logging.getLogger(__name__)
 
 
 def academic_connector_id(account_id: str) -> str:
@@ -259,6 +261,14 @@ class AcademicScheduleService:
         except AcademicProviderError as exc:
             self._finish_failure(session.id, exc.code, connection_version=int(row["version"]))
             raise
+        except Exception as exc:
+            # Close the session instead of leaving it open; never echo the cause (may hold the URL).
+            self._finish_failure(
+                session.id, "PROVIDER_PROTOCOL_ERROR", connection_version=int(row["version"])
+            )
+            raise AcademicProviderError(
+                "calendar provider returned an invalid response", "PROVIDER_PROTOCOL_ERROR"
+            ) from exc
         return self._apply_result(
             result, session_id=session.id, connection_version_before=int(row["version"])
         )
@@ -463,8 +473,13 @@ def refresh_due_academic_schedules(
     cipher: CredentialCipher | None,
     now: datetime | None = None,
     reader_factory: Callable[[str], Callable[[], bytes]] = HttpIcsReader,
+    limit: int = 20,
 ) -> dict[str, int]:
-    """Refresh due URL connections; one account failure never blocks the next."""
+    """Refresh due URL connections; one account failure never blocks the next.
+
+    At most ``limit`` feeds are fetched per pass so a slow provider cannot starve the
+    reminder loop; the rest stay due and are picked up on the next tick.
+    """
     counts = {"due": 0, "complete": 0, "failed": 0}
     with SQLiteCanonicalRepository(database) as repo:
         repo.initialize()
@@ -473,8 +488,8 @@ def refresh_due_academic_schedules(
             row[0]
             for row in repo.connection.execute(
                 "SELECT account_id FROM academic_schedule_connections "
-                "WHERE mode='URL' AND next_sync_at<=? ORDER BY account_id",
-                (_iso(threshold),),
+                "WHERE mode='URL' AND next_sync_at<=? ORDER BY next_sync_at,account_id LIMIT ?",
+                (_iso(threshold), max(1, int(limit))),
             ).fetchall()
         ]
         counts["due"] = len(accounts)
@@ -484,6 +499,9 @@ def refresh_due_academic_schedules(
                     repo, account_id=account_id, cipher=cipher, reader_factory=reader_factory
                 ).refresh()
             except (AcademicProviderError, ValidationError):
+                counts["failed"] += 1
+            except Exception:  # noqa: BLE001 - isolate accounts; details may carry feed data
+                _log.error("academic refresh failed unexpectedly (%s)", account_id)
                 counts["failed"] += 1
             else:
                 counts["complete"] += 1

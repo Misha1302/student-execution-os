@@ -75,9 +75,10 @@ export const academicScheduleActions = {
     setBusy(button, true);
     try {
       await apiUpload('/api/v1/settings/academic-schedule/import', file, {
-        method: 'POST', mimeType: 'text/calendar', filename: file.name, timeoutMs: 120000,
+        // Header values must be ISO-8859-1; Cyrillic file names are percent-encoded.
+        method: 'POST', mimeType: 'text/calendar', timeoutMs: 120000,
         extraHeaders: {
-          'X-Calendar-Name': file.name.slice(0, 120),
+          'X-Calendar-Name': encodeURIComponent(file.name.slice(0, 120)),
           'X-Calendar-Timezone': defaultTimezone.slice(0, 80),
         },
       });
