@@ -221,6 +221,11 @@ _DIRECT_ACCOUNT_TABLES = (
     "calibration_preferences",
     "starter_llm_account_usage",
     "starter_llm_reservations",
+    "notes",
+    "note_audio",
+    "note_links",
+    "deleted_notes",
+    "beta_feedback",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

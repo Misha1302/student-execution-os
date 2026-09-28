@@ -273,8 +273,8 @@ export default {
     const activeExecutionTask = activeExecution ? tasks.get(activeExecution.task_id) : null;
     const unhealthy = (data.source_health || []).filter((s) => s.health_status !== 'CURRENT');
     const cur = now();
-    const events = (plan.canonical_events || []).filter((e) => new Date(e.ends_at) >= cur && sameDay(new Date(e.starts_at), cur))
-      .sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+    const events = (data.events || plan.canonical_events || []).slice().sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+    const currentEvent = events.find((e) => new Date(e.starts_at) <= cur && cur < new Date(e.ends_at));
     const soon = soonTasks(data, cur);
     const suggestion = !first ? soon.find((x) => x.ready) : null;
     const later = soon.filter((x) => x !== suggestion);
@@ -293,7 +293,11 @@ export default {
 
       <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}
-        ${activeExecution ? executionCard(activeExecution, activeExecutionTask) : first ? nowCard(first, tasks.get(first.task_id), plan) : suggestion ? fallbackNowCard(suggestion) : nothingYet ? '' : empty(
+        ${activeExecution ? executionCard(activeExecution, activeExecutionTask) : currentEvent ? `<article class="card now-card event-now-card" data-action="open-event" data-id="${esc(currentEvent.id)}">
+          <div class="now-head"><span class="eyebrow">${esc(t('today.eventNow'))}</span>${chip(t('today.fixedEvent'), 'accent')}</div>
+          <h3>${esc(currentEvent.title)}</h3>
+          <p class="muted">${esc(fmtTime(currentEvent.starts_at))}–${esc(fmtTime(currentEvent.ends_at))}</p>
+        </article>` : first ? nowCard(first, tasks.get(first.task_id), plan) : suggestion ? fallbackNowCard(suggestion) : nothingYet ? '' : empty(
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothing') : t('today.resolveFirst'),
           plan.feasibility_status === 'FEASIBLE' ? t('today.nothingHint') : t('today.resolveFirstHint'),
           plan.feasibility_status === 'FEASIBLE' ? 'check' : 'question',
@@ -340,6 +344,15 @@ export default {
       </section>` : ''}
 
       ${todayReminders(data.reminders, cur)}
+
+      ${(data.inbox_notes || []).length ? `<section class="section">
+        ${sectionHead(t('today.captures'), `<button class="link" data-nav="notes">${esc(t('nav.notes'))}</button>`)}
+        <div class="list">${data.inbox_notes.map((n) => `<button class="row" data-action="open-note" data-id="${esc(n.id)}">
+          <span class="row-icon tone-accent">${icon(n.audio ? 'mic' : 'note')}</span>
+          <span class="row-main"><strong>${esc((n.content || n.transcript || t('note.voice')).slice(0, 120))}</strong><small>${esc(t('note.unprocessed'))}</small></span>
+          ${icon('chevron')}
+        </button>`).join('')}</div>
+      </section>` : ''}
 
       <section class="section">
         ${sectionHead(t('today.events'), `<button class="link" data-nav="calendar">${esc(t('nav.calendar'))}</button>`)}

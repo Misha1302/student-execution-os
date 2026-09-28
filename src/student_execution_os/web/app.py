@@ -168,7 +168,7 @@ def create_app(
         response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=(self)"  # dictation in capture
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+            "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
         )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
@@ -308,6 +308,37 @@ def create_app(
     @app.get("/api/v1/projects/{project_id}")
     async def get_project(project_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.project(project_id)
+
+    @app.get("/api/v1/notes")
+    async def list_notes(q: str = "", include_archived: bool = False, service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.notes(q, include_archived)
+
+    @app.get("/api/v1/notes/{note_id}")
+    async def get_note(note_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.note(note_id)
+
+    @app.put("/api/v1/notes/{note_id}/audio", status_code=201)
+    async def put_note_audio(note_id: str, request: Request, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        content = await request.body()
+        return service.save_note_audio(
+            note_id,
+            request.headers.get("content-type", "application/octet-stream"),
+            request.headers.get("x-filename"),
+            content,
+        )
+
+    @app.get("/api/v1/notes/{note_id}/audio")
+    async def get_note_audio(note_id: str, service: UiService = Depends(current_service)) -> Response:
+        metadata, content = service.note_audio(note_id)
+        return Response(
+            content=content,
+            media_type=metadata["mime_type"],
+            headers={"Content-Disposition": "inline", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.post("/api/v1/feedback", status_code=201)
+    async def beta_feedback(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.beta_feedback(payload)
 
     @app.get("/api/v1/tasks")
     async def list_tasks(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
@@ -517,7 +548,7 @@ def create_app(
     async def account_export(service: UiService = Depends(current_service)) -> JSONResponse:
         return JSONResponse(
             content=service.account_export(),
-            headers={"Content-Disposition": 'attachment; filename="student-execution-os-export.json"'},
+            headers={"Content-Disposition": 'attachment; filename="botay-export.json"'},
         )
 
     @app.get("/api/v1/account/deletion-policy")

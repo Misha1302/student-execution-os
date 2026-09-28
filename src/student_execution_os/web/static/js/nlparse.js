@@ -704,6 +704,22 @@ function reminderOf(parser, parsedTitle, parsedAt, description) {
   };
 }
 
+// captureKind(parsed, raw) → 'TASK' | 'NOTE' for a parse that is neither an Event nor a
+// Reminder. An explicit "Идея:/Заметка:" lead wins; otherwise a Task needs a signal that
+// there is something to do (effort, a date role, or an action verb). Everything else is
+// kept as a Note rather than inventing an obligation. Word boundaries are Unicode-aware:
+// JS \b only knows ASCII letters, so it never matches after a Cyrillic word.
+const ACTION_VERB = /(?<![\p{L}\p{N}])(?:сделать|сдать|решить|купить|позвонить|написать|подготовить|прочитать|закончить|доделать|отправить|проверить|заполнить|убрать|прибраться|почистить|do|submit|solve|buy|call|write|prepare|read|finish|send|check|tidy|clean)(?![\p{L}\p{N}])/iu;
+const NOTE_LEAD = /^(?:идея|заметка|мысль|наблюдение|note|idea)(?![\p{L}\p{N}])/iu;
+export function captureKind(parsed, raw) {
+  const text = String(raw || '').trim();
+  if (NOTE_LEAD.test(text)) return 'NOTE';
+  const p = parsed || {};
+  const dated = [p.estimated_total_effort_minutes, p.target_at, p.actionable_from, p.remind_at, p.actual_cutoff?.at]
+    .some((value) => value != null && value !== '');
+  return dated || ACTION_VERB.test(text) ? 'TASK' : 'NOTE';
+}
+
 // parseTask(text, now = new Date()) → task.create-shaped proposal.
 export function parseTask(text, now = new Date()) {
   const lines = String(text || '').trim().split(/\r?\n/u).map((l) => l.trim()).filter(Boolean);

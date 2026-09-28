@@ -1,6 +1,6 @@
-# Student Execution OS
+# botay!
 
-Student Execution OS is an experimental workload-planning system for students and other high-load users.
+**botay!** turns tasks, fixed events and quick captures into a realistic day plan, then keeps actual work separate from what was merely planned.
 
 It is **not** another generic TODO list and it is not intended to replace every LMS or calendar. Its core is a trustworthy interpretation/planning layer over fragmented user and external evidence.
 
@@ -45,9 +45,9 @@ Feasibility → Planner → Risk / Next actions
 
 ## Repository status
 
-Implementation and product specification for Student Execution OS belong in this repository. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
+Implementation and product specification for **botay!** belong in this repository. Internal package/API/deployment identifiers still use the legacy `student_execution_os` / `SEOS` naming where renaming would add migration risk. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
 
-The current MVP uses schema **v20**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+The current closed-beta branch uses schema **v22**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
 
 - one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
 - reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
@@ -90,6 +90,16 @@ receive a basic platform-managed entitlement protected by atomic per-account and
 request/token caps. Platform keys stay in API-only files and never enter SQLite or a
 client. BYOK always has priority and does not spend STARTER quota; exhausted or
 unavailable STARTER falls back to the local parser. This is not a paid billing tier.
+
+Schema v22 turns the product into the **botay! closed-beta capture loop**:
+
+- the same `+` flow proposes **Task / Event / Note** and uses Note as the safe fallback when typed text has no clear scheduling intent;
+- Notes are canonical account data with optimistic versions, archive/delete lifecycle, provenance links and the existing exactly-once client operation boundary;
+- voice Notes store original audio separately from transcript and user-edited text; transcription failure never destroys the recording;
+- Notes participate in backup/restore, account export and account deletion; audio is stored as SQLite BLOB data rather than large base64 request payloads;
+- Today exposes every canonical Event intersecting the user's local day and gives a currently-running fixed Event priority over generated work suggestions;
+- the user-facing brand, PWA/Android identity and beta feedback surface are **botay!**, while stable technical identifiers remain unchanged.
+
 
 Schema v15 makes the app **offline-first** and adds fixed-time events (ADR 0018):
 

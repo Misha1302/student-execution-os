@@ -27,12 +27,14 @@ import reflection from './js/views/reflection.js';
 import settings from './js/views/settings.js';
 import welcome from './js/views/welcome.js';
 import reminder from './js/views/reminder.js';
+import notes from './js/views/notes.js';
+import note from './js/views/note-detail.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome };
+const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -66,7 +68,7 @@ const needsLogin = () => session.authMode === 'session' && !session.token;
 function buildTabbar() {
   const tab = (id, ic, extra = '') => `<button class="tab ${extra}" data-nav="${id}">${icon(ic)}<span>${esc(t(`nav.${id}`))}</span></button>`;
   $('#tabbar').innerHTML = `
-    <div class="rail-brand">${icon('today')}<span>${esc(t('app.short'))}</span></div>
+    <div class="rail-brand">${icon('brand')}<span>${esc(t('app.short'))}</span></div>
     ${tab('today', 'today')}
     ${tab('plan', 'plan')}
     <button class="fab" data-action="compose" aria-label="${esc(t('capture.title'))}">${icon('plus')}<span class="rail-only">${esc(t('compose.new'))}</span></button>
@@ -288,6 +290,7 @@ const GLOBAL_ACTIONS = {
   'compose-task': () => openCapture(),
   'compose-voice': () => openCapture({ listen: true }),
   'open-task': (el) => go('task', { params: [el.dataset.id] }),
+  'open-note': (el) => go('note', { params: [el.dataset.id] }),
   'open-event': (el) => openEvent(el.dataset.id),
   'open-reminder': async (el) => {
     let found = (peek('/api/v1/reminders') || []).find((r) => r.id === el.dataset.id);
@@ -365,7 +368,7 @@ function handleBack() {
 
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
-const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
+const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/notes', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
   '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/reflection?days=7', '/api/v1/notifications/health'];
 let lastPrefetch = 0;
 function prefetch() {

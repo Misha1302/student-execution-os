@@ -13,7 +13,7 @@ import { t, code, fmtDuration, fmtDateTime, fmtTime, fmtDay, now, getLocale, sam
 import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, errorMessage } from './ui.js';
 import { mutate, change, shell } from './actions.js';
 import { newEntityId, settled } from './sync.js';
-import { parseTask } from './nlparse.js';
+import { parseTask, captureKind } from './nlparse.js';
 import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
@@ -328,7 +328,7 @@ export function mergeReminderDraft(previous, incoming, floor = null) {
 
 // ---- the sheet ----------------------------------------------------------------------
 
-export function openCapture({ text = '', listen: listenNow = false } = {}) {
+export function openCapture({ text = '', listen: listenNow = false, sourceNoteId = null, initialKind = null } = {}) {
   let draft = { title: '', importance: 'NORMAL', category: 'GENERAL', estimated_total_effort_minutes: null, actual_cutoff: { state: 'UNKNOWN' }, splittable: false };
   let unresolved = [];
   const answered = new Set();
@@ -337,8 +337,8 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
   let serverSeq = 0;
   let serverTimer = null;
   let parseTimer = null;
-  let kind = 'TASK';           // what the card will create: 'TASK' | 'EVENT' | 'REMINDER'
-  let kindChosen = false;      // the user picked the kind; parses no longer switch it
+  let kind = initialKind || 'TASK'; // TASK | EVENT | NOTE | REMINDER
+  let kindChosen = Boolean(initialKind);      // the user picked the kind; parses no longer switch it
   let eventDraft = null;
   let reminderDraft = null;   // { title, remind_at, delivery, wake_check, raise_volume, note }
   let reminderFloor = null;   // explicit alarm/wake semantics from the local parser
@@ -369,6 +369,8 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
         <div data-event-details hidden></div>
       </details>
       <div class="capture-other">
+        <button type="button" class="link" data-switch-note>${icon('note')} ${esc(t('capture.asNote'))}</button>
+        <button type="button" class="link" data-other="note-audio">${icon('mic')} ${esc(t('note.recordAudio'))}</button>
         <button type="button" class="link" data-other="event">${icon('event')} ${esc(t('capture.event'))}</button>
         <button type="button" class="link" data-other="recurring">${icon('repeat')} ${esc(t('capture.recurring'))}</button>
       </div>
@@ -482,8 +484,23 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     // A command about existing items replaces the creation form entirely.
     const commandMode = Boolean(commands);
     createButton.hidden = commandMode;
-    details.hidden = commandMode;
+    details.hidden = commandMode || kind === 'NOTE';
     dialog.querySelector('.capture-other').hidden = commandMode;
+    if (kind === 'NOTE') {
+      const noteText = String(input.value || '').trim();
+      createButton.disabled = !noteText || Boolean(commands);
+      preview.hidden = !noteText || Boolean(commands);
+      dialog.querySelector('[data-capture-hint]').hidden = Boolean(noteText) || Boolean(commands);
+      taskDetails.hidden = true;
+      eventDetails.hidden = true;
+      if (noteText && !commands) preview.innerHTML = `<article class="capture-card note-card" data-kind="NOTE">
+        <span class="eyebrow">${icon('note')} ${esc(t('capture.kindNote'))}</span>
+        <p class="capture-note-text">${esc(noteText)}</p>
+        <div class="button-row"><button type="button" class="link" data-switch-kind="TASK">${esc(t('capture.asTask'))}</button>
+        <button type="button" class="link" data-switch-kind="EVENT">${esc(t('capture.asEvent'))}</button></div>
+      </article>`;
+      return;
+    }
     if (kind === 'REMINDER' && reminderDraft) {
       const hasTitle = Boolean(String(reminderDraft.title || '').trim());
       createButton.disabled = !hasTitle || !reminderDraft.remind_at || Boolean(commands);
@@ -557,7 +574,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       unresolved = [];
       adoptReminder(parsed, 'local');
     } else {
-      if (!kindChosen) kind = 'TASK';
+      if (!kindChosen) kind = captureKind(parsed, raw);
       merge(parsed, 'local');
     }
     showEngine('local');
@@ -748,13 +765,29 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     }
   }
 
+  dialog.querySelector('[data-switch-note]')?.addEventListener('click', () => {
+    kindChosen = true; kind = 'NOTE'; render();
+  });
   dialog.querySelectorAll('[data-other]').forEach((button) => button.addEventListener('click', async () => {
     dialog.close('other');
     const { composers } = await import('./compose.js');
-    composers[button.dataset.other]();
+    composers[button.dataset.other]?.();
   }));
 
   createButton.addEventListener('click', async (e) => {
+    if (kind === 'NOTE') {
+      const content = String(input.value || '').trim();
+      if (!content) return;
+      const noteId = newEntityId('note');
+      const created = await change('note.create', noteId, { content, source_kind: 'CAPTURE' });
+      if (!created) return;
+      dialog.close('saved');
+      const state = await settled(created.op_id);
+      toast(state === 'PENDING' ? t('capture.savedOffline') : t('note.created'), {
+        action: { label: t('common.open'), run: () => shell.go('note', { params: [noteId] }) },
+      });
+      return;
+    }
     if (kind === 'REMINDER' && reminderDraft) {
       const fields = { ...reminderDraft, title: String(reminderDraft.title || '').trim() };
       if (assistant) fields.assistant_batch_id = assistant.batch_id;
@@ -768,6 +801,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
       if (!fields.title) { toast(t('form.titleRequired'), { error: true }); return; }
       if (!(new Date(fields.ends_at) > new Date(fields.starts_at))) { toast(t('event.endBeforeStart'), { error: true }); return; }
       const id = await createEvent(fields, { toastText: t('capture.eventSaved', { when: eventWhen(fields) }) });
+      if (id && sourceNoteId) await change('note.link', sourceNoteId, { target_kind: 'EVENT', target_id: id });
       if (id) dialog.close('saved');
       return;
     }
@@ -778,6 +812,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     const taskId = newEntityId('task');
     const created = await change('task.create', taskId, payload);
     if (!created) return;
+    if (sourceNoteId) await change('note.link', sourceNoteId, { target_kind: 'TASK', target_id: taskId });
     dialog.close('saved');
     const state = await settled(created.op_id);
     toast(state === 'PENDING' ? t('capture.savedOffline') : t('compose.taskCreated'), {
@@ -785,7 +820,7 @@ export function openCapture({ text = '', listen: listenNow = false } = {}) {
     });
   });
 
-  if (text) { parseLocal(); enrich(); }
+  if (text) { parseLocal(); if (initialKind === 'EVENT' && !eventDraft) { eventDraft = eventFromTask(draft); kind = 'EVENT'; render(); } enrich(); }
   setTimeout(() => input.focus(), 80);
   if (listenNow && voiceSupported()) listen();
   return dialog;

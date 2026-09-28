@@ -4,6 +4,7 @@ import { esc, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInpu
 import { mutate } from './actions.js';
 import { openCapture } from './capture.js';
 import { newEventSheet } from './events.js';
+import { openAudioNoteRecorder } from './notes-audio.js';
 
 function nextHour() {
   const d = now();
@@ -72,7 +73,7 @@ function recurringSheet() {
 
 // Tasks and events are captured in one flow (capture.js); forms remain for a blank
 // event (events.js) and for a series.
-export const composers = { task: () => openCapture(), event: () => newEventSheet(), recurring: recurringSheet };
+export const composers = { task: () => openCapture(), event: () => newEventSheet(), recurring: recurringSheet, 'note-audio': () => openAudioNoteRecorder() };
 
 export function compose() {
   return openCapture();
