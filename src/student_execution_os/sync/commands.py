@@ -1316,17 +1316,9 @@ class Commands:
     # ---- events -----------------------------------------------------------------------
 
     def _event_reminder(self, event_id: str, lead: int | None) -> None:
-        """Keep the reminder moment of an event equal to "start minus lead"."""
-        from student_execution_os.reminders.store import ReminderStore
-        extras.set_event_lead(self.repo, self.account_id, event_id, lead)
-        event = self.repo.get_event(self.account_id, event_id)
-        remind = None
-        if lead is not None and event.obligation.lifecycle_status in OPEN:
-            remind = event.interval.starts_at - timedelta(minutes=lead)
-            if remind <= self.now:
-                # Too late for the heads-up but still before the start: remind right away.
-                remind = self.now + timedelta(minutes=1) if event.interval.starts_at > self.now + timedelta(minutes=1) else None
-        ReminderStore(self.repo).set_remind_at(self.account_id, event_id, remind, self.now)
+        """Keep the reminder moment of an event equal to "start minus lead" (one owner)."""
+        from student_execution_os.reminders.events import sync_event_reminder
+        sync_event_reminder(self.repo, self.account_id, event_id, self.now, by_user=True, lead=lead, lead_given=True)
 
     def event_create(self, event_id: str, payload: dict[str, Any]) -> Outcome:
         if not _ID.match(event_id):
