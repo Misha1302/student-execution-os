@@ -172,6 +172,35 @@ class ReminderStore:
             conn.execute("UPDATE reminder_states SET remind_at=? WHERE account_id=? AND task_id=?",
                          (_iso(remind_at), account_id, task_id))
 
+    def retime(self, account_id: str, task_id: str, remind_at: datetime | None, at: datetime, *,
+               reason: str) -> None:
+        """Move (or suppress) a requested reminder because the item changed elsewhere.
+
+        Not a user interaction: prompt spacing and "the user is looking at it" are left
+        alone. Undelivered messages about the old moment are cancelled; if the new moment
+        is later than the last prompt, it will fire again at the right time.
+        """
+        with self.canonical._tx() as conn:
+            current = conn.execute("SELECT remind_at FROM reminder_states WHERE account_id=? AND task_id=?",
+                                   (account_id, task_id)).fetchone()
+            if current is None:
+                if remind_at is None:
+                    return
+                conn.execute(
+                    "INSERT INTO reminder_states(account_id,task_id,episode_key,updated_at,remind_at) VALUES (?,?,'',?,?)",
+                    (account_id, task_id, _iso(at), _iso(remind_at)))
+                return
+            if current["remind_at"] == _iso(remind_at):
+                return
+            conn.execute("UPDATE reminder_states SET remind_at=?,updated_at=? WHERE account_id=? AND task_id=?",
+                         (_iso(remind_at), _iso(at), account_id, task_id))
+            conn.execute(
+                "UPDATE reminder_messages SET delivery_state='CANCELLED',lease_owner=NULL,lease_expires_at=NULL,"
+                "last_error=? WHERE account_id=? AND delivery_state='PENDING' AND EXISTS ("
+                "SELECT 1 FROM json_each(reminder_messages.task_ids_json) WHERE value=?)",
+                (reason, account_id, task_id),
+            )
+
     def remind_at(self, account_id: str, task_id: str) -> datetime | None:
         row = self.connection.execute(
             "SELECT remind_at,last_sent_at FROM reminder_states WHERE account_id=? AND task_id=?", (account_id, task_id)

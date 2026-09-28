@@ -179,6 +179,13 @@ class BrowserUiTest(unittest.TestCase):
     PENDING_OPS_JS = ("Object.entries(localStorage).filter(([k]) => k.startsWith('seos.ops.'))"
                       ".flatMap(([, v]) => JSON.parse(v)).filter((x) => x.state === 'PENDING').length")
 
+    def _clear_posts(self) -> None:
+        """Start a fresh request log. The sync-wait cursor must restart with it: a cursor
+        left over from an earlier step can point past the new sync request once the new
+        log has grown (interpret + sync + ...), and the wait would never see it."""
+        self.posts.clear()
+        self._sync_wait_cursor = 0
+
     def _wait_sync(self, page, *, tries: int = 60) -> None:
         """Wait for the next queued change to reach /sync and leave PENDING.
 
@@ -499,7 +506,7 @@ class BrowserUiTest(unittest.TestCase):
         self.assertNotIn(secret, stored)
 
         # Changing only the model keeps the saved key (nothing is re-sent).
-        self.posts.clear()
+        self._clear_posts()
         page.locator('[data-action="ai-edit"]').click()
         sheet = page.locator("dialog.sheet[open]")
         sheet.wait_for()
@@ -1120,7 +1127,7 @@ class BrowserUiTest(unittest.TestCase):
                  "conflicting": {"title": "Будильник", "remind_at": at, "delivery": "PUSH", "wake_check": False}}
         for label, payload in cases.items():
             with self.subTest(label):
-                self.posts.clear()
+                self._clear_posts()
                 self._ai_reminder(payload)
                 page = self._open(locale="ru")
                 self._ready(page, "today")
