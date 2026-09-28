@@ -5,6 +5,11 @@
 set -euo pipefail
 API="${SEOS_EMULATOR_API:-34}"
 IMAGE="system-images;android-${API};google_apis;x86_64"
+# avdmanager and the emulator must agree on where AVDs live; newer cmdline-tools
+# can default to an XDG path the emulator does not read ("Unknown AVD name").
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+mkdir -p "$ANDROID_AVD_HOME"
 SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
 
@@ -19,6 +24,7 @@ fail() {
   exit 1
 }
 echo "kvm: $(ls -l /dev/kvm 2>&1)"
+echo "avds in $ANDROID_AVD_HOME: $("$ANDROID_HOME/emulator/emulator" -list-avds 2>&1 | tr '\n' ' ')"
 "$ANDROID_HOME/emulator/emulator" -accel-check || true
 
 nohup "$ANDROID_HOME/emulator/emulator" -avd seos-ci -no-window -no-audio -no-boot-anim -no-snapshot \

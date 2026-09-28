@@ -139,11 +139,15 @@ jobs:
         run: python mobile/scripts/install_upgrade_check.py "$RUNNER_TEMP/old.apk" "$RUNNER_TEMP/new.apk" "$RUNNER_TEMP/foreign.apk"
       - name: Diagnostics on failure
         if: failure() || cancelled()
+        timeout-minutes: 3
         run: |
-          "$ANDROID_HOME/platform-tools/adb" logcat -d > "$RUNNER_TEMP/logcat.txt" || true
+          # adb waits forever for a device; the emulator may never have come up.
+          timeout 60 "$ANDROID_HOME/platform-tools/adb" logcat -d > "$RUNNER_TEMP/logcat.txt" 2>&1 || true
+          tail -80 "$RUNNER_TEMP/emulator.log" 2>/dev/null || true
           cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/emulator-copy.log" 2>/dev/null || true
       - name: Upload diagnostics
         if: failure() || cancelled()
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
           name: device-diagnostics
