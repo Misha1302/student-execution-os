@@ -456,6 +456,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .question strong { font-size: 15px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-row .chip-toggle { min-height: 40px; }
+/* Task / Event / Reminder / Note: one row where it fits, two rows on a narrow phone. */
+.kind-switch .chip-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.5em, 1fr)); gap: 6px; }
+.kind-switch .chip-toggle { min-width: 0; padding: 0 8px; font-size: 13px; }
 .capture-other { display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .capture-other .link { font-weight: 550; color: var(--text-2); }
 .capture-cta {
@@ -609,6 +612,7 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 
 .health-row .row-main .button { margin-top: 6px; align-self: flex-start; }
 .connector-row .button-row { margin-top: 6px; }
+.notes-new { margin: 0 0 12px; }
 .text-danger { color: var(--danger); }
 .reminder-fields .chip-group + .chip-group { margin-top: 6px; }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }

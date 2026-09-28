@@ -328,6 +328,8 @@ export function mergeReminderDraft(previous, incoming, floor = null) {
 
 // ---- the sheet ----------------------------------------------------------------------
 
+const KINDS = ['TASK', 'EVENT', 'REMINDER', 'NOTE'];
+
 export function openCapture({ text = '', listen: listenNow = false, sourceNoteId = null, initialKind = null } = {}) {
   let draft = { title: '', importance: 'NORMAL', category: 'GENERAL', estimated_total_effort_minutes: null, actual_cutoff: { state: 'UNKNOWN' }, splittable: false };
   let unresolved = [];
@@ -349,6 +351,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     title: t('capture.title'),
     full: true,
     body: `<div class="capture">
+      <div class="kind-switch" data-kind-switch>${chipGroup('capture-kind', KINDS.map((k) => [k, t(`capture.kind.${k}`)]), kind)}</div>
       <div class="capture-input">
         <textarea id="capture-text" rows="2" maxlength="4000" enterkeyhint="done" placeholder="${esc(t('capture.placeholder'))}">${esc(text)}</textarea>
         ${voiceSupported() ? `<button type="button" class="icon-button mic" data-mic aria-pressed="false" aria-label="${esc(t('capture.voice'))}">${icon('mic')}</button>` : ''}
@@ -369,9 +372,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
         <div data-event-details hidden></div>
       </details>
       <div class="capture-other">
-        <button type="button" class="link" data-switch-note>${icon('note')} ${esc(t('capture.asNote'))}</button>
         <button type="button" class="link" data-other="note-audio">${icon('mic')} ${esc(t('note.recordAudio'))}</button>
-        <button type="button" class="link" data-other="event">${icon('event')} ${esc(t('capture.event'))}</button>
         <button type="button" class="link" data-other="recurring">${icon('repeat')} ${esc(t('capture.recurring'))}</button>
       </div>
     </div>`,
@@ -379,6 +380,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       <button type="button" class="button primary" data-create disabled>${esc(t('compose.create'))}</button>`,
   });
   const input = dialog.querySelector('#capture-text');
+  const kindSwitch = dialog.querySelector('[data-kind-switch]');
   const preview = dialog.querySelector('[data-preview]');
   const details = dialog.querySelector('[data-more]');
   const createButton = dialog.querySelector('[data-create]');
@@ -469,10 +471,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     return `<article class="capture-card reminder-card" data-kind="REMINDER">
       <span class="eyebrow">${icon('bell')} ${esc(t(hasAlarm(r.delivery) ? 'reminder.kindAlarm' : 'reminder.kind'))}</span>
       <h3 class="capture-title">${esc(r.title || '')}</h3>
-      <div class="capture-facts">
-        <div class="fact static"><span class="fact-icon tone-accent">${icon('clock')}</span>
-          <span class="fact-copy"><small>${esc(t('reminder.when'))}</small><strong>${esc(r.remind_at ? fmtDateTime(r.remind_at) : '—')}</strong></span></div>
-      </div>
+      <label class="field"><span>${icon('clock')} ${esc(t('reminder.when'))}</span>
+        <input type="datetime-local" data-card-remind value="${esc(r.remind_at ? localInputValue(r.remind_at) : '')}"></label>
       <div class="field"><span>${esc(t('reminder.how'))}</span>${deliveryChips('card-delivery', r.delivery)}</div>
       ${hasAlarm(r.delivery) ? `<div class="field"><span>${esc(t('reminder.wake'))}</span>${chipGroup('card-wake', [['false', t('reminder.wake.no')], ['true', t('reminder.wake.yes')]], String(Boolean(r.wake_check)))}</div>` : ''}
       ${reachWarning({ alarm: hasAlarm(r.delivery) })}
@@ -484,6 +484,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     // A command about existing items replaces the creation form entirely.
     const commandMode = Boolean(commands);
     createButton.hidden = commandMode;
+    kindSwitch.hidden = commandMode;
+    setChip(kindSwitch, 'capture-kind', kind);
     details.hidden = commandMode || kind === 'NOTE';
     dialog.querySelector('.capture-other').hidden = commandMode;
     if (kind === 'NOTE') {
@@ -539,6 +541,18 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     writeFields(taskDetails, draft);
   }
 
+  // An explicit choice: from here on parses fill the chosen kind and never switch it.
+  function switchKind(next) {
+    kindChosen = true;
+    kind = next;
+    if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
+    if (kind === 'REMINDER' && !reminderDraft) {
+      reminderDraft = { title: draft.title, remind_at: draft.remind_at ?? null, delivery: 'PUSH', wake_check: false, raise_volume: true };
+    }
+    if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
+    render();
+  }
+
   function adoptReminder(parsed, source = 'assistant') {
     if (source === 'local') {
       reminderFloor = hasAlarm(parsed.delivery) ? { delivery: parsed.delivery, wake_check: parsed.wake_check === true } : null;
@@ -576,6 +590,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     } else {
       if (!kindChosen) kind = captureKind(parsed, raw);
       merge(parsed, 'local');
+      if (eventDraft && !eventEdited.has('title')) eventDraft = { ...eventDraft, title: parsed.title };
+      if (reminderDraft) reminderDraft = { ...reminderDraft, title: parsed.title, ...(parsed.remind_at ? { remind_at: parsed.remind_at } : {}) };
     }
     showEngine('local');
     render();
@@ -658,6 +674,12 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     }
   });
 
+  preview.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-card-remind]') || !reminderDraft) return;
+    reminderDraft = { ...reminderDraft, remind_at: isoFromLocalInput(e.target.value) };
+    render();
+  });
+
   preview.addEventListener('chipchange', (e) => {
     if (e.detail.name === 'card-delivery' && reminderDraft) {
       reminderDraft = { ...reminderDraft, delivery: e.detail.value, deliveryChosen: true };
@@ -676,17 +698,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
 
   preview.addEventListener('click', (e) => {
     const switcher = e.target.closest('[data-switch-kind]');
-    if (switcher) {
-      kindChosen = true;
-      kind = switcher.dataset.switchKind;
-      if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
-      if (kind === 'REMINDER' && !reminderDraft) {
-        reminderDraft = { title: draft.title, remind_at: draft.remind_at, delivery: 'PUSH', wake_check: false, raise_volume: true };
-      }
-      if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
-      render();
-      return;
-    }
+    if (switcher) { switchKind(switcher.dataset.switchKind); return; }
     const chip = e.target.closest('[data-answer]');
     if (chip) {
       const values = answer(chip.dataset.answer, chip.dataset.value);
@@ -765,9 +777,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     }
   }
 
-  dialog.querySelector('[data-switch-note]')?.addEventListener('click', () => {
-    kindChosen = true; kind = 'NOTE'; render();
-  });
+  kindSwitch.addEventListener('chipchange', (e) => { if (e.detail.name === 'capture-kind') switchKind(e.detail.value); });
   dialog.querySelectorAll('[data-other]').forEach((button) => button.addEventListener('click', async () => {
     dialog.close('other');
     const { composers } = await import('./compose.js');
@@ -820,6 +830,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     });
   });
 
+  render();
   if (text) { parseLocal(); if (initialKind === 'EVENT' && !eventDraft) { eventDraft = eventFromTask(draft); kind = 'EVENT'; render(); } enrich(); }
   setTimeout(() => input.focus(), 80);
   if (listenNow && voiceSupported()) listen();

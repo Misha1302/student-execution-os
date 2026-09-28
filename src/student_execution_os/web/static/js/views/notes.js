@@ -1,6 +1,8 @@
 import { load } from '../store.js';
 import { t } from '../i18n.js';
 import { esc, icon, empty, sectionHead } from '../ui.js';
+import { openCapture } from '../capture.js';
+import { openAudioNoteRecorder } from '../notes-audio.js';
 
 function row(note) {
   const text = (note.content || note.transcript || t('note.voice')).trim();
@@ -19,6 +21,10 @@ export default {
     const active = (data || []).filter((n) => n.lifecycle_status === 'ACTIVE');
     const archived = (data || []).filter((n) => n.lifecycle_status === 'ARCHIVED');
     return `<section class="section">
+      <div class="button-row notes-new">
+        <button type="button" class="button primary" data-new-note>${icon('note')} ${esc(t('notes.new'))}</button>
+        <button type="button" class="button" data-new-voice-note>${icon('mic')} ${esc(t('note.recordAudio'))}</button>
+      </div>
       <label class="search">${icon('search')}<input type="search" data-note-search placeholder="${esc(t('notes.search'))}"></label>
       <div data-note-list>
         ${sectionHead(t('notes.active'))}
@@ -28,6 +34,8 @@ export default {
     </section>`;
   },
   mount(root, data) {
+    root.querySelector('[data-new-note]')?.addEventListener('click', () => openCapture({ initialKind: 'NOTE' }));
+    root.querySelector('[data-new-voice-note]')?.addEventListener('click', () => openAudioNoteRecorder());
     const input = root.querySelector('[data-note-search]');
     const list = root.querySelector('[data-note-list]');
     input?.addEventListener('input', () => {

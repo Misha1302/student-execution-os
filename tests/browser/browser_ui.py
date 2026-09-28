@@ -922,6 +922,50 @@ class BrowserUiTest(unittest.TestCase):
         self.assertEqual(self.page_errors, [])
         page.close()
 
+    def test_capture_kind_is_an_explicit_choice_and_notes_have_a_new_button(self):
+        page = self._open(locale="ru")
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        kinds = sheet.locator('[data-chip-group="capture-kind"] .chip-toggle')
+        self.assertEqual(kinds.all_inner_texts(), ["Задача", "Событие", "Напоминание", "Заметка"])
+        on = sheet.locator('[data-chip-group="capture-kind"] .chip-toggle.on')
+        sheet.locator("#capture-text").fill("Идея: тёмная тема для расписания")
+        sheet.locator('[data-chip-group="capture-kind"] .on[data-value="NOTE"]').wait_for()
+        # The words alone read as a task; the user says it is a reminder and gives it a time.
+        sheet.locator("#capture-text").fill("Купить хлеб")
+        sheet.locator('[data-chip-group="capture-kind"] .on[data-value="TASK"]').wait_for()
+        kinds.nth(2).click()
+        self.assertEqual(on.get_attribute("data-value"), "REMINDER")
+        sheet.locator(".reminder-card").wait_for()
+        self.assertTrue(sheet.locator("[data-create]").is_disabled())
+        when = (datetime.now() + timedelta(days=1)).replace(hour=18, minute=0).strftime("%Y-%m-%dT%H:%M")
+        sheet.locator("[data-card-remind]").fill(when)
+        sheet.locator("[data-card-remind]").dispatch_event("change")
+        sheet.locator("#capture-text").fill("Купить хлеб и молоко")  # typing more keeps the chosen kind and time
+        sheet.locator(".reminder-card .capture-title", has_text="молоко").wait_for()
+        self.assertEqual(on.get_attribute("data-value"), "REMINDER")
+        sheet.locator("[data-create]").click()
+        self._wait_sync(page)
+        created = [o for o in self._queued(page) if o["type"] == "reminder.create"]
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["payload"]["title"], "Купить хлеб и молоко")
+
+        self.responses["/api/v1/notes?include_archived=true"] = []
+        self._go(page, "notes")
+        page.locator("[data-new-note]").click()
+        sheet = page.locator("dialog.sheet[open]")
+        self.assertEqual(sheet.locator('[data-chip-group="capture-kind"] .on').get_attribute("data-value"), "NOTE")
+        self.assertTrue(sheet.locator("[data-more]").is_hidden())
+        sheet.locator("#capture-text").fill("Сделать тёмную тему")  # an action verb, but the user asked for a note
+        sheet.locator(".note-card").wait_for()
+        sheet.locator("[data-create]").click()
+        self._wait_sync(page)
+        notes = [o for o in self._queued(page) if o["type"] == "note.create"]
+        self.assertEqual([n["payload"]["content"] for n in notes], ["Сделать тёмную тему"])
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
     def test_settings_show_delivery_health_ai_steps_and_sync(self):
         self.responses["/api/v1/notifications/health"] = {
             "reach": "IN_APP", "alarm": "NONE", "problems": ["PUSH_UNCONFIGURED", "NO_DEVICE"], "reminders_enabled": True,
