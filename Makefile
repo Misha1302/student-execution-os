@@ -11,6 +11,7 @@ static:
 	node tests/js/projects_overlay_cases.mjs
 	node tests/js/work_routines_overlay_cases.mjs
 	node tests/js/reflection_overlay_cases.mjs
+	node tests/js/capture_kind_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
 
 worker:

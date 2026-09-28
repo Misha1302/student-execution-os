@@ -1,4 +1,4 @@
--- Schema v21: botay! notes/captures, durable original audio and privacy-safe beta feedback.
+-- Schema v22: botay! notes/captures, durable original audio and privacy-safe beta feedback.
 -- Notes are canonical account data. Transcript is distinct from user-edited content.
 CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,

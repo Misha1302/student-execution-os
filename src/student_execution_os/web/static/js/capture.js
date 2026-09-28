@@ -13,7 +13,7 @@ import { t, code, fmtDuration, fmtDateTime, fmtTime, fmtDay, now, getLocale, sam
 import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, errorMessage } from './ui.js';
 import { mutate, change, shell } from './actions.js';
 import { newEntityId, settled } from './sync.js';
-import { parseTask } from './nlparse.js';
+import { parseTask, captureKind } from './nlparse.js';
 import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
@@ -574,12 +574,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       unresolved = [];
       adoptReminder(parsed, 'local');
     } else {
-      const taskSignals = [
-        parsed.estimated_total_effort_minutes, parsed.target_at, parsed.actionable_from, parsed.remind_at, parsed.actual_cutoff?.at,
-      ].some((value) => value != null && value !== '')
-        || /(^|\s)(сделать|сдать|решить|купить|позвонить|написать|подготовить|прочитать|закончить|отправить|проверить|заполнить|убрать|прибраться|почистить|do|submit|solve|buy|call|write|prepare|read|finish|send|check|tidy|clean)(\s|$)/iu.test(raw);
-      const noteSignal = /^(идея|заметка|мысль|наблюдение|note|idea)\b/iu.test(raw.trim());
-      if (!kindChosen) kind = (noteSignal || !taskSignals) ? 'NOTE' : 'TASK';
+      if (!kindChosen) kind = captureKind(parsed, raw);
       merge(parsed, 'local');
     }
     showEngine('local');

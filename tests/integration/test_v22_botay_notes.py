@@ -8,7 +8,12 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from datetime import timedelta
+
 from student_execution_os.domain.clock import FrozenClock
+from student_execution_os.domain.model import (
+    ActorCategory, EventTimeSemantics, HardCutoff, Importance, ObligationCategory,
+)
 from student_execution_os.persistence import SCHEMA_VERSION, SQLiteCanonicalRepository
 from student_execution_os.web.app import create_app
 from tests.asgi_client import TestClient
@@ -55,6 +60,66 @@ class V22BotayMigrationTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v1/notes").json()[0]["content"], "survived upgrade")
             with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as check:
                 check.initialize()
+                self.assertEqual(
+                    [r[0] for r in check.connection.execute("SELECT version FROM schema_migrations")],
+                    list(range(1, 23)),
+                )
+                self.assertEqual(check.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_populated_v21_keeps_tasks_events_and_notes_can_link_to_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "populated-v21.sqlite")
+            build_v21(db)
+            # Populate while still at v21 (no initialize(): nothing may upgrade yet).
+            repo = SQLiteCanonicalRepository(db, clock=FrozenClock(NOW))
+            try:
+                repo.create_account("acct-v21")
+                repo.create_task(account_id="acct-v21", obligation_id="task-v21", title="Лабораторная",
+                                 category=ObligationCategory.HOMEWORK, importance=Importance.HIGH,
+                                 estimated_total_effort_minutes=95, remaining_effort_minutes=95, splittable=True,
+                                 actual_cutoff=HardCutoff.absent(), actor=ActorCategory.USER_UI)
+                repo.create_event(account_id="acct-v21", obligation_id="event-v21", title="Семинар",
+                                  time_semantics=EventTimeSemantics.FIXED_INTERVAL, actor=ActorCategory.USER_UI,
+                                  starts_at=NOW + timedelta(hours=2), ends_at=NOW + timedelta(hours=3))
+                self.assertEqual(repo.schema_version(), 21)
+                before = {
+                    table: repo.connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in ("obligations", "tasks", "events")
+                }
+            finally:
+                repo.close()
+
+            client = TestClient(create_app(db, account_id="acct-v21", principal_id="u", now=lambda: NOW))
+            self.assertEqual(client.get("/api/v1/health").json()["schema_version"], 22)
+            task = client.get("/api/v1/tasks/task-v21").json()
+            self.assertEqual((task["title"], task["version"]), ("Лабораторная", 1))
+            today = client.get("/api/v1/today").json()
+            self.assertIn("event-v21", [event["id"] for event in today["events"]])
+
+            ops = [
+                {"op_id": "op-v22-note-1", "type": "note.create", "entity_id": "note-v22-1",
+                 "payload": {"content": "Идея после апгрейда", "source_kind": "CAPTURE"}},
+                {"op_id": "op-v22-link-1", "type": "note.link", "entity_id": "note-v22-1",
+                 "payload": {"target_kind": "TASK", "target_id": "task-v21"}},
+            ]
+            results = client.post("/api/v1/sync", json={"operations": ops}).json()["results"]
+            self.assertEqual([r["status"] for r in results], ["APPLIED", "APPLIED"])
+            self.assertEqual(results[1]["entity"]["links"][0]["target_id"], "task-v21")
+            # The same op_id with a different payload is a conflict, never a second Note.
+            reused = client.post("/api/v1/sync", json={"operations": [{
+                **ops[0], "payload": {"content": "другое", "source_kind": "CAPTURE"},
+            }]}).json()["results"][0]
+            self.assertEqual((reused["status"], reused["code"]), ("REJECTED", "OP_ID_REUSED"))
+            self.assertEqual(len(client.get("/api/v1/notes").json()), 1)
+
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as check:
+                check.initialize()
+                check.initialize()  # migrations are idempotent
+                after = {
+                    table: check.connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in ("obligations", "tasks", "events")
+                }
+                self.assertEqual(after, {k: before[k] for k in after})
                 self.assertEqual(
                     [r[0] for r in check.connection.execute("SELECT version FROM schema_migrations")],
                     list(range(1, 23)),
