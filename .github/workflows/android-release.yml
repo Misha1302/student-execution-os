@@ -112,8 +112,10 @@ jobs:
           UPDATE_KEYS: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
           UPDATE_URL: ${{ vars.SEOS_UPDATE_POLICY_URL_TEMPLATE }}
           UPDATE_KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+          GOOGLE_SERVICES_B64: ${{ secrets.SEOS_GOOGLE_SERVICES_JSON_B64 }}
         run: |
           test -n "$KEYSTORE_B64"
+          test -n "$GOOGLE_SERVICES_B64"
           test -n "$UPDATE_KEYS"
           test -n "$UPDATE_URL"
           test -n "$UPDATE_KEY_ID"
@@ -124,6 +126,10 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.SEOS_ANDROID_KEYSTORE_B64 }}
         run: printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/seos-release.jks"
+      - name: Restore Firebase client config (push); gitignored, never committed
+        env:
+          GOOGLE_SERVICES_B64: ${{ secrets.SEOS_GOOGLE_SERVICES_JSON_B64 }}
+        run: printf '%s' "$GOOGLE_SERVICES_B64" | base64 --decode > mobile/android/app/google-services.json
       - name: Build signed release APK
         env:
           SEOS_VERSION_NAME: ${{ inputs.version }}
@@ -141,14 +147,25 @@ jobs:
           npm run sync --prefix mobile
           cd mobile/android
           ./gradlew assembleRelease --no-daemon --console=plain
-      - name: Verify final signed bytes and deterministic identity
+      - name: Verify final signed bytes, push config, credentials; write provenance
         id: artifact
+        env:
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          SEOS_KEYSTORE_PASSWORD: ${{ secrets.SEOS_KEYSTORE_PASSWORD }}
+          SEOS_KEY_PASSWORD: ${{ secrets.SEOS_KEY_PASSWORD }}
         run: |
-          name="student-execution-os-${{ inputs.version }}-android-universal.apk"
+          rm mobile/android/app/google-services.json
+          name="student-execution-os-${VERSION}-android-universal.apk"
           cp mobile/android/app/build/outputs/apk/release/app-release.apk "$name"
-          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner" verify --verbose --print-certs "$name"
-          test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest version-name "$name")" = "${{ inputs.version }}"
-          test "$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest version-code "$name")" = "${{ inputs.build_number }}"
+          # One signer, expected version, Firebase config compiled in, no credential
+          # material (signing passwords as canaries), clean source tree; the record links
+          # commit + tree -> APK sha256 -> signing certificate SHA-256.
+          python3 mobile/scripts/release_evidence.py "$name" \
+            --build-tools "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)" \
+            --output provenance.json --require-fcm --require-clean \
+            --expect-version-name "$VERSION" --expect-version-code "$BUILD_NUMBER" \
+            --canary "$SEOS_KEYSTORE_PASSWORD" --canary "$SEOS_KEY_PASSWORD"
           sha256sum "$name" > artifact.sha256
           stat --printf='%s\n' "$name" > artifact.size
           printf 'APK_NAME=%s\n' "$name" >> "$GITHUB_OUTPUT"
@@ -159,6 +176,7 @@ jobs:
             ${{ steps.artifact.outputs.APK_NAME }}
             artifact.sha256
             artifact.size
+            provenance.json
           if-no-files-found: error
           retention-days: 7
 
@@ -180,14 +198,16 @@ jobs:
         id: names
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.summary_en }}
         run: |
-          tag="v${{ inputs.version }}"
-          apk="student-execution-os-${{ inputs.version }}-android-universal.apk"
+          tag="v${VERSION}"
+          apk="student-execution-os-${VERSION}-android-universal.apk"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "immutable release tag already exists: $tag" >&2
             exit 1
           fi
-          gh release create "$tag" "$apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Student Execution OS ${{ inputs.version }}" --notes "${{ inputs.summary_en }}"
+          gh release create "$tag" "$apk" provenance.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Student Execution OS ${VERSION}" --notes "$NOTES"
           mkdir uploaded
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$apk" --dir uploaded
           expected="$(cut -d' ' -f1 artifact.sha256)"
@@ -218,22 +238,39 @@ jobs:
         env:
           SEOS_UPDATE_SIGNING_KEY_B64: ${{ secrets.SEOS_UPDATE_SIGNING_KEY_B64 }}
           SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          # Dispatch inputs reach the shell only as data, never as script text, in the step
+          # that holds the update-signing key.
+          APK_NAME: ${{ needs.publish_artifacts.outputs.apk_name }}
+          ARTIFACT_URL: ${{ needs.publish_artifacts.outputs.artifact_url }}
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          POLICY_SEQUENCE: ${{ inputs.policy_sequence }}
+          CHANNEL: ${{ inputs.channel }}
+          ROLLOUT: ${{ inputs.rollout }}
+          SEVERITY: ${{ inputs.severity }}
+          MANDATORY: ${{ inputs.mandatory }}
+          REQUIRED_AFTER: ${{ inputs.required_after }}
+          MINIMUM_SUPPORTED_VERSION: ${{ inputs.minimum_supported_version }}
+          KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+          SUMMARY_EN: ${{ inputs.summary_en }}
+          SUMMARY_RU: ${{ inputs.summary_ru }}
+          CHANGE_EN: ${{ inputs.change_en }}
+          CHANGE_RU: ${{ inputs.change_ru }}
         run: |
           test -n "$SEOS_UPDATE_SIGNING_KEY_B64"
           test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
           extra=()
-          if test -n "${{ inputs.required_after }}"; then extra+=(--required-after "${{ inputs.required_after }}"); fi
-          if test -n "${{ inputs.minimum_supported_version }}"; then extra+=(--minimum-supported-version "${{ inputs.minimum_supported_version }}"); fi
+          if test -n "$REQUIRED_AFTER"; then extra+=(--required-after "$REQUIRED_AFTER"); fi
+          if test -n "$MINIMUM_SUPPORTED_VERSION"; then extra+=(--minimum-supported-version "$MINIMUM_SUPPORTED_VERSION"); fi
           python tools/update_policy.py create \
-            --artifact "${{ needs.publish_artifacts.outputs.apk_name }}" \
-            --artifact-url "${{ needs.publish_artifacts.outputs.artifact_url }}" \
-            --output policy.json --version "${{ inputs.version }}" \
-            --build-number "${{ inputs.build_number }}" --sequence "${{ inputs.policy_sequence }}" \
-            --channel "${{ inputs.channel }}" --rollout "${{ inputs.rollout }}" \
-            --severity "${{ inputs.severity }}" --mandatory "${{ inputs.mandatory }}" \
-            --key-id "${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}" \
-            --summary-en "${{ inputs.summary_en }}" --summary-ru "${{ inputs.summary_ru }}" \
-            --change-en "${{ inputs.change_en }}" --change-ru "${{ inputs.change_ru }}" "${extra[@]}"
+            --artifact "$APK_NAME" --artifact-url "$ARTIFACT_URL" \
+            --output policy.json --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" --sequence "$POLICY_SEQUENCE" \
+            --channel "$CHANNEL" --rollout "$ROLLOUT" \
+            --severity "$SEVERITY" --mandatory "$MANDATORY" \
+            --key-id "$KEY_ID" \
+            --summary-en "$SUMMARY_EN" --summary-ru "$SUMMARY_RU" \
+            --change-en "$CHANGE_EN" --change-ru "$CHANGE_RU" "${extra[@]}"
           python tools/update_policy.py verify --policy policy.json
       - name: Publish channel metadata last
         env:

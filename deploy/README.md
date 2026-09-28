@@ -414,8 +414,13 @@ SEOS_STARTER_LLM_TOKEN_RESERVATION_OVERHEAD=256
 Then validate and recreate only the API service:
 
 ```bash
+# The API and worker report SEOS_REVISION on /api/v1/health; without it they report
+# "unknown" and `smoke.py --expect-revision` fails. Use the full release SHA.
+export SEOS_REVISION=<release-sha>
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env config
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build api
+# provenance: record the locally built image IDs next to the SHA
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env images --format json
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env exec api \
   python -m student_execution_os --help
 curl --fail --silent --show-error https://<domain>/api/v1/health
@@ -461,9 +466,13 @@ PYTHONPATH=src python -m student_execution_os.reminders.worker \
 ## Post-deploy smoke
 
 ```bash
-python deploy/smoke.py https://<domain> --expect-revision "$(git rev-parse HEAD)" \
+python deploy/smoke.py https://<domain> --expect-revision <release-sha> \
   --expect-worker --expect-push --expect-byok
 ```
+
+`--expect-revision` passes only if the services were started with `SEOS_REVISION`
+exported (see the release-SHA checkout above). `--expect-push` proves the worker has an
+FCM credential configured, not that Google delivered a message to a phone.
 
 registers a throwaway account, checks that a natural-language phrase is previewed and stored
 with every field and that snooze schedules a reminder, drives create → start → progress →

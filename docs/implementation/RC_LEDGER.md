@@ -546,10 +546,10 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R11 — Global data lifecycle, migrations, final student journey
 
-- **STATUS:** IMPLEMENTED on `feature/r11-lifecycle-final`, PR #40 (includes `main` after R10);
-  merge SHA reported in the final RC report.
+- **STATUS:** MERGED — PR #40, head `55a7614`, merge `69fb504` (same tree `16f84bd0`; see
+  "RC evidence closure" below).
 - **LIFECYCLE (`tests.integration.test_r11_global_lifecycle`, 4; LOCAL INTEGRATION):**
-  one database populated through the real APIs with every feature — tasks with progress
+  one database populated through the real APIs with the main user-facing features — tasks with progress
   and an active execution session, events with a reminder lead, notes, standalone
   reminders, projects, routines, a manual series with a personal move, an imported
   academic calendar with a personal note on one class (SOURCE + USER), a group with a
@@ -557,10 +557,19 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   - backup (manifest: integrity ok, schema, 2 accounts) → restore into a clean path
     (sha256 verified, integrity ok, 0 FK violations) → a fresh server on the restored file
     returns byte-identical JSON for 12 read endpoints for both accounts; the grant token,
-    session and encrypted BYOK still work; no private data crosses accounts;
+    session and encrypted BYOK still work; no private data crosses accounts. *Scope:* the
+    fixture fills 34 of the 91 tables; the other 57 (among them `note_audio`,
+    `attachment_blobs`, `oauth_clients`/`oauth_authorizations`, `mobile_devices`,
+    `reminder_messages`, `group_proposals`, plan tables) are carried by the same SQLite
+    online-backup copy of the whole file (voice audio is stored in the DB, not on disk) but
+    their content is not asserted after restore;
   - export: contains the user's tasks, notes, reminders, projects, routines, series and the
-    personal class note; excludes the other account and every secret (BYOK, grant secret,
-    password, master/feed keys) and all credential tables;
+    personal class note; excludes the other account, the five secret values planted in the
+    fixture (BYOK key, grant secret, password, credential master key, feed key) and six
+    credential tables (`llm_credentials`, `auth_sessions`, `auth_users`,
+    `capability_grants`, `academic_schedule_connections`, `oauth_authorizations`). Backups,
+    unlike exports, intentionally contain the encrypted/hashed credential rows and must be
+    stored as secrets;
   - deletion: every table with `account_id` has 0 rows for the account (the tombstone keeps
     only id + deletion metadata by design); session and grant stop working; integrity and FKs
     ok; the other account's reads are unchanged and the shared group passes to them.
@@ -568,8 +577,13 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   (28 KB) was written by the actual R2 code (`d85ff2f`, schema v22; generator committed).
   Opening it with current code migrates v22→v27; login, tasks (incl. completed), events,
   notes, reminders read back through today's API; an offline op from before the upgrade
-  replays exactly once; integrity + FK ok; row counts preserved; the documented rollback
-  chain back to v22 is lossless for this data.
+  replays exactly once; integrity + FK ok; row counts of 8 core tables (accounts,
+  obligations, tasks, events, notes, reminders, projects, auth_users) are equal after the
+  upgrade and again after rolling back to v22 (`client_operations` excluded from the
+  comparison). *Scope:* this fixture holds only v22 data, so it proves no loss of pre-v23
+  rows; data created in v23+ features is covered by the per-version rollback tests, several
+  of which refuse (fail closed) rather than drop it. Row *contents* after rollback are not
+  compared.
 - **MIGRATIONS OVERALL:** fresh → v27 in every test DB; repeated `initialize()`; each of
   v23–v27 has an upgrade test from the previous version and a rollback test (lossless where
   documented: v26; fail-closed while data would be lost: v23 source state, v24 connections,
@@ -601,3 +615,84 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 - **RELEASE CHECKLIST:** `docs/implementation/RELEASE_CHECKLIST.md` (code gate, secret
   rotation, backup + restore drill, deploy, post-deploy smoke incl. `llm-smoke` and a live
   ChatGPT/Codex connection, rollback plan).
+
+## RC evidence closure (post-R11)
+
+Gate definitions and the canonical RC criteria are in `RELEASE_CHECKLIST.md` (G1–G13);
+this section records evidence against them. It supersedes the earlier "4 blockers" summary,
+which grouped several of G5–G13 together.
+
+- **SHA/TREE IDENTITY:** `main` = `69fb504` (merge of PR #40). `git rev-parse 69fb504^{tree}`
+  = `git rev-parse 55a7614^{tree}` = `16f84bd040d3ca543ea47f5f07edbb2d965ae9af`: the merge
+  commit's content is exactly the tested PR head.
+- **G1 (CI, on the merge commit itself, push to `main`):** `ci` run 36471490460 `verify`
+  success (static, unit/integration, API, Chromium incl. `final_student_e2e`, 12 smokes);
+  `android` run 36471490520 `apk` + `device` success (emulator: notification buttons E2E,
+  instrumented tests, install/upgrade/downgrade/foreign-key checks).
+- **G2 (LOCAL, clean worktree of `69fb504`):** `make static` OK; `make test` 507/507;
+  `make api` 29/29; `make smoke` OK; `make browser`: see the results line below.
+- **G3 (PRODUCTION-LIKE, LOCAL Docker):** `deploy/Dockerfile` built from the `69fb504`
+  tree (image `sha256:b2f41161…`; base `python:3.13-slim` from `mirror.gcr.io`, with the
+  sandbox's egress CA added only for this local build). API + reminder-worker containers
+  with `SEOS_REVISION=69fb504…`: `deploy/smoke.py --expect-revision 69fb504… --expect-worker`
+  → all checks ok (health, revision, schema 27, capture, lifecycle, exactly-once replay,
+  conflict, reminders, worker heartbeat; `llm: degraded-local`, labelled as such). In the
+  same container `backup` → manifest `integrity_check: ok`; `restore` → `sha256_verified:
+  true`, `integrity_check: ok`, `foreign_key_violations: 0`. Negative control: the same
+  image without `SEOS_REVISION` fails `--expect-revision` (`revision: "unknown"`).
+- **DEFECTS FOUND (fixed on `feature/rc-evidence-closure`):**
+  1. **Production APK would ship without push.** `android-release.yml` never supplied
+     `google-services.json`; `app/build.gradle` then silently skips the Google Services
+     plugin, so FCM registration is compiled out, and nothing checked it. The PACKAGE job now
+     requires `SEOS_GOOGLE_SERVICES_JSON_B64`, restores the file (gitignored) and fails
+     unless the built APK carries `string/google_app_id`. CI `apk` does the same with a
+     synthetic Firebase config.
+  2. **Deploy runbook produced no revision provenance.** `docker-compose.yml` defaults
+     `SEOS_REVISION` to `unknown` and no documented `up` command set it, so the documented
+     `smoke.py --expect-revision` step would fail (reproduced above). `deploy/README.md` and
+     the checklist now export `SEOS_REVISION=<sha>` and record image IDs.
+  3. **Production APK was never credential-scanned; no provenance record.** New
+     `mobile/scripts/release_evidence.py` (used by CI `apk` and the release PACKAGE job):
+     exactly one signer, expected versionName/Code, Firebase config present, `apk_secret_scan`
+     with the signing passwords as canaries, clean tracked source tree; writes
+     `provenance.json` (commit, tree, APK sha256/size, package/version, signer certificate
+     SHA-256), attached to the immutable `v<version>` release
+     (`tests.unit.test_release_evidence`, `tests.unit.test_update_release_contract`).
+  4. **Script injection in the release workflow.** Free-text dispatch inputs
+     (`summary_*`, `change_*`, `version`, …) were interpolated as shell text in the steps
+     that hold `SEOS_UPDATE_SIGNING_KEY_B64` / create releases; they are now passed as
+     environment data (contract test asserts none is interpolated into a `run:` script).
+- **SECURITY INVARIANTS RE-CHECKED (no change needed):**
+  - SSRF: calendar URL must be `https`, port 443, no userinfo; every resolved address must
+    be public; the TCP connection goes only to the validated literal
+    (`PinnedNetworkBackend` refuses other hosts/ports); redirects are not followed
+    (`BLOCKED_REDIRECT`, tested through the pinned transport with `Location: 127.0.0.1`);
+    `trust_env=False`. BYOK custom endpoints use the same pinned transport with
+    `follow_redirects=False`; relay/proxy/platform URLs are operator configuration.
+  - TLS: `PinnedTransport` refuses contexts without `CERT_REQUIRED` + `check_hostname`;
+    real-TLS tests show SNI and certificate checked against the original hostname while
+    connecting to the pinned IP, and a certificate for another name is rejected without
+    leaking the URL.
+  - OAuth: authorization code bound to `client_id` + exact registered `redirect_uri` + PKCE
+    S256 (plain refused), single-use (a replayed code revokes the grant it produced), codes
+    and tokens stored hashed. **Limitation:** dynamic client registration is open and the
+    client *name* is self-asserted; the consent screen shows the redirect host, which is
+    the only verified identity. Documented, not changed.
+  - FCM transport: fixed `fcm.googleapis.com` / service-account `token_uri`; exercised
+    against a fake HTTP server only — real delivery is G12.
+- **CLAIM SCOPE (what the evidence does and does not show):**
+  - *Backup/restore:* whole-file SQLite online backup; semantic equality asserted for the 34
+    populated tables / 12 endpoints listed in R11, not for every table or feature.
+  - *Rollback to v22:* no loss of v22-era rows (row counts, 8 tables) for the R2-written
+    fixture; newer data is protected by fail-closed rollbacks, not by a lossless chain.
+  - *No secrets in logs/exports/APK:* logs — the specific loggers captured in
+    `test_v21_starter_llm`, `test_llm_credentials_api`, `test_r5_llm_egress_matrix`,
+    `test_fcm_provider` for the values those tests plant; exports — five planted values and
+    six credential tables; APK — the regex families in `apk_secret_scan.py` (Groq/OpenAI/
+    Anthropic keys, PEM private keys, capability tokens, server secret variables, keystores)
+    plus build-password canaries, on CI-built APKs (production APK from G11 onward). None
+    of these is a proof that no secret can ever appear.
+- **STATUS:** G1–G4 VERIFIED for `69fb504` (G4 in its pre-fix form: release-like build
+  without Firebase config; the fixed form is verified by this branch's CI). G5–G13 NOT
+  VERIFIED (owner-only; no production access was used). Verdict per the checklist
+  definitions: **CLOSED-BETA READY** for `69fb504`; **not RELEASE-CANDIDATE READY**.
