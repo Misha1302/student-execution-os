@@ -1,6 +1,7 @@
 import { api } from './api.js';
 import { t, code, fmtDuration, now } from './i18n.js';
 import { esc, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy } from './ui.js';
+import { durationPicker, takeDuration } from './duration.js';
 import { mutate } from './actions.js';
 import { openCapture } from './capture.js';
 import { newEventSheet } from './events.js';
@@ -27,7 +28,7 @@ function recurringSheet() {
       ${field(t('form.title'), `<input data-f="title" maxlength="180" placeholder="${esc(t('form.recurringPlaceholder'))}">`)}
       ${field(t('form.firstStart'), `<input type="datetime-local" data-f="start" value="${esc(localInputValue(start))}">`)}
       <div class="field"><span>${esc(t('form.duration'))}</span>
-        ${chipGroup('duration', [[45, fmtDuration(45)], [60, fmtDuration(60)], [90, fmtDuration(90)], [120, fmtDuration(120)]], 90)}
+        ${durationPicker('duration', 90)}
       </div>
       <div class="field"><span>${esc(t('form.repeat'))}</span>
         ${chipGroup('freq', [['DAILY', t('form.repeat.daily')], ['WEEKLY', t('form.repeat.weekly')], ['WEEKLY2', t('form.repeat.biweekly')]], 'WEEKLY')}
@@ -49,6 +50,8 @@ function recurringSheet() {
     const title = $f('title').value.trim();
     const local = $f('start').value;
     if (!title || !local) { toast(t('form.titleAndTime'), { error: true }); return; }
+    const duration = takeDuration(dialog, 'duration');
+    if (!duration) return;
     const freq = chipValue(dialog, 'freq');
     const count = chipValue(dialog, 'count');
     const rule = [freq === 'DAILY' ? 'FREQ=DAILY' : 'FREQ=WEEKLY', freq === 'WEEKLY2' ? 'INTERVAL=2' : '', count ? `COUNT=${count}` : ''].filter(Boolean).join(';');
@@ -58,7 +61,7 @@ function recurringSheet() {
       body: {
         title,
         dtstart_local: local.length === 16 ? `${local}:00` : local,
-        duration_minutes: Number(chipValue(dialog, 'duration')),
+        duration_minutes: duration,
         recurrence_rule: rule,
         timezone_name: zone,
         category: 'LESSON',

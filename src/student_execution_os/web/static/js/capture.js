@@ -19,11 +19,13 @@ import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
 import { renderCommands, knownItems, isCommand } from './command-preview.js';
 import { createReminder, deliveryChips, hasAlarm } from './reminders.js';
+import { durationPicker, readDuration, writeDuration, focusDurationOther, DURATION_PRESETS } from './duration.js';
 import { eventFieldsHtml, readEventFields, bindEventFields, eventWhen, conflictHtml, createEvent, DEFAULT_LEAD, LEADS } from './events.js';
 
 export const CATEGORIES = ['HOMEWORK', 'EXAM', 'LESSON', 'WORK', 'ADMIN', 'ERRAND', 'PERSONAL_APPOINTMENT', 'MEETING', 'GENERAL'];
 export const IMPORTANCE = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'];
-const EFFORT_CHOICES = [15, 30, 60, 120, 180];
+const CHUNK_MIN_PRESETS = [15, 30, 45, 60, 90];
+const CHUNK_MAX_PRESETS = [30, 45, 60, 90, 120, 180];
 const FIELDS = ['title', 'description', 'category', 'importance', 'estimated_total_effort_minutes', 'actual_cutoff',
   'target_at', 'actionable_from', 'remind_at', 'splittable', 'min_chunk_minutes', 'max_chunk_minutes', 'count_total', 'count_unit'];
 
@@ -93,8 +95,6 @@ function field(label, control, hint = '', name = '') {
 
 export function fieldsHtml(draft, { remaining = false } = {}) {
   const cutoff = draft.actual_cutoff || { state: 'UNKNOWN' };
-  const effort = draft.estimated_total_effort_minutes;
-  const effortChoice = effort == null ? 'unknown' : EFFORT_CHOICES.includes(Number(effort)) ? String(effort) : 'custom';
   return `<div class="form task-fields">
     ${field(t('form.title'), `<input data-f="title" maxlength="300" value="${esc(draft.title || '')}" placeholder="${esc(t('form.taskPlaceholder'))}">`, '', 'title')}
     <div class="field" data-field="deadline"><span>${esc(t('form.deadline'))}</span>
@@ -102,10 +102,9 @@ export function fieldsHtml(draft, { remaining = false } = {}) {
       <input type="datetime-local" data-f="cutoff" class="${cutoff.state === 'KNOWN' ? '' : 'hidden'}" value="${esc(localInputValue(cutoff.at))}">
     </div>
     <div class="field" data-field="effort"><span>${esc(t('form.effort'))}</span>
-      ${chipGroup('f-effort', [...EFFORT_CHOICES.map((m) => [String(m), fmtDuration(m)]), ['custom', t('form.custom')], ['unknown', t('form.effortUnknown')]], effortChoice)}
-      <input type="number" inputmode="numeric" min="1" step="5" data-f="effort" class="${effortChoice === 'custom' ? '' : 'hidden'}" value="${esc(effort ?? '')}" placeholder="${esc(t('form.minutes'))}">
-    </div>
-    ${remaining ? field(t('form.remaining'), `<input type="number" inputmode="numeric" min="0" step="5" data-f="remaining" value="${esc(draft.remaining_effort_minutes ?? '')}">`, t('form.remainingHelp')) : ''}
+      ${durationPicker('f-effort', draft.estimated_total_effort_minutes, { unknown: true })}</div>
+    ${remaining ? `<div class="field" data-field="remaining"><span>${esc(t('form.remaining'))}</span>
+      ${durationPicker('f-remaining', draft.remaining_effort_minutes)}<small class="help">${esc(t('form.remainingHelp'))}</small></div>` : ''}
     <div class="field" data-field="importance"><span>${esc(t('form.importance'))}</span>
       ${chipGroup('f-importance', IMPORTANCE.map((v) => [v, code('importance', v)]), draft.importance || 'NORMAL')}</div>
     ${field(t('form.category'), `<select data-f="category">${CATEGORIES.map((c) => `<option value="${c}" ${c === (draft.category || 'GENERAL') ? 'selected' : ''}>${esc(code('category', c))}</option>`).join('')}</select>`, '', 'category')}
@@ -113,9 +112,9 @@ export function fieldsHtml(draft, { remaining = false } = {}) {
     ${field(t('form.target'), `<input type="datetime-local" data-f="target" value="${esc(localInputValue(draft.target_at))}">`, t('form.targetHelp'))}
     ${field(t('form.remind'), `<input type="datetime-local" data-f="remind" value="${esc(localInputValue(draft.remind_at))}">`, t('form.remindHelp'), 'remind')}
     <div class="field" data-field="chunks"><span>${esc(t('form.split'))}</span>${chipGroup('f-split', [['false', t('form.split.no')], ['true', t('form.split.yes')]], String(Boolean(draft.splittable)))}
-      <div class="field-row ${draft.splittable ? '' : 'hidden'}" data-split-fields>
-        ${field(t('form.minChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="min" value="${esc(draft.min_chunk_minutes ?? 30)}">`)}
-        ${field(t('form.maxChunk'), `<input type="number" inputmode="numeric" min="5" step="5" data-f="max" value="${esc(draft.max_chunk_minutes ?? 90)}">`)}
+      <div class="${draft.splittable ? '' : 'hidden'}" data-split-fields>
+        <div class="field"><span>${esc(t('form.minChunk'))}</span>${durationPicker('f-min', draft.min_chunk_minutes ?? 30, { presets: CHUNK_MIN_PRESETS })}</div>
+        <div class="field"><span>${esc(t('form.maxChunk'))}</span>${durationPicker('f-max', draft.max_chunk_minutes ?? 90, { presets: CHUNK_MAX_PRESETS })}</div>
       </div></div>
     <div class="field" data-field="count"><span>${esc(t('form.count'))}</span>
       <div class="field-row">
@@ -136,12 +135,7 @@ export function readFields(root) {
     if (!value) throw new Error(t('form.deadlineRequired'));
     cutoff = { state: 'KNOWN', at: value };
   }
-  const effortChoice = chipValue(root, 'f-effort');
-  let effort = null;
-  if (effortChoice === 'custom') {
-    effort = Math.round(Number($f('effort').value));
-    if (!effort || effort <= 0) throw new Error(t('form.effortRequired'));
-  } else if (effortChoice && effortChoice !== 'unknown') effort = Number(effortChoice);
+  const effort = readDuration(root, 'f-effort');
   const splittable = chipValue(root, 'f-split') === 'true';
   const fields = {
     title: $f('title').value.trim(),
@@ -154,20 +148,19 @@ export function readFields(root) {
     target_at: isoFromLocalInput($f('target').value),
     remind_at: isoFromLocalInput($f('remind').value),
     splittable,
-    min_chunk_minutes: splittable ? Number($f('min').value) || null : null,
-    max_chunk_minutes: splittable ? Number($f('max').value) || null : null,
+    min_chunk_minutes: splittable ? readDuration(root, 'f-min') : null,
+    max_chunk_minutes: splittable ? readDuration(root, 'f-max') : null,
   };
   const countTotal = Math.round(Number($f('count-total')?.value || 0));
   fields.count_total = countTotal > 0 ? countTotal : null;
   fields.count_unit = fields.count_total ? ($f('count-unit')?.value.trim() || null) : null;
-  if ($f('remaining')) fields.remaining_effort_minutes = $f('remaining').value === '' ? null : Math.max(0, Math.round(Number($f('remaining').value)));
+  if (root.querySelector('[data-duration="f-remaining"]')) fields.remaining_effort_minutes = readDuration(root, 'f-remaining');
   return fields;
 }
 
 export function bindFields(root) {
   root.addEventListener('chipchange', (e) => {
     const $f = (name) => root.querySelector(`[data-f="${name}"]`);
-    if (e.detail.name === 'f-effort') $f('effort').classList.toggle('hidden', e.detail.value !== 'custom');
     if (e.detail.name === 'f-split') root.querySelector('[data-split-fields]').classList.toggle('hidden', e.detail.value !== 'true');
     if (e.detail.name === 'f-deadline') {
       $f('cutoff').classList.toggle('hidden', e.detail.value !== 'KNOWN');
@@ -197,19 +190,15 @@ function writeFields(root, draft) {
   setChip(root, 'f-deadline', cutoff.state);
   set('cutoff', localInputValue(cutoff.at));
   root.querySelector('[data-f="cutoff"]')?.classList.toggle('hidden', cutoff.state !== 'KNOWN');
-  const effort = draft.estimated_total_effort_minutes;
-  const choice = effort == null ? 'unknown' : EFFORT_CHOICES.includes(Number(effort)) ? String(effort) : 'custom';
-  setChip(root, 'f-effort', choice);
-  set('effort', effort ?? '');
-  root.querySelector('[data-f="effort"]')?.classList.toggle('hidden', choice !== 'custom');
+  writeDuration(root, 'f-effort', draft.estimated_total_effort_minutes, { unknown: true });
   setChip(root, 'f-importance', draft.importance || 'NORMAL');
   set('actionable', localInputValue(draft.actionable_from));
   set('target', localInputValue(draft.target_at));
   set('remind', localInputValue(draft.remind_at));
   setChip(root, 'f-split', String(Boolean(draft.splittable)));
   root.querySelector('[data-split-fields]')?.classList.toggle('hidden', !draft.splittable);
-  set('min', draft.min_chunk_minutes ?? 30);
-  set('max', draft.max_chunk_minutes ?? 90);
+  writeDuration(root, 'f-min', draft.min_chunk_minutes ?? 30);
+  writeDuration(root, 'f-max', draft.max_chunk_minutes ?? 90);
 }
 
 // ---- questions for what the parser could not determine ------------------------------
@@ -218,7 +207,7 @@ function questionsHtml(unresolved) {
   const out = [];
   if (unresolved.includes('estimated_total_effort_minutes')) {
     out.push(`<div class="question" data-question="effort"><strong>${esc(t('q.effort'))}</strong>
-      <div class="chip-row">${[[30, fmtDuration(30)], [60, t('q.effort.1h')], [120, t('q.effort.2h')], ['unknown', t('q.dontKnow')]]
+      <div class="chip-row">${[...DURATION_PRESETS.map((m) => [m, fmtDuration(m)]), ['other', t('duration.other')], ['unknown', t('duration.unknown')]]
         .map(([v, label]) => `<button type="button" class="chip-toggle" data-answer="effort" data-value="${esc(v)}">${esc(label)}</button>`).join('')}</div>
       <small class="help">${esc(t('q.effortHelp'))}</small></div>`);
   }
@@ -231,6 +220,7 @@ function questionsHtml(unresolved) {
 }
 
 function answer(kind, value) {
+  if (kind === 'effort' && value === 'other') return null; // opens the hours/minutes field
   if (kind === 'effort') return { estimated_total_effort_minutes: value === 'unknown' ? null : Number(value) };
   if (value === 'none') return { actual_cutoff: { state: 'ABSENT' } };
   if (value === 'unknown') return { actual_cutoff: { state: 'UNKNOWN' } };
@@ -328,6 +318,8 @@ export function mergeReminderDraft(previous, incoming, floor = null) {
 
 // ---- the sheet ----------------------------------------------------------------------
 
+const KINDS = ['TASK', 'EVENT', 'REMINDER', 'NOTE'];
+
 export function openCapture({ text = '', listen: listenNow = false, sourceNoteId = null, initialKind = null } = {}) {
   let draft = { title: '', importance: 'NORMAL', category: 'GENERAL', estimated_total_effort_minutes: null, actual_cutoff: { state: 'UNKNOWN' }, splittable: false };
   let unresolved = [];
@@ -349,6 +341,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     title: t('capture.title'),
     full: true,
     body: `<div class="capture">
+      <div class="kind-switch" data-kind-switch>${chipGroup('capture-kind', KINDS.map((k) => [k, t(`capture.kind.${k}`)]), kind)}</div>
       <div class="capture-input">
         <textarea id="capture-text" rows="2" maxlength="4000" enterkeyhint="done" placeholder="${esc(t('capture.placeholder'))}">${esc(text)}</textarea>
         ${voiceSupported() ? `<button type="button" class="icon-button mic" data-mic aria-pressed="false" aria-label="${esc(t('capture.voice'))}">${icon('mic')}</button>` : ''}
@@ -369,9 +362,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
         <div data-event-details hidden></div>
       </details>
       <div class="capture-other">
-        <button type="button" class="link" data-switch-note>${icon('note')} ${esc(t('capture.asNote'))}</button>
         <button type="button" class="link" data-other="note-audio">${icon('mic')} ${esc(t('note.recordAudio'))}</button>
-        <button type="button" class="link" data-other="event">${icon('event')} ${esc(t('capture.event'))}</button>
         <button type="button" class="link" data-other="recurring">${icon('repeat')} ${esc(t('capture.recurring'))}</button>
       </div>
     </div>`,
@@ -379,6 +370,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       <button type="button" class="button primary" data-create disabled>${esc(t('compose.create'))}</button>`,
   });
   const input = dialog.querySelector('#capture-text');
+  const kindSwitch = dialog.querySelector('[data-kind-switch]');
   const preview = dialog.querySelector('[data-preview]');
   const details = dialog.querySelector('[data-more]');
   const createButton = dialog.querySelector('[data-create]');
@@ -469,10 +461,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     return `<article class="capture-card reminder-card" data-kind="REMINDER">
       <span class="eyebrow">${icon('bell')} ${esc(t(hasAlarm(r.delivery) ? 'reminder.kindAlarm' : 'reminder.kind'))}</span>
       <h3 class="capture-title">${esc(r.title || '')}</h3>
-      <div class="capture-facts">
-        <div class="fact static"><span class="fact-icon tone-accent">${icon('clock')}</span>
-          <span class="fact-copy"><small>${esc(t('reminder.when'))}</small><strong>${esc(r.remind_at ? fmtDateTime(r.remind_at) : '—')}</strong></span></div>
-      </div>
+      <label class="field"><span>${icon('clock')} ${esc(t('reminder.when'))}</span>
+        <input type="datetime-local" data-card-remind value="${esc(r.remind_at ? localInputValue(r.remind_at) : '')}"></label>
       <div class="field"><span>${esc(t('reminder.how'))}</span>${deliveryChips('card-delivery', r.delivery)}</div>
       ${hasAlarm(r.delivery) ? `<div class="field"><span>${esc(t('reminder.wake'))}</span>${chipGroup('card-wake', [['false', t('reminder.wake.no')], ['true', t('reminder.wake.yes')]], String(Boolean(r.wake_check)))}</div>` : ''}
       ${reachWarning({ alarm: hasAlarm(r.delivery) })}
@@ -484,6 +474,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     // A command about existing items replaces the creation form entirely.
     const commandMode = Boolean(commands);
     createButton.hidden = commandMode;
+    kindSwitch.hidden = commandMode;
+    setChip(kindSwitch, 'capture-kind', kind);
     details.hidden = commandMode || kind === 'NOTE';
     dialog.querySelector('.capture-other').hidden = commandMode;
     if (kind === 'NOTE') {
@@ -539,6 +531,18 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     writeFields(taskDetails, draft);
   }
 
+  // An explicit choice: from here on parses fill the chosen kind and never switch it.
+  function switchKind(next) {
+    kindChosen = true;
+    kind = next;
+    if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
+    if (kind === 'REMINDER' && !reminderDraft) {
+      reminderDraft = { title: draft.title, remind_at: draft.remind_at ?? null, delivery: 'PUSH', wake_check: false, raise_volume: true };
+    }
+    if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
+    render();
+  }
+
   function adoptReminder(parsed, source = 'assistant') {
     if (source === 'local') {
       reminderFloor = hasAlarm(parsed.delivery) ? { delivery: parsed.delivery, wake_check: parsed.wake_check === true } : null;
@@ -576,6 +580,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     } else {
       if (!kindChosen) kind = captureKind(parsed, raw);
       merge(parsed, 'local');
+      if (eventDraft && !eventEdited.has('title')) eventDraft = { ...eventDraft, title: parsed.title };
+      if (reminderDraft) reminderDraft = { ...reminderDraft, title: parsed.title, ...(parsed.remind_at ? { remind_at: parsed.remind_at } : {}) };
     }
     showEngine('local');
     render();
@@ -658,6 +664,12 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     }
   });
 
+  preview.addEventListener('change', (e) => {
+    if (!e.target.matches('[data-card-remind]') || !reminderDraft) return;
+    reminderDraft = { ...reminderDraft, remind_at: isoFromLocalInput(e.target.value) };
+    render();
+  });
+
   preview.addEventListener('chipchange', (e) => {
     if (e.detail.name === 'card-delivery' && reminderDraft) {
       reminderDraft = { ...reminderDraft, delivery: e.detail.value, deliveryChosen: true };
@@ -676,20 +688,11 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
 
   preview.addEventListener('click', (e) => {
     const switcher = e.target.closest('[data-switch-kind]');
-    if (switcher) {
-      kindChosen = true;
-      kind = switcher.dataset.switchKind;
-      if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
-      if (kind === 'REMINDER' && !reminderDraft) {
-        reminderDraft = { title: draft.title, remind_at: draft.remind_at, delivery: 'PUSH', wake_check: false, raise_volume: true };
-      }
-      if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
-      render();
-      return;
-    }
+    if (switcher) { switchKind(switcher.dataset.switchKind); return; }
     const chip = e.target.closest('[data-answer]');
     if (chip) {
       const values = answer(chip.dataset.answer, chip.dataset.value);
+      if (!values && chip.dataset.answer === 'effort') { details.open = true; focusDurationOther(details, 'f-effort'); return; }
       if (!values) { details.open = true; setChip(details, 'f-deadline', 'KNOWN'); details.querySelector('[data-f="cutoff"]').classList.remove('hidden'); details.querySelector('[data-f="cutoff"]').focus(); return; }
       Object.assign(draft, values);
       Object.keys(values).forEach((k) => answered.add(k));
@@ -765,9 +768,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     }
   }
 
-  dialog.querySelector('[data-switch-note]')?.addEventListener('click', () => {
-    kindChosen = true; kind = 'NOTE'; render();
-  });
+  kindSwitch.addEventListener('chipchange', (e) => { if (e.detail.name === 'capture-kind') switchKind(e.detail.value); });
   dialog.querySelectorAll('[data-other]').forEach((button) => button.addEventListener('click', async () => {
     dialog.close('other');
     const { composers } = await import('./compose.js');
@@ -805,7 +806,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       if (id) dialog.close('saved');
       return;
     }
-    if (details.open) fromDetails();
+    if (details.open) {
+      try { readFields(taskDetails); } catch (err) { toast(err.message, { error: true }); return; }
+      fromDetails();
+    }
     const payload = createPayload(draft);
     if (!payload.title) { toast(t('form.titleRequired'), { error: true }); return; }
     if (assistant) { payload.assistant_batch_id = assistant.batch_id; }
@@ -820,6 +824,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     });
   });
 
+  render();
   if (text) { parseLocal(); if (initialKind === 'EVENT' && !eventDraft) { eventDraft = eventFromTask(draft); kind = 'EVENT'; render(); } enrich(); }
   setTimeout(() => input.focus(), 80);
   if (listenNow && voiceSupported()) listen();
@@ -862,7 +867,8 @@ export function editTaskSheet(task, { focus } = {}) {
       <button type="button" class="button primary" data-save>${esc(t('common.save'))}</button>`,
   });
   bindFields(dialog);
-  if (focus) setTimeout(() => dialog.querySelector(`[data-field="${focus}"]`)?.querySelector('input,select,button')?.focus(), 80);
+  if (focus === 'effort') setTimeout(() => focusDurationOther(dialog, 'f-effort'), 80);
+  else if (focus) setTimeout(() => dialog.querySelector(`[data-field="${focus}"]`)?.querySelector('input,select,button')?.focus(), 80);
   dialog.querySelector('[data-save]').addEventListener('click', async (e) => {
     let fields;
     try { fields = readFields(dialog); } catch (err) { toast(err.message, { error: true }); return; }

@@ -87,6 +87,8 @@ class _AccountLimiter:
 
 
 TEST_NOTIFICATION_LIMITER = _AccountLimiter(3)
+# Today's "Soon" window for fixed-time events (the client uses the same horizon).
+UPCOMING_HOURS = 12
 
 
 def _jsonify(value: Any) -> Any:
@@ -539,6 +541,18 @@ class UiService:
                 if event.obligation.lifecycle_status.value == "ACTIVE"
                 and event.interval.starts_at < day_end and day_start < event.interval.ends_at
             ])
+            # "Soon" is a rolling window, not the local day: at 23:00 a class at 00:30 is next.
+            now = self._now()
+            soon_end = now + timedelta(hours=UPCOMING_HOURS)
+            upcoming_models = [
+                *state_source.list_events(self.account_id),
+                *state_source.list_recurring_events(self.account_id, now - timedelta(days=1), soon_end),
+            ]
+            upcoming_events = sorted(self._events_payload(repo, [
+                event for event in upcoming_models
+                if event.obligation.lifecycle_status.value == "ACTIVE"
+                and event.interval.starts_at < soon_end and now < event.interval.ends_at
+            ]), key=lambda e: (e["starts_at"], e["id"]))
             inbox_notes = SQLiteNoteRepository(repo).list_unlinked(self.account_id, limit=3)
             windows = planning_intervals(profile, local_day, 1)
             capacity_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
@@ -584,6 +598,7 @@ class UiService:
                 "next_actions": _jsonify(outcome.next_actions),
                 "tasks": tasks,
                 "events": day_events,
+                "upcoming_events": upcoming_events,
                 "inbox_notes": inbox_notes,
                 "travel": {
                     "transitions": transitions,

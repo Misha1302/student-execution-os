@@ -1,5 +1,6 @@
 import { t, fmtDuration } from './i18n.js';
 import { esc, icon, openSheet, chipGroup, chipValue, toast, localInputValue, isoFromLocalInput } from './ui.js';
+import { durationPicker, takeDuration, DURATION_PRESETS } from './duration.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
 import { showExecutionNotification, clearExecutionNotification } from './native.js';
@@ -114,9 +115,8 @@ export async function finishExecution(session, task, { complete = false, occurre
   const worked = Math.max(1, Math.round(executionSeconds(session, new Date(finishAt).getTime()) / 60));
   const current = Number(task.remaining_effort_minutes || 0);
   const suggested = Math.max(0, current - worked);
-  const options = [...new Set([suggested, 15, 30, 45, 60, 90, current].filter((x) => Number.isFinite(x) && x >= 0))]
-    .sort((a, b) => a - b)
-    .map((m) => [String(m), m === 0 ? t('execution.doneOption') : fmtDuration(m)]);
+  const presets = [...new Set([suggested, ...DURATION_PRESETS, current].filter((x) => Number.isFinite(x) && x >= 0))]
+    .sort((a, b) => a - b);
   return new Promise((resolve) => {
     const dialog = openSheet({
       eyebrow: task.title,
@@ -129,7 +129,7 @@ export async function finishExecution(session, task, { complete = false, occurre
             ['COMPLETE', t('execution.doneOption')],
           ], suggested === 0 ? 'COMPLETE' : 'UPDATE_REMAINING')}</div>
         <div class="field" data-execution-remaining><span>${esc(t('execution.remaining'))}</span>
-          ${chipGroup('execution-remaining', options, String(suggested))}</div>
+          ${durationPicker('execution-remaining', suggested, { presets, labels: { 0: t('execution.doneOption') } })}</div>
         <p class="help">${esc(t('execution.noAutoProgress'))}</p>`,
       actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
         <button type="button" class="button primary" data-save>${esc(t('common.save'))}</button>`,
@@ -146,7 +146,11 @@ export async function finishExecution(session, task, { complete = false, occurre
     dialog.querySelector('[data-save]').addEventListener('click', async () => {
       const outcome = chipValue(dialog, 'execution-outcome') || 'KEEP_REMAINING';
       const payload = { task_id: task.id, outcome, occurred_at: finishAt };
-      if (outcome === 'UPDATE_REMAINING') payload.remaining_effort_minutes = Number(chipValue(dialog, 'execution-remaining') || 0);
+      if (outcome === 'UPDATE_REMAINING') {
+        const left = takeDuration(dialog, 'execution-remaining');
+        if (left == null) return;
+        payload.remaining_effort_minutes = left;
+      }
       const result = await change('execution.finish', session.id, payload, { success: t('execution.saved') });
       if (result) clearExecutionNotification().catch(() => {});
       dialog.close('saved');

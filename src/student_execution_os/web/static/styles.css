@@ -113,7 +113,8 @@ body.bare .main-column { padding-bottom: 0; }
 .view.no-enter { animation: none; }
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } }
 .section { display: flex; flex-direction: column; gap: 10px; }
-.section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 2px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 0 2px; }
+.section-head > div { min-width: 0; flex: 1 1 12em; }
 .section-head h2 { font-size: 17px; font-weight: 700; }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 
@@ -200,7 +201,8 @@ body.bare .main-column { padding-bottom: 0; }
 .link { background: none; border: 0; color: var(--accent); font-weight: 650; padding: 6px 2px; display: inline-flex; align-items: center; gap: 6px; }
 .link .icon { width: 18px; height: 18px; }
 .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.quick-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.quick-actions .button { min-width: 0; padding-inline: 10px; text-align: center; overflow-wrap: anywhere; }
 
 .chip {
   display: inline-flex; align-items: center; gap: 4px; flex: none;
@@ -224,6 +226,8 @@ button.chip { border: 0; font: inherit; font-size: 12px; font-weight: 650; curso
   flex: none; min-height: 38px; padding: 0 14px; border-radius: 999px;
   border: 1px solid var(--line); background: var(--surface); color: var(--text-2); font-weight: 600; font-size: 14px;
 }
+/* A long label (RU, wide fonts) wraps inside its chip instead of pushing the page wider. */
+.chip-group:not(.segmented .chip-group, .day-strip .chip-group) .chip-toggle { max-width: 100%; overflow-wrap: anywhere; }
 .chip-toggle.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 
 .setting-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; }
@@ -405,9 +409,11 @@ ul.plain { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); }
 .detail-title { font-size: 24px; font-weight: 750; overflow-wrap: anywhere; }
 .effort-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .effort-row span { color: var(--text-2); }
-.detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.detail-actions > :first-child:last-child { grid-column: 1 / -1; }
-.detail-actions .button.danger { grid-column: 1 / -1; }
+/* minmax(0, 1fr): a plain 1fr column is min-content wide, so one long label (RU at
+   320px) pushed the grid — and the whole page — past the viewport. Labels wrap instead. */
+.detail-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.detail-actions .button { min-width: 0; padding-inline: 10px; text-align: center; overflow-wrap: anywhere; }
+.detail-actions > :first-child:last-child, .detail-actions .detail-delete { grid-column: 1 / -1; }
 
 .day-group { display: flex; flex-direction: column; gap: 8px; }
 .day-title { font-size: 14px; color: var(--text-2); padding: 6px 4px 0; }
@@ -452,6 +458,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .question strong { font-size: 15px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip-row .chip-toggle { min-height: 40px; }
+.duration-custom { display: flex; gap: 12px; margin-top: 8px; }
+.duration-custom[hidden] { display: none; }
+.duration-custom label { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; }
+.duration-custom input { width: 100%; min-width: 0; }
+.duration-custom span { color: var(--text-2); font-weight: 600; }
+/* Task / Event / Reminder / Note: one row where it fits, two rows on a narrow phone. */
+.kind-switch .chip-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.5em, 1fr)); gap: 6px; }
+.kind-switch .chip-toggle { min-width: 0; padding: 0 8px; font-size: 13px; }
 .capture-other { display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .capture-other .link { font-weight: 550; color: var(--text-2); }
 .capture-cta {
@@ -605,6 +619,7 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 
 .health-row .row-main .button { margin-top: 6px; align-self: flex-start; }
 .connector-row .button-row { margin-top: 6px; }
+.notes-new { margin: 0 0 12px; }
 .text-danger { color: var(--danger); }
 .reminder-fields .chip-group + .chip-group { margin-top: 6px; }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }

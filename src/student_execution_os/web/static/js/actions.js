@@ -1,6 +1,7 @@
 import { t, fmtDuration } from './i18n.js';
 import { invalidate } from './store.js';
 import { toast, errorMessage, confirmSheet, openSheet, chipGroup, chipValue, esc, setBusy } from './ui.js';
+import { durationPicker, readDuration, DURATION_PRESETS } from './duration.js';
 import { haptic } from './native.js';
 import { queueOperation } from './sync.js';
 
@@ -95,11 +96,9 @@ export function lifecycle(id, _version, action, { title, kind = 'task', from = n
 export function logProgress(task, suggested) {
   const remaining = Number(task.remaining_effort_minutes || 0);
   const count = task.count_progress;
-  const options = [...new Set([15, 30, 45, 60, 90, Number(suggested) || 0].filter((m) => m > 0 && m <= Math.max(remaining, 15)))]
-    .sort((a, b) => a - b)
-    .map((m) => [m, fmtDuration(m)]);
-  if (remaining > 0 && !options.some(([m]) => m === remaining)) options.push([remaining, t('progress.all')]);
-  const preset = count ? '' : String(options.find(([m]) => m === Number(suggested))?.[0] ?? options[0]?.[0] ?? '');
+  const presets = [...new Set([...DURATION_PRESETS, Number(suggested) || 0, remaining].filter((m) => m > 0 && m <= Math.max(remaining, 15)))]
+    .sort((a, b) => a - b);
+  const preset = count ? null : presets.includes(Number(suggested)) ? Number(suggested) : presets[0] ?? null;
   const countLeft = count ? count.total - count.done : 0;
   const countOptions = count ? [...new Set([1, 2, 3, 5, 10].filter((n) => n < countLeft)), countLeft].filter((n) => n > 0).map((n) => [String(n), n === countLeft ? t('progress.countAll', { n }) : `+${n}`]) : [];
   const dialog = openSheet({
@@ -108,13 +107,14 @@ export function logProgress(task, suggested) {
     body: `${count ? `<p class="muted">${esc(t('progress.countNow', { done: count.done, total: count.total, unit: count.unit || '' }))}</p>
         <div class="field"><span>${esc(t('progress.countDone'))}</span>${chipGroup('count', countOptions, countOptions[0]?.[0] || '')}</div>` : ''}
       <p class="muted">${esc(t('progress.remaining', { d: fmtDuration(remaining) }))}</p>
-      <div class="field"><span>${esc(t('progress.spent'))}</span>${chipGroup('spent', count ? [['', t('progress.noTime')], ...options] : options, preset)}</div>
+      <div class="field"><span>${esc(t('progress.spent'))}</span>${durationPicker('spent', preset, { presets, labels: remaining > 0 ? { [remaining]: t('progress.all') } : {}, extra: count ? [['', t('progress.noTime')]] : [] })}</div>
       <p class="help">${esc(t('progress.help'))}</p>`,
     actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
       <button type="button" class="button primary" data-save>${esc(t('progress.save'))}</button>`,
   });
   dialog.querySelector('[data-save]').addEventListener('click', async () => {
-    const spent = Number(chipValue(dialog, 'spent') || 0);
+    let spent;
+    try { spent = readDuration(dialog, 'spent') || 0; } catch (err) { toast(err.message, { error: true }); return; }
     const items = count ? Number(chipValue(dialog, 'count') || 0) : 0;
     if (!spent && !items) { dialog.close('unchanged'); return; }
     const payload = {};
