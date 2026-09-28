@@ -1,5 +1,5 @@
 import { t, code, fmtDuration, now } from './i18n.js';
-import { esc, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy } from './ui.js';
+import { esc, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, focusSoon } from './ui.js';
 import { durationPicker, takeDuration } from './duration.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
@@ -47,7 +47,7 @@ function recurringSheet() {
       <button type="button" class="button primary" data-save>${esc(t('compose.create'))}</button>`,
   });
   const $f = (name) => dialog.querySelector(`[data-f="${name}"]`);
-  setTimeout(() => $f('title').focus(), 80);
+  focusSoon(() => $f('title'));
   dialog.querySelector('[data-save]').addEventListener('click', async (e) => {
     const title = $f('title').value.trim();
     const local = $f('start').value;

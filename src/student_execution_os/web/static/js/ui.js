@@ -127,6 +127,23 @@ export function errorMessage(err) {
 
 // ---- sheets (bottom sheet on phones, centered dialog on wide screens) -------------
 
+const TEXT_CONTROL = 'input:not([type=button]):not([type=checkbox]):not([type=radio]):not([type=submit]),textarea,select,[contenteditable="true"]';
+
+// Focus `target` (an element or a function returning one) shortly after a sheet opens,
+// unless the caret is already in a text control of the same sheet: a late autofocus
+// must never pull focus (and the rest of what is being typed) out of the field the
+// person chose.
+export function focusSoon(target, delay = 80) {
+  setTimeout(() => {
+    const el = typeof target === 'function' ? target() : target;
+    if (!el || !el.isConnected) return;
+    const active = document.activeElement;
+    const scope = el.closest('dialog') || document.body;
+    if (active && active !== el && scope.contains(active) && active.matches?.(TEXT_CONTROL)) return;
+    el.focus();
+  }, delay);
+}
+
 const sheetStack = [];
 
 export function openSheet({ title = '', eyebrow = '', body = '', actions = '', full = false, onClose } = {}) {

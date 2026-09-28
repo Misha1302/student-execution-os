@@ -82,6 +82,30 @@ class SeriesEndToEndTest(unittest.TestCase):
         page.evaluate("location.hash = '#/calendar'")
         page.wait_for_selector('#workspace[data-view="calendar"][data-view-state="ready"]')
 
+    def test_late_autofocus_never_steals_a_field_the_person_already_chose(self):
+        # CI once saved "МатанализR205": the sheet's delayed title autofocus fired after the
+        # room field had been focused, so the rest of the typing went into the title.
+        context = self.browser.new_context(viewport={"width": 390, "height": 844}, timezone_id="Europe/Moscow")
+        self.addCleanup(context.close)
+        page = context.new_page()
+        page.goto(f"{self.origin}/#/calendar")
+        page.wait_for_selector('#workspace[data-view="calendar"][data-view-state="ready"]')
+        page.locator('[data-action="cal-new-recurring"]').click()
+        sheet = page.locator("dialog.sheet[open]")
+        room = sheet.locator('[data-f="location"]')
+        room.focus()  # before the 80 ms autofocus
+        page.keyboard.type("R2")
+        page.wait_for_timeout(400)  # the autofocus timer has certainly fired
+        page.keyboard.type("05")
+        self.assertEqual(room.input_value(), "R205")
+        self.assertEqual(sheet.locator('[data-f="title"]').input_value(), "")
+        page.keyboard.press("Escape")
+        page.wait_for_selector("dialog.sheet[open]", state="detached")
+        # With nothing chosen yet, the title is still focused for the person.
+        page.locator('[data-action="cal-new-recurring"]').click()
+        page.wait_for_timeout(400)
+        self.assertTrue(page.locator('dialog.sheet[open] [data-f="title"]').evaluate("el => el === document.activeElement"))
+
     def test_series_room_cancel_restore_and_day_off_go_through_sync(self):
         context = self.browser.new_context(viewport={"width": 390, "height": 844}, timezone_id="Europe/Moscow",
                                            reduced_motion="reduce")
