@@ -304,6 +304,9 @@ export function mergeReminderDraft(previous, incoming, floor = null) {
   }
   next.deliveryChosen = Boolean(old.deliveryChosen);
   next.wakeChosen = Boolean(old.wakeChosen);
+  next.whenChosen = Boolean(old.whenChosen);
+  // A late answer (the assistant) never overwrites what the person set by hand.
+  if (old.whenChosen) next.remind_at = old.remind_at;
   if (old.deliveryChosen) next.delivery = old.delivery;
   if (old.wakeChosen) next.wake_check = old.wake_check;
   if (!next.delivery) next.delivery = 'PUSH';
@@ -531,13 +534,20 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     writeFields(taskDetails, draft);
   }
 
+  // The time someone wrote ("завтра в 10:00 …") is read as a task's target, start or
+  // deadline; once they say it is a reminder, that same time is when to remind.
+  function reminderTimeOf(parsed) {
+    return parsed.remind_at ?? parsed.target_at ?? parsed.actionable_from
+      ?? (parsed.actual_cutoff?.state === 'KNOWN' ? parsed.actual_cutoff.at : null) ?? null;
+  }
+
   // An explicit choice: from here on parses fill the chosen kind and never switch it.
   function switchKind(next) {
     kindChosen = true;
     kind = next;
     if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
     if (kind === 'REMINDER' && !reminderDraft) {
-      reminderDraft = { title: draft.title, remind_at: draft.remind_at ?? null, delivery: 'PUSH', wake_check: false, raise_volume: true };
+      reminderDraft = { title: draft.title, remind_at: reminderTimeOf(draft), delivery: 'PUSH', wake_check: false, raise_volume: true };
     }
     if (kind === 'TASK' && eventDraft) { merge(taskFromEvent(eventDraft), 'event'); unresolved = draft.estimated_total_effort_minutes == null ? ['estimated_total_effort_minutes'] : []; }
     render();
@@ -581,7 +591,12 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       if (!kindChosen) kind = captureKind(parsed, raw);
       merge(parsed, 'local');
       if (eventDraft && !eventEdited.has('title')) eventDraft = { ...eventDraft, title: parsed.title };
-      if (reminderDraft) reminderDraft = { ...reminderDraft, title: parsed.title, ...(parsed.remind_at ? { remind_at: parsed.remind_at } : {}) };
+      if (reminderDraft) {
+        // Chosen as a reminder (possibly before this parse finished): the written time is
+        // when to remind — unless the person already set the time themselves.
+        const when = kind === 'REMINDER' ? reminderTimeOf(parsed) : parsed.remind_at;
+        reminderDraft = { ...reminderDraft, title: parsed.title, ...(when && !reminderDraft.whenChosen ? { remind_at: when } : {}) };
+      }
     }
     showEngine('local');
     render();
@@ -666,7 +681,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
 
   preview.addEventListener('change', (e) => {
     if (!e.target.matches('[data-card-remind]') || !reminderDraft) return;
-    reminderDraft = { ...reminderDraft, remind_at: isoFromLocalInput(e.target.value) };
+    reminderDraft = { ...reminderDraft, remind_at: isoFromLocalInput(e.target.value), whenChosen: true };
     render();
   });
 

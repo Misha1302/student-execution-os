@@ -219,6 +219,10 @@ class GroupService:
                              (_iso(self.repo.clock.now()), group_id, heir["account_id"]))
 
     def list(self) -> list[dict[str, Any]]:
+        for row in self.repo.connection.execute(
+                "SELECT group_id FROM group_members WHERE account_id=? AND status='ACTIVE'",
+                (self.account_id,)).fetchall():
+            self._repair_ownership(row["group_id"])  # the list must agree with the detail view
         rows = self.repo.connection.execute(
             "SELECT g.id,g.name,g.timezone_name,g.schedule_revision,m.role,"
             "(SELECT count(*) FROM group_members x WHERE x.group_id=g.id AND x.status='ACTIVE') AS member_count "
