@@ -208,6 +208,80 @@ class SeriesExceptionTests(unittest.TestCase):
         self.assertIn("2026-10-12T11:00:00", occ)
         self.assertEqual(occ["2026-10-12T11:00:00"]["location_text"], "R310")
 
+    def test_source_wide_time_shift_keeps_user_override_on_same_ordinal_class(self):
+        self.apply(seminar())
+        template_id = local_id("src-series", SOURCE, "UID-SEMINAR")
+        old_rid = "2026-10-12T10:00:00"
+        self.op("op-personal-room", "series.occurrence.update", template_id, {
+            "template_id": template_id, "original_recurrence_id": old_rid,
+            "location_text": "Моя аудитория",
+        })
+        self.apply(seminar(dtstart_local=datetime(2026, 9, 21, 11, 0), sequence=1))
+        occurrences = self.occurrences(template_id)
+        new_rid = "2026-10-12T11:00:00"
+        self.assertNotIn(old_rid, occurrences)
+        self.assertEqual((occurrences[new_rid]["location_text"], occurrences[new_rid]["changed_by"]),
+                         ("Моя аудитория", ["USER"]))
+        with self.repo() as repo:
+            override = SQLiteRecurrenceRepository(repo).get_override(ACCOUNT, template_id, new_rid)
+            self.assertIsNotNone(override)
+
+    def test_unchanged_newer_occurrence_version_blocks_late_change(self):
+        moved = SourceOccurrenceChange(
+            recurrence_local=datetime(2026, 10, 12, 10, 0),
+            starts_local=datetime(2026, 10, 13, 16, 0), sequence=3,
+        )
+        self.apply(seminar(sequence=3, changes=(moved,)))
+        self.apply(seminar(sequence=5, changes=(SourceOccurrenceChange(
+            recurrence_local=moved.recurrence_local, starts_local=moved.starts_local, sequence=5,
+        ),)))
+        late = self.apply(seminar(sequence=6, changes=(SourceOccurrenceChange(
+            recurrence_local=moved.recurrence_local,
+            starts_local=datetime(2026, 10, 14, 18, 0), sequence=4,
+        ),)))
+        template_id = local_id("src-series", SOURCE, "UID-SEMINAR")
+        self.assertEqual(late.stale, ["UID-SEMINAR#2026-10-12T10:00:00"])
+        self.assertEqual(self.occurrences(template_id)["2026-10-12T10:00:00"]["starts_at"],
+                         "2026-10-13T16:00:00+00:00")
+
+    def test_one_off_source_cancel_restore_and_personal_cancel_layers(self):
+        event = SourceEvent(
+            uid="UID-EXAM", title="Экзамен",
+            starts_at=datetime(2026, 10, 20, 9, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 10, 20, 11, 0, tzinfo=UTC), sequence=1,
+        )
+        event_id = local_id("src-event", SOURCE, event.uid)
+        self.apply(events=(event,))
+        cancelled = SourceEvent(**{**event.__dict__, "cancelled": True, "sequence": 2})
+        report = self.apply(events=(cancelled,))
+        self.assertEqual(report.updated, [event.uid])
+        with self.repo() as repo:
+            self.assertEqual(repo.get_event(ACCOUNT, event_id).obligation.lifecycle_status.value, "CANCELLED")
+        blocked = self.op("op-source-reopen", "event.reopen", event_id, {})
+        self.assertEqual((blocked["status"], blocked["code"]), ("CONFLICT", "SOURCE_EVENT_CANCELLED"))
+
+        active = SourceEvent(**{**event.__dict__, "sequence": 3})
+        restored = self.apply(events=(active,))
+        self.assertEqual(restored.restored, [event.uid])
+        with self.repo() as repo:
+            self.assertEqual(repo.get_event(ACCOUNT, event_id).obligation.lifecycle_status.value, "ACTIVE")
+
+        self.assertEqual(self.op("op-user-cancel", "event.cancel", event_id, {})["status"], "APPLIED")
+        # A source cancellation and later restoration must not erase the personal cancel.
+        self.apply(events=(SourceEvent(**{**event.__dict__, "cancelled": True, "sequence": 4}),))
+        self.apply(events=(SourceEvent(**{**event.__dict__, "sequence": 5}),))
+        with self.repo() as repo:
+            row = repo.connection.execute(
+                "SELECT source_cancelled,user_cancelled FROM external_identities WHERE account_id=? AND local_id=?",
+                (ACCOUNT, event_id),
+            ).fetchone()
+            self.assertEqual(tuple(row), (0, 1))
+            self.assertEqual(repo.get_event(ACCOUNT, event_id).obligation.lifecycle_status.value, "CANCELLED")
+        self.assertEqual(self.op("op-user-reopen", "event.reopen", event_id, {})["status"], "APPLIED")
+
+        denied = self.op("op-import-delete", "event.delete", event_id, {})
+        self.assertEqual((denied["status"], denied["code"]), ("CONFLICT", "IMPORTED_EVENT_SOURCE_OWNED"))
+
     def test_user_layer_survives_source_updates_and_source_cancel_survives_user_restore(self):
         self.apply(seminar())
         template_id = local_id("src-series", SOURCE, "UID-SEMINAR")
@@ -310,6 +384,23 @@ class V23MigrationTests(unittest.TestCase):
             reference = str(Path(tmp) / "ref.sqlite")
             self.build(reference, 22)
             self.assertEqual(self.shape(db), self.shape(reference))
+
+    def test_rollback_fails_closed_when_v23_source_state_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "v23-source.sqlite")
+            with SQLiteCanonicalRepository(db, clock=FrozenClock(NOW)) as repo:
+                repo.initialize()
+                repo.create_account(ACCOUNT)
+                SourceApplier(repo, account_id=ACCOUNT).apply(
+                    SourceSnapshot(source_system_id=SOURCE, series=(seminar(),)))
+            conn = sqlite3.connect(db)
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "rollback would discard"):
+                conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
+            self.assertTrue(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_identities'"
+            ).fetchone())
+            self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 23)
+            conn.close()
 
 
 if __name__ == "__main__":

@@ -37,16 +37,29 @@ from .repository import SQLiteRecurrenceRepository, recurrence_id
 
 
 def set_event_details(repo: SQLiteCanonicalRepository, account_id: str, event_id: str, *, now: datetime,
-                      location_text: str | None, teacher: str | None) -> None:
+                      location_text: str | None, teacher: str | None,
+                      actor: ActorCategory = ActorCategory.USER_UI) -> bool:
+    """Set one-off event details without producing churn on an identical refresh."""
+    existing = repo.connection.execute(
+        "SELECT location_text,teacher FROM event_details WHERE account_id=? AND event_id=?",
+        (account_id, event_id),
+    ).fetchone()
+    before = None if existing is None else (existing["location_text"], existing["teacher"])
+    after = None if location_text is None and teacher is None else (location_text, teacher)
+    if before == after:
+        return False
     if location_text is None and teacher is None:
         repo.connection.execute("DELETE FROM event_details WHERE account_id=? AND event_id=?", (account_id, event_id))
-        return
-    repo.connection.execute(
-        "INSERT INTO event_details(account_id,event_id,location_text,teacher,updated_at) VALUES (?,?,?,?,?) "
-        "ON CONFLICT(account_id,event_id) DO UPDATE SET location_text=excluded.location_text,"
-        "teacher=excluded.teacher,updated_at=excluded.updated_at",
-        (account_id, event_id, location_text, teacher, _iso(now)),
-    )
+    else:
+        repo.connection.execute(
+            "INSERT INTO event_details(account_id,event_id,location_text,teacher,updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(account_id,event_id) DO UPDATE SET location_text=excluded.location_text,"
+            "teacher=excluded.teacher,updated_at=excluded.updated_at",
+            (account_id, event_id, location_text, teacher, _iso(now)),
+        )
+    repo._record_change(repo.connection, account_id=account_id, entity_type="OBLIGATION", entity_id=event_id,
+                        action="UPDATE_EVENT_DETAILS", actor=actor)
+    return True
 
 
 @dataclass(frozen=True)
@@ -61,6 +74,7 @@ class SourceOccurrenceChange:
     location_text: str | None = None
     teacher: str | None = None
     sequence: int = 0
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -158,17 +172,19 @@ class SourceApplier:
         return False
 
     def _remember(self, source: str, uid: str, recurrence: str, *, kind: str, local: str, sequence: int,
-                  updated_at: datetime | None, template_id: str | None = None, original: str | None = None) -> None:
+                  updated_at: datetime | None, template_id: str | None = None, original: str | None = None,
+                  source_cancelled: bool = False) -> None:
         now = _iso(self.now)
         self.repo.connection.execute(
             "INSERT INTO external_identities(account_id,source_system_id,external_uid,external_recurrence_id,local_kind,local_id,"
-            "template_id,original_recurrence_id,source_sequence,source_updated_at,state,first_seen_at,last_seen_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,'ACTIVE',?,?) "
+            "template_id,original_recurrence_id,source_sequence,source_updated_at,state,source_cancelled,user_cancelled,"
+            "first_seen_at,last_seen_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,'ACTIVE',?,0,?,?) "
             "ON CONFLICT(account_id,source_system_id,external_uid,external_recurrence_id) DO UPDATE SET "
             "source_sequence=excluded.source_sequence,source_updated_at=excluded.source_updated_at,state='ACTIVE',"
-            "last_seen_at=excluded.last_seen_at",
+            "source_cancelled=excluded.source_cancelled,last_seen_at=excluded.last_seen_at",
             (self.account_id, source, uid, recurrence, kind, local, template_id, original, sequence,
-             None if updated_at is None else _iso(updated_at), now, now),
+             None if updated_at is None else _iso(updated_at), int(source_cancelled), now, now),
         )
 
     def _touch(self, source: str, uid: str, recurrence: str = "") -> None:
@@ -204,7 +220,8 @@ class SourceApplier:
         fields = {
             "title": item.title.strip(), "description": item.description, "category": item.category,
             "dtstart_local": item.dtstart_local, "duration_minutes": item.duration_minutes,
-            "recurrence_rule": item.recurrence_rule, "location_text": item.location_text, "teacher": item.teacher,
+            "recurrence_rule": item.recurrence_rule, "timezone_name": item.timezone_name,
+            "location_text": item.location_text, "teacher": item.teacher,
         }
         if row is None:
             template_id = local_id("src-series", source, item.uid)
@@ -221,6 +238,11 @@ class SourceApplier:
             before = self.recurrence.get_template(self.account_id, template_id)
             template = self.recurrence.update_template(account_id=self.account_id, template_id=template_id,
                                                        fields=fields, actor=self.actor)
+            if template.dtstart_local != before.dtstart_local:
+                self.recurrence.remap_user_overrides_for_source_shift(
+                    account_id=self.account_id, template_id=template_id,
+                    previous_template=before, actor=self.actor,
+                )
             if row["state"] == "REMOVED":
                 self._reopen_series(template_id)
                 report.restored.append(item.uid)
@@ -237,7 +259,8 @@ class SourceApplier:
         template = self.recurrence.get_template(self.account_id, template_id)
         desired: dict[str, SourceOccurrenceChange] = {}
         for exdate in item.exdates_local:
-            desired[recurrence_id(exdate)] = SourceOccurrenceChange(recurrence_local=exdate, cancelled=True)
+            desired[recurrence_id(exdate)] = SourceOccurrenceChange(
+                recurrence_local=exdate, cancelled=True, sequence=item.sequence, updated_at=item.updated_at)
         for change in item.changes:
             desired[recurrence_id(change.recurrence_local)] = change
         current = {o.original_recurrence_id: o for o in self.recurrence.list_overrides(self.account_id, template_id)
@@ -247,13 +270,16 @@ class SourceApplier:
             if rid not in desired:
                 self.recurrence.remove_override(account_id=self.account_id, template_id=template_id,
                                                 original_recurrence_id=rid, actor=self.actor, layer=OverrideLayer.SOURCE)
+                self._remember(source, item.uid, rid, kind="OCCURRENCE", local=f"rec:{template_id}:{rid}",
+                               sequence=item.sequence, updated_at=item.updated_at,
+                               template_id=template_id, original=rid)
                 changed += 1
         for rid, change in desired.items():
             if not self.recurrence._series_contains_original(template, change.recurrence_local):
                 report.ignored_changes.append(f"{item.uid}#{rid}")
                 continue
             instance = self._identity(source, item.uid, rid)
-            if self._is_stale(instance, change.sequence, None):
+            if self._is_stale(instance, change.sequence, change.updated_at):
                 report.stale.append(f"{item.uid}#{rid}")
                 continue
             wanted = self._override_fields(template, change)
@@ -263,14 +289,21 @@ class SourceApplier:
                     self.recurrence.remove_override(account_id=self.account_id, template_id=template_id,
                                                     original_recurrence_id=rid, actor=self.actor, layer=OverrideLayer.SOURCE)
                     changed += 1
+                self._remember(source, item.uid, rid, kind="OCCURRENCE", local=f"rec:{template_id}:{rid}",
+                               sequence=change.sequence, updated_at=change.updated_at,
+                               template_id=template_id, original=rid)
                 continue
             if existing is not None and self._same(existing, wanted):
+                self._remember(source, item.uid, rid, kind="OCCURRENCE", local=f"rec:{template_id}:{rid}",
+                               sequence=change.sequence, updated_at=change.updated_at,
+                               template_id=template_id, original=rid)
                 continue
             self.recurrence.set_override(
                 account_id=self.account_id, template_id=template_id, original_recurrence_id=rid,
                 layer=OverrideLayer.SOURCE, reason=OverrideReason.SOURCE, actor=self.actor, **wanted)
             self._remember(source, item.uid, rid, kind="OCCURRENCE", local=f"rec:{template_id}:{rid}",
-                           sequence=change.sequence, updated_at=None, template_id=template_id, original=rid)
+                           sequence=change.sequence, updated_at=change.updated_at,
+                           template_id=template_id, original=rid)
             changed += 1
         return changed
 
@@ -339,23 +372,36 @@ class SourceApplier:
             current = self.repo.get_event(self.account_id, event_id)
             status = current.obligation.lifecycle_status
             differs = (current.interval.starts_at != item.starts_at or current.interval.ends_at != item.ends_at
-                       or current.obligation.title != item.title.strip() or current.obligation.description != item.description)
+                       or current.obligation.title != item.title.strip() or current.obligation.description != item.description
+                       or current.obligation.category != item.category)
             if differs:
                 self.repo.update_fixed_event(
                     account_id=self.account_id, obligation_id=event_id, expected_version=current.obligation.version,
                     starts_at=item.starts_at, ends_at=item.ends_at, title=item.title.strip(),
-                    description=item.description, actor=self.actor)
-            reopened = False
-            if status is LifecycleStatus.CANCELLED and not item.cancelled and row["state"] == "REMOVED":
+                    description=item.description, category=item.category, actor=self.actor)
+            source_was_cancelled = bool(row["source_cancelled"])
+            source_restored = row["state"] == "REMOVED" or source_was_cancelled
+            reopened = (status is LifecycleStatus.CANCELLED and not item.cancelled and source_restored
+                        and not bool(row["user_cancelled"]))
+            if reopened:
                 self._transition(event_id, "REOPEN")
-                reopened = True
-            (report.restored if reopened else report.updated if differs else report.unchanged).append(item.uid)
-        set_event_details(self.repo, self.account_id, event_id, now=self.now,
-                          location_text=item.location_text, teacher=item.teacher)
+        details_changed = set_event_details(
+            self.repo, self.account_id, event_id, now=self.now,
+            location_text=item.location_text, teacher=item.teacher, actor=self.actor,
+        )
+        lifecycle_changed = False
         if item.cancelled and self.repo.get_event(self.account_id, event_id).obligation.lifecycle_status is not LifecycleStatus.CANCELLED:
             self._transition(event_id, "CANCEL")
+            lifecycle_changed = True
+        if row is not None:
+            if row["state"] == "REMOVED" or (bool(row["source_cancelled"]) and not item.cancelled):
+                report.restored.append(item.uid)
+            elif differs or details_changed or lifecycle_changed or bool(row["source_cancelled"]) != item.cancelled:
+                report.updated.append(item.uid)
+            else:
+                report.unchanged.append(item.uid)
         self._remember(source, item.uid, "", kind="EVENT", local=event_id, sequence=item.sequence,
-                       updated_at=item.updated_at, template_id=template_id)
+                       updated_at=item.updated_at, template_id=template_id, source_cancelled=item.cancelled)
 
     def _transition(self, event_id: str, action: str) -> None:
         current = self.repo.get_event(self.account_id, event_id)
@@ -382,6 +428,7 @@ class SourceApplier:
                 if event.interval.starts_at > self.now and event.obligation.lifecycle_status is not LifecycleStatus.CANCELLED:
                     self._transition(event.obligation.id, "CANCEL")
             self.repo.connection.execute(
-                "UPDATE external_identities SET state='REMOVED',last_seen_at=? WHERE account_id=? AND source_system_id=? "
+                "UPDATE external_identities SET state='REMOVED',source_cancelled=CASE WHEN local_kind='EVENT' THEN 1 "
+                "ELSE source_cancelled END,last_seen_at=? WHERE account_id=? AND source_system_id=? "
                 "AND external_uid=? AND external_recurrence_id=''", (_iso(self.now), self.account_id, source, row["external_uid"]))
             report.removed.append(row["external_uid"])

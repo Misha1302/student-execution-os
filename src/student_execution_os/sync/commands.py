@@ -1367,10 +1367,37 @@ class Commands:
     _EVENT_EDITABLE = {"title", "description", "category", "importance", "starts_at", "ends_at",
                        "attendance_policy", "remind_before_minutes"}
 
+    def _imported_event_identity(self, event_id: str):
+        return self.repo.connection.execute(
+            "SELECT * FROM external_identities WHERE account_id=? AND local_kind='EVENT' AND local_id=? "
+            "AND external_recurrence_id=''",
+            (self.account_id, event_id),
+        ).fetchone()
+
+    def _set_imported_event_user_cancelled(self, row, cancelled: bool) -> bool:
+        if row is None or bool(row["user_cancelled"]) == cancelled:
+            return False
+        self.repo.connection.execute(
+            "UPDATE external_identities SET user_cancelled=?,last_seen_at=? WHERE account_id=? "
+            "AND source_system_id=? AND external_uid=? AND external_recurrence_id=''",
+            (int(cancelled), _iso(self.now), self.account_id, row["source_system_id"], row["external_uid"]),
+        )
+        self.repo._record_change(
+            self.repo.connection, account_id=self.account_id, entity_type="OBLIGATION", entity_id=row["local_id"],
+            action="SET_IMPORTED_EVENT_USER_CANCELLED", actor=self.actor,
+            payload={"cancelled": cancelled},
+        )
+        return True
+
     def event_update(self, event_id: str, payload: dict[str, Any]) -> Outcome:
         unknown = set(payload) - self._EVENT_EDITABLE
         if unknown:
             raise ValidationError("fields cannot be edited: " + ", ".join(sorted(unknown)))
+        if self._imported_event_identity(event_id) is not None and set(payload) - {"remind_before_minutes"}:
+            return self._event_out(
+                event_id, CONFLICT, "IMPORTED_EVENT_SOURCE_OWNED",
+                "source-owned event fields change on schedule refresh; use a personal reminder",
+            )
         current = self.repo.get_event(self.account_id, event_id)
         fields: dict[str, Any] = {}
         if "title" in payload:
@@ -1401,18 +1428,28 @@ class Commands:
         return self._event_out(event_id)
 
     def event_cancel(self, event_id: str, payload: dict[str, Any]) -> Outcome:
+        identity = self._imported_event_identity(event_id)
         status = self.repo.get_event(self.account_id, event_id).obligation.lifecycle_status
         if status is LifecycleStatus.CANCELLED:
-            return self._event_out(event_id, NOOP, "ALREADY_CANCELLED")
+            marked = self._set_imported_event_user_cancelled(identity, True)
+            return self._event_out(event_id, APPLIED if marked else NOOP, None if marked else "ALREADY_CANCELLED")
         if status not in OPEN:
             return self._event_out(event_id, CONFLICT, "EVENT_CLOSED")
+        self._set_imported_event_user_cancelled(identity, True)
         self._transition(event_id, "cancel")
         return self._event_out(event_id)
 
     def event_reopen(self, event_id: str, payload: dict[str, Any]) -> Outcome:
+        identity = self._imported_event_identity(event_id)
+        if identity is not None and (bool(identity["source_cancelled"]) or identity["state"] == "REMOVED"):
+            return self._event_out(
+                event_id, CONFLICT, "SOURCE_EVENT_CANCELLED",
+                "the academic source still marks this event cancelled or removed",
+            )
+        unmarked = self._set_imported_event_user_cancelled(identity, False)
         status = self.repo.get_event(self.account_id, event_id).obligation.lifecycle_status
         if status in OPEN:
-            return self._event_out(event_id, NOOP, "ALREADY_OPEN")
+            return self._event_out(event_id, APPLIED if unmarked else NOOP, None if unmarked else "ALREADY_OPEN")
         self._transition(event_id, "reopen")
         lead = extras.event_lead(self.repo, self.account_id, event_id)
         if lead is not None:
@@ -1420,6 +1457,11 @@ class Commands:
         return self._event_out(event_id)
 
     def event_delete(self, event_id: str, payload: dict[str, Any]) -> Outcome:
+        if self._imported_event_identity(event_id) is not None:
+            return self._event_out(
+                event_id, CONFLICT, "IMPORTED_EVENT_SOURCE_OWNED",
+                "disconnect or refresh the academic source instead of deleting its event",
+            )
         current = self.repo.get_event(self.account_id, event_id)
         self.repo.delete_obligation(account_id=self.account_id, obligation_id=event_id,
                                     expected_version=current.obligation.version, actor=self.actor)
@@ -1836,7 +1878,7 @@ class Commands:
             (self.account_id, event_id, template.id, _iso(self.now)))
         set_event_details(self.repo, self.account_id, event_id, now=self.now,
                           location_text=_short_text(payload.get("location_text"), "location_text"),
-                          teacher=_short_text(payload.get("teacher"), "teacher"))
+                          teacher=_short_text(payload.get("teacher"), "teacher"), actor=self.actor)
         return outcome
 
     def _holiday_targets(self, payload: dict[str, Any]):

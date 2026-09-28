@@ -366,7 +366,7 @@ class SQLiteRecurrenceRepository:
         return self.get_override(account_id, template_id, original_recurrence_id, layer)  # type: ignore[return-value]
 
     _UPDATABLE = {"title", "description", "category", "importance", "dtstart_local", "duration_minutes",
-                  "recurrence_rule", "attendance_policy", "location_text", "teacher"}
+                  "recurrence_rule", "timezone_name", "attendance_policy", "location_text", "teacher"}
 
     def update_template(
         self, *, account_id: str, template_id: str, fields: dict, actor: ActorCategory,
@@ -384,7 +384,8 @@ class SQLiteRecurrenceRepository:
             "title": current.title, "description": current.description, "category": current.category.value,
             "importance": current.importance.value, "dtstart_local": _local_iso(current.dtstart_local),
             "duration_minutes": current.duration_minutes, "recurrence_rule": current.recurrence_rule.canonical(),
-            "attendance_policy": current.attendance_policy.value, "location_text": current.location_text,
+            "timezone_name": current.timezone_name, "attendance_policy": current.attendance_policy.value,
+            "location_text": current.location_text,
             "teacher": current.teacher,
         }
         values = dict(before)
@@ -403,7 +404,7 @@ class SQLiteRecurrenceRepository:
         if int(values["duration_minutes"]) <= 0:
             raise ValidationError("recurring duration must be positive")
         ObligationCategory(values["category"]); Importance(values["importance"]); AttendancePolicy(values["attendance_policy"])
-        _resolve_local(datetime.fromisoformat(values["dtstart_local"]), current.timezone_name, current.resolution_policy)
+        _resolve_local(datetime.fromisoformat(values["dtstart_local"]), str(values["timezone_name"]), current.resolution_policy)
         changed = {key for key in fields if values[key] != before[key]}
         if not changed:
             return current
@@ -411,11 +412,12 @@ class SQLiteRecurrenceRepository:
         with self.canonical._tx() as conn:
             cur = conn.execute(
                 "UPDATE recurring_templates SET title=?,description=?,category=?,importance=?,dtstart_local=?,duration_minutes=?,"
-                "recurrence_rule=?,attendance_policy=?,location_text=?,teacher=?,version=version+1,updated_at=? "
+                "recurrence_rule=?,timezone_name=?,attendance_policy=?,location_text=?,teacher=?,version=version+1,updated_at=? "
                 "WHERE account_id=? AND id=? AND version=?",
                 (values["title"], values["description"], values["category"], values["importance"], values["dtstart_local"],
-                 int(values["duration_minutes"]), values["recurrence_rule"], values["attendance_policy"], values["location_text"],
-                 values["teacher"], _iso(now), account_id, template_id, current.version),
+                 int(values["duration_minutes"]), values["recurrence_rule"], values["timezone_name"],
+                 values["attendance_policy"], values["location_text"], values["teacher"], _iso(now),
+                 account_id, template_id, current.version),
             )
             if cur.rowcount != 1:
                 raise VersionConflict("recurring template version changed before commit")
@@ -424,6 +426,72 @@ class SQLiteRecurrenceRepository:
                 action="UPDATE_RECURRING_TEMPLATE", actor=actor, payload={"fields": sorted(changed)},
             )
         return self.get_template(account_id, template_id)
+
+    def remap_user_overrides_for_source_shift(
+        self, *, account_id: str, template_id: str, previous_template: RecurringTemplate,
+        actor: ActorCategory,
+    ) -> int:
+        """Keep personal occurrence intent attached to the same ordinal class when an
+        imported master shifts its civil DTSTART.
+
+        The cadence must remain the same. A frequency/interval rewrite with personal
+        overrides is ambiguous, so source apply fails transactionally instead of silently
+        detaching those overrides. COUNT/UNTIL changes are safe: an override can remain
+        dormant while the source omits that class and becomes effective if it returns.
+        """
+        current = self.get_template(account_id, template_id)
+        delta = current.dtstart_local - previous_template.dtstart_local
+        if delta == timedelta(0):
+            return 0
+        rows = self.connection.execute(
+            "SELECT id,original_recurrence_id FROM occurrence_overrides "
+            "WHERE account_id=? AND template_id=? AND layer='USER' ORDER BY original_recurrence_id",
+            (account_id, template_id),
+        ).fetchall()
+        if not rows:
+            return 0
+        old_rule = previous_template.recurrence_rule
+        new_rule = current.recurrence_rule
+        if (old_rule.frequency, old_rule.interval) != (new_rule.frequency, new_rule.interval):
+            raise ValidationError(
+                "source recurrence cadence changed while personal occurrence overrides exist"
+            )
+        mapping = {
+            row["id"]: recurrence_id(datetime.fromisoformat(row["original_recurrence_id"]) + delta)
+            for row in rows
+        }
+        if len(set(mapping.values())) != len(mapping):
+            raise ValidationError("source DTSTART shift would merge personal occurrence overrides")
+        existing_targets = {
+            row["original_recurrence_id"]
+            for row in self.connection.execute(
+                "SELECT original_recurrence_id FROM occurrence_overrides "
+                "WHERE account_id=? AND template_id=? AND layer='USER'",
+                (account_id, template_id),
+            ).fetchall()
+        }
+        old_targets = {row["original_recurrence_id"] for row in rows}
+        if (set(mapping.values()) - old_targets) & existing_targets:
+            raise ValidationError("source DTSTART shift conflicts with a personal occurrence override")
+        now = self.clock.now()
+        # Two phases avoid UNIQUE collisions when every weekly identity shifts onto the
+        # next one's former key.
+        for row in rows:
+            self.connection.execute(
+                "UPDATE occurrence_overrides SET original_recurrence_id=? WHERE id=?",
+                (f"__source_shift__:{row['id']}", row["id"]),
+            )
+        for row in rows:
+            self.connection.execute(
+                "UPDATE occurrence_overrides SET original_recurrence_id=?,version=version+1,updated_at=? WHERE id=?",
+                (mapping[row["id"]], _iso(now), row["id"]),
+            )
+            self.canonical._record_change(
+                self.connection, account_id=account_id, entity_type="OCCURRENCE_OVERRIDE", entity_id=row["id"],
+                action="REMAP_OCCURRENCE_OVERRIDE", actor=actor,
+                payload={"template_id": template_id, "original_recurrence_id": mapping[row["id"]]},
+            )
+        return len(rows)
 
     def end_series(self, *, account_id: str, template_id: str, before_local: datetime, actor: ActorCategory) -> RecurringTemplate:
         """No occurrences from `before_local` on; earlier ones (history) stay."""

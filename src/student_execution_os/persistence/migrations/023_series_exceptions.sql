@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS series_extra_events (
     template_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY(account_id, event_id),
+    FOREIGN KEY(account_id, event_id) REFERENCES obligations(account_id, id) ON DELETE CASCADE,
     FOREIGN KEY(account_id, template_id) REFERENCES recurring_templates(account_id, id) ON DELETE CASCADE
 );
 
@@ -64,7 +65,8 @@ CREATE TABLE IF NOT EXISTS event_details (
     location_text TEXT,
     teacher TEXT,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY(account_id, event_id)
+    PRIMARY KEY(account_id, event_id),
+    FOREIGN KEY(account_id, event_id) REFERENCES obligations(account_id, id) ON DELETE CASCADE
 );
 
 -- Stable external identity: (source, UID, RECURRENCE-ID) -> local entity. The master of a
@@ -82,6 +84,10 @@ CREATE TABLE IF NOT EXISTS external_identities (
     source_sequence INTEGER NOT NULL DEFAULT 0,
     source_updated_at TEXT,
     state TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (state IN ('ACTIVE','REMOVED')),
+    -- One-off imported events need the same source/user cancellation separation as
+    -- recurring occurrences. These flags are unused for SERIES/OCCURRENCE rows.
+    source_cancelled INTEGER NOT NULL DEFAULT 0 CHECK (source_cancelled IN (0,1)),
+    user_cancelled INTEGER NOT NULL DEFAULT 0 CHECK (user_cancelled IN (0,1)),
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     PRIMARY KEY(account_id, source_system_id, external_uid, external_recurrence_id)

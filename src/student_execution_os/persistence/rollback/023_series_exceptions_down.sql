@@ -1,7 +1,24 @@
--- Roll schema v23 back to v22 (ADR 0027). Run ONLY after checking the preconditions in
--- the ADR: no SOURCE-layer overrides, no detail-only overrides, no imported series, no extra
--- classes and no external identities — otherwise export that data first. This script
--- keeps every USER override that the v22 shape can represent and nothing else.
+-- Roll schema v23 back to v22 (ADR 0027). Fail before changing persistent schema when
+-- v23 contains state that v22 cannot represent. Export/remove that state explicitly first.
+CREATE TEMP TABLE _v23_rollback_guard(value INTEGER);
+CREATE TEMP TRIGGER _v23_rollback_guard_check
+BEFORE INSERT ON _v23_rollback_guard
+WHEN EXISTS (SELECT 1 FROM occurrence_overrides WHERE layer='SOURCE'
+             OR replacement_title IS NOT NULL OR location_text IS NOT NULL
+             OR teacher IS NOT NULL OR note IS NOT NULL
+             OR (action='MODIFY' AND replacement_start_local IS NULL))
+  OR EXISTS (SELECT 1 FROM recurring_templates WHERE source_system_id IS NOT NULL)
+  OR EXISTS (SELECT 1 FROM series_extra_events)
+  OR EXISTS (SELECT 1 FROM event_details)
+  OR EXISTS (SELECT 1 FROM external_identities)
+BEGIN
+  SELECT RAISE(ABORT, 'v23 rollback would discard source/import/detail state; export or remove it first');
+END;
+INSERT INTO _v23_rollback_guard VALUES (1);
+DROP TRIGGER _v23_rollback_guard_check;
+DROP TABLE _v23_rollback_guard;
+
+-- Every remaining override has a lossless v22 representation.
 DROP TABLE IF EXISTS external_identities;
 DROP TABLE IF EXISTS series_extra_events;
 DROP TABLE IF EXISTS event_details;
