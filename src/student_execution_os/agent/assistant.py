@@ -470,6 +470,8 @@ class SQLiteAssistantService:
                 "engine": "LOCAL" if local or fallback else "AI",
                 "model": None if local or fallback else getattr(self.provider, "model", None),
                 "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
+                # A rate-limited provider's Retry-After, so a client can say when to retry.
+                "retry_after_seconds": getattr(self.provider_failure, "retry_after", None),
                 "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import socket
 import unittest
@@ -16,6 +17,7 @@ from student_execution_os.agent.providers import (
     platform_provider_from_environment,
 )
 from student_execution_os.domain.errors import ValidationError
+from student_execution_os.netguard import PinnedTransport
 
 
 def _addr(ip: str):
@@ -116,18 +118,27 @@ class AssistantProviderTests(unittest.TestCase):
     @patch("student_execution_os.agent.providers.httpx.Client")
     @patch("student_execution_os.agent.providers.httpx.post")
     def test_llm_egress_proxy_does_not_proxy_unlisted_user_hosts(self, direct_post, client_type):
-        direct_post.return_value = self.response({"choices": [{"message": {"content":
+        client = client_type.return_value.__enter__.return_value
+        client.post.return_value = self.response({"choices": [{"message": {"content":
             '{"message":"Preview","actions":[{"command":"CREATE_TASK","payload":{"title":"Essay"},"confidence":0.9,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}'}}]})
         with patch.dict(os.environ, {
             "SEOS_LLM_EGRESS_PROXY": "http://egress.example:3128",
             "SEOS_LLM_EGRESS_PROXY_HOSTS": "api.groq.com",
-        }, clear=True), patch("student_execution_os.agent.providers.assert_public_base_url"):
+        }, clear=True), patch("student_execution_os.agent.providers.socket.getaddrinfo",
+                              return_value=_addr("93.184.216.34")):
             provider = build_provider("openai-compatible", api_key="k" * 20, model="m",
                                       base_url="https://llm.example/v1", user_supplied=True)
             provider.interpret("Essay", {})
 
-        client_type.assert_not_called()
-        direct_post.assert_called_once()
+        # Not proxied: a direct connection pinned to the validated address.
+        direct_post.assert_not_called()
+        client_type.assert_called_once()
+        kwargs = client_type.call_args.kwargs
+        self.assertNotIn("proxy", kwargs)
+        self.assertFalse(kwargs["trust_env"])
+        self.assertIsInstance(kwargs["transport"], PinnedTransport)
+        self.assertEqual(kwargs["transport"]._pool._network_backend.addresses,
+                         (ipaddress.ip_address("93.184.216.34"),))
 
     @patch("student_execution_os.agent.providers.httpx.post")
     def test_llm_egress_proxy_requires_an_allowlist(self, direct_post):

@@ -179,3 +179,69 @@ test("the source never logs and has no generic target parsing", () => {
   assert.match(config, /"observability": \{ "enabled": false \}/);
   assert.doesNotMatch(config, /RELAY_TOKEN"\s*:|"vars"/);
 });
+
+test("path confusion cannot reach another route or host", async () => {
+  for (const path of [
+    "/openai/v1/chat%2Fcompletions", "/openai/v1/chat/completions%00", "//openai/v1/chat/completions",
+    "/openai/v1/./chat/completions/..", "/openai/v1/chat/completions;x=1", "/@evil.example/openai/v1/chat/completions",
+    "/openai/v1/chat/completions/../../../v1/models", "/openai/v1/chat/completions%2F..%2Fmodels",
+  ]) {
+    const response = await worker.fetch(relayRequest({ path }), ENV);
+    const url = new URL(BASE + path);
+    if (url.pathname === RELAY_PATH && url.search === "") {
+      // URL normalisation resolved it to the one route; it can still only reach UPSTREAM.
+      assert.equal(response.status, 200, path);
+    } else {
+      assert.equal(response.status, 404, path);
+      assert.equal(response.headers.get("X-SEOS-Relay-Error"), "not_found");
+    }
+  }
+  assert.ok(calls.every((call) => call.url === UPSTREAM));
+});
+
+test("a streamed body without Content-Length is still bounded", async () => {
+  const chunk = new Uint8Array(256 * 1024);
+  let sent = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (sent > MAX_BODY_BYTES * 2) return controller.close();
+      sent += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+  });
+  const request = new Request(BASE + RELAY_PATH, {
+    method: "POST", body, duplex: "half",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer gsk-test", "X-SEOS-Relay-Token": TOKEN },
+  });
+  assert.equal(request.headers.get("Content-Length"), null);
+  const response = await worker.fetch(request, ENV);
+  assert.equal(response.status, 413);
+  assert.equal(calls.length, 0);
+  assert.ok(sent <= MAX_BODY_BYTES + 2 * chunk.byteLength, "stopped reading soon after the limit");
+});
+
+test("only allow-listed upstream response headers are returned", async () => {
+  upstreamAnswers(429, '{"error":{"code":"rate_limit_exceeded"}}', {
+    "Retry-After": "7", "x-request-id": "req_1", "Set-Cookie": "__cf=secret", Location: "https://evil.example",
+    "Access-Control-Allow-Origin": "*", "x-ratelimit-remaining-tokens": "0", Server: "cloudflare",
+  });
+  const response = await worker.fetch(relayRequest(), ENV);
+  assert.equal(response.status, 429);
+  assert.equal(response.headers.get("Retry-After"), "7");
+  assert.equal(response.headers.get("x-request-id"), "req_1");
+  for (const name of ["Set-Cookie", "Location", "Access-Control-Allow-Origin", "x-ratelimit-remaining-tokens", "Server"]) {
+    assert.equal(response.headers.get(name), null, name);
+  }
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(response.headers.get("X-SEOS-Relay-Error"), null);
+});
+
+test("a relay token of the wrong length or case is refused before Groq", async () => {
+  for (const token of ["", TOKEN.slice(1), TOKEN + "t", TOKEN.toUpperCase(), "x".repeat(64)]) {
+    const response = await worker.fetch(relayRequest({ headers: { "X-SEOS-Relay-Token": token } }), ENV);
+    assert.equal(response.status, 401, JSON.stringify(token.length));
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "unauthorized");
+    assert.equal(await response.text(), '{"error":{"type":"seos_relay_error","code":"unauthorized"}}');
+  }
+  assert.equal(calls.length, 0);
+});

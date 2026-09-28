@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from student_execution_os.agent import providers
 from student_execution_os.agent.providers import ProviderUnavailable, build_provider
+from student_execution_os.netguard import PinnedTransport
 
 RELAY = "https://seos-groq-relay.example.workers.dev"
 RELAY_TOKEN = "relay-secret-" + "r" * 40
@@ -79,14 +80,24 @@ class LlmEgressRelayTests(unittest.TestCase):
             (provider or self.groq()).check()
         return caught.exception
 
+    def assert_direct_pinned(self, url: str) -> None:
+        """A user-supplied address goes direct, pinned to its validated DNS answer."""
+        self.direct_post.assert_not_called()
+        self.client_type.assert_called_once()
+        kwargs = self.client_type.call_args.kwargs
+        self.assertNotIn("proxy", kwargs)
+        self.assertFalse(kwargs["trust_env"])
+        self.assertFalse(kwargs["follow_redirects"])
+        self.assertIsInstance(kwargs["transport"], PinnedTransport)
+        self.assertEqual(self.relay_post.call_args.args[0], url)
+        self.assertNotIn("X-SEOS-Relay-Token", self.relay_post.call_args.kwargs["headers"])
+
     # -- routing --------------------------------------------------------------
 
     def test_no_relay_configuration_goes_direct(self):
         with patch.dict(os.environ, {}, clear=True):
             self.groq().interpret("Essay", {})
-        self.direct_post.assert_called_once()
-        self.assertEqual(self.direct_post.call_args.args[0], GROQ + "/chat/completions")
-        self.client_type.assert_not_called()
+        self.assert_direct_pinned(GROQ + "/chat/completions")
 
     def test_exact_groq_host_is_sent_to_the_relay_with_both_credentials(self):
         with self.env():
@@ -118,9 +129,7 @@ class LlmEgressRelayTests(unittest.TestCase):
             self.client_type.reset_mock()
             with self.env():
                 self.groq(base).check()
-            self.client_type.assert_not_called()
-            self.direct_post.assert_called_once()
-            self.assertNotIn("X-SEOS-Relay-Token", self.direct_post.call_args.kwargs["headers"], base)
+            self.assert_direct_pinned(base + "/chat/completions")
 
     def test_ssrf_check_on_the_user_address_still_runs_before_any_transport(self):
         self.getaddrinfo.return_value = _addr("127.0.0.1")
@@ -232,7 +241,7 @@ class LlmEgressRelayTests(unittest.TestCase):
             self.assertEqual((failure.reason, failure.http_status), (reason, status), body)
 
     def test_relay_error_header_is_ignored_on_direct_requests(self):
-        self.direct_post.return_value = _response({"error": {"message": "Invalid API Key"}}, 401,
+        self.relay_post.return_value = _response({"error": {"message": "Invalid API Key"}}, 401,
                                                   {"X-SEOS-Relay-Error": "unauthorized"})
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(self.failure().reason, "AUTH")
