@@ -12,19 +12,34 @@ yes | "$SDKMANAGER" --licenses >/dev/null || true
 "$SDKMANAGER" --install "platform-tools" "emulator" "$IMAGE" >/dev/null
 echo no | "$AVDMANAGER" create avd --force --name seos-ci --package "$IMAGE" --device pixel_6 >/dev/null
 
+LOG="${RUNNER_TEMP:-/tmp}/emulator.log"
+fail() {
+  echo "::error::$1"
+  echo "--- emulator.log (tail) ---"; tail -80 "$LOG" 2>/dev/null || true
+  exit 1
+}
+echo "kvm: $(ls -l /dev/kvm 2>&1)"
+"$ANDROID_HOME/emulator/emulator" -accel-check || true
+
 nohup "$ANDROID_HOME/emulator/emulator" -avd seos-ci -no-window -no-audio -no-boot-anim -no-snapshot \
-  -gpu swiftshader_indirect -camera-back none -memory 3072 -netdelay none -netspeed full \
-  > "${RUNNER_TEMP:-/tmp}/emulator.log" 2>&1 &
+  -no-metrics -gpu swiftshader_indirect -camera-back none -memory 3072 -netdelay none -netspeed full \
+  > "$LOG" 2>&1 &
+EMU_PID=$!
 
 ADB="$ANDROID_HOME/platform-tools/adb"
-"$ADB" wait-for-device
-for _ in $(seq 1 240); do
-  if [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+"$ADB" start-server >/dev/null
+# Every wait is bounded and watches the emulator process, so a crash fails the
+# step at once with the emulator's own log instead of hanging until the job limit.
+booted=""
+for _ in $(seq 1 180); do
+  kill -0 "$EMU_PID" 2>/dev/null || fail "emulator process exited before boot"
+  if [ "$(timeout 10 "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+    booted=1
     break
   fi
-  sleep 2
+  sleep 3
 done
-test "$("$ADB" shell getprop sys.boot_completed | tr -d '\r')" = "1" || { tail -50 "${RUNNER_TEMP:-/tmp}/emulator.log"; exit 1; }
+[ -n "$booted" ] || fail "emulator did not finish booting within 9 minutes"
 # Deterministic UI tests: no animations, stay awake.
 "$ADB" shell settings put global window_animation_scale 0
 "$ADB" shell settings put global transition_animation_scale 0

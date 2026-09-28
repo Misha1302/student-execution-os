@@ -123,6 +123,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Start emulator
+        timeout-minutes: 15
         run: mobile/scripts/ci_emulator.sh
       - name: Notification buttons end to end against a real server
         run: python mobile/scripts/native_e2e.py
@@ -134,12 +135,12 @@ jobs:
       - name: Install, offline start, upgrade, downgrade refusal, foreign-key refusal
         run: python mobile/scripts/install_upgrade_check.py "$RUNNER_TEMP/old.apk" "$RUNNER_TEMP/new.apk" "$RUNNER_TEMP/foreign.apk"
       - name: Diagnostics on failure
-        if: failure()
+        if: failure() || cancelled()
         run: |
           "$ANDROID_HOME/platform-tools/adb" logcat -d > "$RUNNER_TEMP/logcat.txt" || true
           cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/emulator-copy.log" 2>/dev/null || true
       - name: Upload diagnostics
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: device-diagnostics
