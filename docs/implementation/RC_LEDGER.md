@@ -21,9 +21,9 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 - **REMAINING RISK:** production has not applied v22 yet (deploy is a separate step).
 - **NEXT STEP:** deploy with the standard pre-deploy backup.
 
-## R2 — Capture kind, Task Detail layout, DurationPicker, Today "Soon"
+## R2 — Capture kind, Task Detail layout, DurationPicker, Today "Soon" (PR #30)
 
-- **STATUS:** DONE on `feature/r2-today-notes-duration`, PR open.
+- **STATUS:** DONE, merged to main (`d85ff2f`).
 - **OBSERVED PROBLEMS:**
   - Task Detail scrolled sideways at 320px in RU (scrollWidth 324): the `1fr 1fr` action
     grid has a min-content floor. The sweep of every route found the same problem in the
@@ -113,6 +113,19 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
     `client_operations`.
   - Migration tests v14/v22 chain the v23 rollback.
   - Full suites: unit 400 OK, API OK, browser 33 OK, `make static` OK, `make smoke` OK.
+- **INDEPENDENT HANDOFF REVIEW / FIX:** the PR was not merged on green CI alone. A
+  production-shaped reproducer found that a source-cancelled one-off event did not reopen
+  when the source restored it. Review also found that a source-wide DTSTART shift detached
+  USER overrides and that the documented rollback preconditions were not enforced.
+  The follow-up keeps source/user cancellation intent separately for imported one-offs,
+  remaps USER identities on an unambiguous civil DTSTART shift, advances occurrence
+  sequence metadata even when content is unchanged, applies source timezone changes,
+  makes event-detail refresh idempotent, adds child FKs, and makes v23 rollback fail closed.
+  Follow-up commit: `51fd474`.
+- **HANDOFF VALIDATION:** `make verify` on `51fd474`: static + relay 12/12;
+  unit/integration/acceptance 404/404; API 29/29; real-browser 33/33; all smoke
+  commands including schema-v23 reliability backup/restore passed. Focused v23 suite
+  13/13. Remote PR CI is recorded after push.
 - **REMAINING RISK:**
   - Offline projection reads local civil times in the device zone. It is exact when device
     zone = series zone (the default: the composer uses the device zone).
