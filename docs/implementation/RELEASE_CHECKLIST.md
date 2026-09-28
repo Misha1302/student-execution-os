@@ -88,14 +88,9 @@ URLs, private keys, or unredacted command output.
 ## Commands for owner-only gates
 
 ```bash
-# G6 (read-only; prints variable NAMES only, never values). Expected output: nothing.
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env config --format json | python3 -c '
-import json, sys
-inline = ("SEOS_PLATFORM_LLM_API_KEY", "SEOS_FCM_SERVICE_ACCOUNT_JSON", "SEOS_LLM_EGRESS_PROXY")
-for name, svc in json.load(sys.stdin)["services"].items():
-    for var, value in (svc.get("environment") or {}).items():
-        if var in inline and value:
-            print(f"{name}: {var} is set inline; move it to a secret file")'
+# G6 (read-only; prints file paths and violation NAMES, never secret values).
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env config --format json \
+  | python3 tools/check_secret_placement.py
 
 # G7
 docker compose -f deploy/docker-compose.yml exec api \
