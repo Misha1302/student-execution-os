@@ -226,6 +226,8 @@ button.chip { border: 0; font: inherit; font-size: 12px; font-weight: 650; curso
   flex: none; min-height: 38px; padding: 0 14px; border-radius: 999px;
   border: 1px solid var(--line); background: var(--surface); color: var(--text-2); font-weight: 600; font-size: 14px;
 }
+/* A long label (RU, wide fonts) wraps inside its chip instead of pushing the page wider. */
+.chip-group:not(.segmented .chip-group, .day-strip .chip-group) .chip-toggle { max-width: 100%; overflow-wrap: anywhere; }
 .chip-toggle.on { background: var(--text); border-color: var(--text); color: var(--bg); }
 
 .setting-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; }

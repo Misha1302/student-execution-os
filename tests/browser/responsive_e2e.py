@@ -29,6 +29,12 @@ TASKS = ("discrete", "conflict-task", "override-task")
 ROUTES = ("today", "plan", "tasks", "calendar", "notes", "more", "settings", "reminders", "routines",
           "projects", "reflection", "evidence", "notifications", "places")
 
+WIDE_FONT_JS = """document.addEventListener('DOMContentLoaded', () => {
+  const style = document.createElement('style');
+  style.textContent = "* { font-family: 'DejaVu Sans', Verdana, sans-serif !important; }";
+  document.head.append(style);
+});"""
+
 # A button inside a deliberate horizontal scroller (day strip, tab chips) is reachable by
 # swiping; one clipped by overflow: hidden is not, so only auto/scroll ancestors excuse it.
 MEASURE_JS = """(selector) => {
@@ -84,8 +90,11 @@ class ResponsiveLayoutTest(unittest.TestCase):
 
     def _page(self, width: int, locale: str):
         context = self.browser.new_context(viewport={"width": width, "height": 800}, is_mobile=True, has_touch=True,
-                                           timezone_id="Europe/Moscow", reduced_motion="reduce")
+                                           timezone_id="Europe/Moscow", reduced_motion="reduce", bypass_csp=True)
         context.add_init_script(f"try {{ localStorage.setItem('seos.locale', '{locale}') }} catch (e) {{}}")
+        # Measure with a wide font (CI's Chromium falls back to DejaVu Sans; phones vary), so a
+        # label that only just fits on this machine cannot pass here and fail elsewhere.
+        context.add_init_script(WIDE_FONT_JS)
         self.addCleanup(context.close)
         return context.new_page()
 
