@@ -630,7 +630,9 @@ which grouped several of G5–G13 together.
   `android` run 36471490520 `apk` + `device` success (emulator: notification buttons E2E,
   instrumented tests, install/upgrade/downgrade/foreign-key checks).
 - **G2 (LOCAL, clean worktree of `69fb504`):** `make static` OK; `make test` 507/507;
-  `make api` 29/29; `make smoke` OK; `make browser`: see the results line below.
+  `make api` 29/29; `make smoke` OK; `make browser` 38/38 OK (Chromium 1194 via
+  `CHROMIUM_PATH`; without it the container's Playwright looks for build 1200 and every
+  class fails in setUp — environment, not code).
 - **G3 (PRODUCTION-LIKE, LOCAL Docker):** `deploy/Dockerfile` built from the `69fb504`
   tree (image `sha256:b2f41161…`; base `python:3.13-slim` from `mirror.gcr.io`, with the
   sandbox's egress CA added only for this local build). API + reminder-worker containers

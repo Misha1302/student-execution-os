@@ -27,16 +27,21 @@ _SPEC = importlib.util.spec_from_file_location("apk_secret_scan", HERE / "apk_se
 apk_secret_scan = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(apk_secret_scan)
 
-SIGNER_DIGEST = re.compile(r"^Signer #(\d+) certificate SHA-256 digest: ([0-9a-f]{64})$", re.M)
-SIGNER_DN = re.compile(r"^Signer #(\d+) certificate DN: (.+)$", re.M)
+# apksigner labels signers "V2 Signer:" (current build-tools), "Signer #1" or
+# "Signer (minSdkVersion=24, maxSdkVersion=32)"; one certificate may be listed several times.
+_SIGNER = r"^((?:V[\d.]+ )?Signer\b[^:\n]*?):? certificate "
+SIGNER_DIGEST = re.compile(_SIGNER + r"SHA-256 digest: ([0-9a-f]{64})\s*$", re.M)
+SIGNER_DN = re.compile(_SIGNER + r"DN: (.+?)\s*$", re.M)
 BADGING = re.compile(r"^package: name='([^']+)' versionCode='([^']*)' versionName='([^']*)'", re.M)
 FCM_RESOURCE = re.compile(r"\bstring/google_app_id\b")
 
 
 def parse_signers(apksigner_output: str) -> list[dict[str, str]]:
     names = dict(SIGNER_DN.findall(apksigner_output))
-    return [{"certificate_sha256": digest, "dn": names.get(index, "")}
-            for index, digest in SIGNER_DIGEST.findall(apksigner_output)]
+    signers: dict[str, dict[str, str]] = {}
+    for label, digest in SIGNER_DIGEST.findall(apksigner_output):
+        signers.setdefault(digest, {"certificate_sha256": digest, "dn": names.get(label, "")})
+    return list(signers.values())
 
 
 def parse_badging(aapt_output: str) -> dict[str, str]:
@@ -68,8 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     tools = Path(args.build_tools)
     errors: list[str] = []
 
-    signers = parse_signers(_run(str(tools / "apksigner"), "verify", "--verbose", "--print-certs", args.apk))
+    verified = _run(str(tools / "apksigner"), "verify", "--verbose", "--print-certs", args.apk)
+    signers = parse_signers(verified)
     if len(signers) != 1:
+        print(verified)  # public certificate data only; shows why parsing disagreed
         errors.append(f"expected exactly one signing certificate, found {len(signers)}")
     badging = parse_badging(_run(str(tools / "aapt2"), "dump", "badging", args.apk))
     if args.expect_version_name and badging["version_name"] != args.expect_version_name:

@@ -40,6 +40,26 @@ class ParsingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             evidence.parse_badging("nothing")
 
+    def test_scheme_labelled_and_repeated_signer_lines_count_once(self):
+        output = (f"Verifies\nSigner (minSdkVersion=24, maxSdkVersion=32) certificate DN: CN=botay release\n"
+                  f"Signer (minSdkVersion=24, maxSdkVersion=32) certificate SHA-256 digest: {DIGEST}\n"
+                  f"Signer (minSdkVersion=33, maxSdkVersion=2147483647) certificate SHA-256 digest: {DIGEST}\n")
+        self.assertEqual(evidence.parse_signers(output), [{"certificate_sha256": DIGEST, "dn": "CN=botay release"}])
+        two = output + f"Signer #2 certificate SHA-256 digest: {'ef' * 32}\n"
+        self.assertEqual(len(evidence.parse_signers(two)), 2)
+        self.assertEqual(evidence.parse_signers("Verifies\n"), [])
+
+    def test_real_build_tools_output(self):
+        # verbatim shape from the CI runner's apksigner (android/apk job on 69fb504)
+        output = ("Verifies\nVerified using v2 scheme (APK Signature Scheme v2): true\nNumber of signers: 1\n"
+                  "V2 Signer: certificate DN: CN=botay CI throwaway\n"
+                  f"V2 Signer: certificate SHA-256 digest: {DIGEST}\n"
+                  f"V2 Signer: certificate SHA-1 digest: {'89' * 20}\n"
+                  "V2 Signer: key algorithm: RSA\n"
+                  f"V2 Signer: public key SHA-256 digest: {'d9' * 32}\n")
+        self.assertEqual(evidence.parse_signers(output),
+                         [{"certificate_sha256": DIGEST, "dn": "CN=botay CI throwaway"}])
+
 
 class MainTest(unittest.TestCase):
     def setUp(self):
