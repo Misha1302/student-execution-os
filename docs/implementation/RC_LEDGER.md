@@ -420,7 +420,8 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R8 — Collaborative academic groups (schema v27)
 
-- **STATUS:** IMPLEMENTED on `feature/r8-collaborative-groups`; PR/CI/merge below.
+- **STATUS:** MERGED. PR #37 (`feature/r8-collaborative-groups`), head `07ceceb`, merge
+  `a774be0`. Remote CI on `07ceceb`: `verify` ×2 (incl. `groups_e2e`) and `apk` ×2 green.
 - **BASELINE:** `origin/feature/collaborative-groups` = one unmerged commit `b450e13`
   (schema v18 on a v17 base, 8.1k lines: own shared-event/overlay tables and agenda
   projection). `main` (`c2eb652`, v26) already owns "reality vs intent" via R3
@@ -465,4 +466,46 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   preferences, diff notices and external-calendar binding from the old branch are not
   ported; group management is online-only; removed members cannot be re-admitted yet.
 - **NEXT DEPENDENCY:** R9 smart reminders / notifications.
+
+## R9 — Smart reminders / notifications
+
+- **STATUS:** IMPLEMENTED on `feature/r9-reminders-reconciliation`; PR/CI/merge below.
+- **BASELINE (`a774be0`), existing and already tested:** adaptive prompts (intensity:
+  unanswered cap, doubling backoff, daily cap), CRITICAL escalation ladder (48h…15m, each
+  rung once, only the latest crossed), quiet hours, per-account spacing, grouping,
+  acknowledgement/snooze/done from notifications, standalone reminders and wake alarms
+  (multi-phone), dedupe, delivery retry with leases and a pre-send stale check, move/cancel
+  *by the user* before delivery (`test_v16_reminders` 10, `test_pass8` 8, `test_pass9` 4).
+  Travel transitions are planner input (`test_pass7`); there is no separate travel push.
+- **DEFECT FOUND (reproduced):** an event's reminder moment was only recomputed by the
+  user's own commands. When a source (academic feed, group starosta) moved an imported
+  exam the student had asked to be reminded about, the reminder stayed at the old moment
+  (exam 14:00→16:00, reminder still 13:00: hours early); a source cancellation left it
+  armed; a restore did not re-arm it.
+- **OWNER / FIX (ADR 0033):** `reminders/events.py` is the one owner of "start − lead";
+  used by `sync/commands.py` (user, counts as interaction) and `recurrence/source.py`
+  (update/cancel/restore/disappearance). `ReminderStore.retime` re-times without faking a
+  user interaction and cancels undelivered messages about the old moment
+  (`SOURCE_CHANGED`). The lead survives cancellation/disconnect and is re-applied on
+  restore; nobody gets a reminder they did not ask for.
+- **TESTS (`tests.integration.test_r9_reminder_reconciliation`, 8; LOCAL INTEGRATION
+  with frozen clock, real engine + dispatcher + fake FCM):** source move → nothing at the
+  old time, exactly one push at the new time; message queued for the old time withdrawn,
+  new one sent; already-delivered then moved later → one new correct reminder; source
+  cancel suppresses, restore and disconnect→reconnect bring it back with the same lead;
+  identical refreshes + doubled ticks (restart) never duplicate or erase the exam reminder
+  or a standalone reminder; user's own event move still retimes; group exam moved by the
+  starosta retimes only the member who set a reminder; quiet hours across both 2026
+  Europe/Berlin DST switches, incl. an end inside the skipped hour. 5 of 8 fail on
+  `a774be0` (the 3 others guard behaviour that was already right).
+- **FLAKY BROWSER TEST ROOT-CAUSED:** `test_explicit_alarm_survives_…_queued_create`
+  (failing locally since R4, green in CI) cleared the request log but kept the sync-wait
+  cursor, so once the new log grew past the stale cursor the wait skipped the new sync
+  (`new_posts: []`). `_clear_posts()` resets both; 3/3 green locally where it failed
+  before. Test-harness bug, product code unaffected.
+- **LOCAL VERIFICATION (Python 3.13):** `make static` OK; `make test` 501/501; `make api`
+  29/29; `make smoke` OK; `make browser` 37/37 (first fully green local browser run).
+- **KNOWN LIMITATIONS:** no per-occurrence reminders for recurring classes; no separate
+  travel push (travel is planner input); delivery is FCM-only (no web push).
+- **NEXT DEPENDENCY:** R10 Android release/update/push.
 

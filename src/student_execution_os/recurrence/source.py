@@ -402,6 +402,13 @@ class SourceApplier:
                 report.unchanged.append(item.uid)
         self._remember(source, item.uid, "", kind="EVENT", local=event_id, sequence=item.sequence,
                        updated_at=item.updated_at, template_id=template_id, source_cancelled=item.cancelled)
+        if row is not None:
+            # A reminder the user set on this event follows its new time / state.
+            self._event_reminder(event_id)
+
+    def _event_reminder(self, event_id: str) -> None:
+        from student_execution_os.reminders.events import sync_event_reminder
+        sync_event_reminder(self.repo, self.account_id, event_id, self.now, by_user=False)
 
     def _transition(self, event_id: str, action: str) -> None:
         current = self.repo.get_event(self.account_id, event_id)
@@ -427,6 +434,7 @@ class SourceApplier:
                 event = self.repo.get_event(self.account_id, row["local_id"])
                 if event.interval.starts_at > self.now and event.obligation.lifecycle_status is not LifecycleStatus.CANCELLED:
                     self._transition(event.obligation.id, "CANCEL")
+                    self._event_reminder(event.obligation.id)
             self.repo.connection.execute(
                 "UPDATE external_identities SET state='REMOVED',source_cancelled=CASE WHEN local_kind='EVENT' THEN 1 "
                 "ELSE source_cancelled END,last_seen_at=? WHERE account_id=? AND source_system_id=? "
