@@ -17,7 +17,13 @@ from student_execution_os.web.auth import AuthConfig
 from tests.asgi_client import TestClient
 
 NOW = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc)
+def secret_of(token: str) -> str:
+    """The secret part of botay_cap_<32 hex id>_<secret> (the secret itself may contain '_')."""
+    return token.removeprefix("Bearer ")[len("botay_cap_") + 33:]
+
+
 ROLLBACK = Path("src/student_execution_os/persistence/rollback/025_capability_grants_down.sql")
+ROLLBACK_V26 = Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql")
 
 
 class CapabilityApiTest(unittest.TestCase):
@@ -83,7 +89,8 @@ class CapabilityApiTest(unittest.TestCase):
         with sqlite3.connect(self.db) as conn:
             dump = "\n".join(conn.iterdump())
         self.assertNotIn(secret, dump)
-        self.assertNotIn(secret.rsplit("_", 1)[1], dump)
+        self.assertEqual(len(secret_of(secret)), 43)
+        self.assertNotIn(secret_of(secret), dump)
         self.assertEqual(self.client.get("/api/v1/ext/tasks", headers=token).status_code, 200)
         revoked = self.client.delete(f"/api/v1/settings/capabilities/{created['grant']['id']}", headers=self.alice)
         self.assertTrue(revoked.json()["revoked"])
@@ -310,7 +317,7 @@ class CapabilityApiTest(unittest.TestCase):
         lifecycle = SQLiteDataLifecycle(self.db, now=lambda: self.now)
         exported = json.dumps(asdict(lifecycle.export_account(self.alice_account)), default=str)
         self.assertNotIn("capability_grants", exported)
-        self.assertNotIn(token["Authorization"].removeprefix("Bearer ").rsplit("_", 1)[1], exported)
+        self.assertNotIn(secret_of(token["Authorization"]), exported)
         with sqlite3.connect(self.db) as conn:
             revision = conn.execute("SELECT server_revision FROM accounts WHERE id=?",
                                     (self.alice_account,)).fetchone()[0]
@@ -339,21 +346,25 @@ class CapabilityApiTest(unittest.TestCase):
         with SQLiteCanonicalRepository(old) as repo:
             repo.initialize()
             repo.initialize()
-            self.assertEqual((repo.schema_version(), SCHEMA_VERSION), (25, 25))
+            self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
+            self.assertGreaterEqual(SCHEMA_VERSION, 25)
             self.assertEqual(repo.connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(repo.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
         conn = sqlite3.connect(old)
+        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
         conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 24)
         conn.close()
         # With a live grant the rollback refuses instead of silently discarding it.
         _token, created = self.grant(["tasks:read"])
         conn = sqlite3.connect(self.db)
+        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))
         with self.assertRaisesRegex(sqlite3.IntegrityError, "revoked first"):
             conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         conn.close()
         self.client.delete(f"/api/v1/settings/capabilities/{created['grant']['id']}", headers=self.alice)
         conn = sqlite3.connect(self.db)
+        conn.executescript(ROLLBACK_V26.read_text(encoding="utf-8"))  # the app re-migrated on its request
         conn.executescript(ROLLBACK.read_text(encoding="utf-8"))
         self.assertEqual(conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 24)
         conn.close()

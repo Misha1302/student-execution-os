@@ -283,6 +283,10 @@ _GLOBAL_LIFECYCLE_TABLES = {
     "worker_heartbeats",
     "account_deletion_tombstones",
     "starter_llm_global_usage",
+    # OAuth client registrations are not account data; authorizations reference an
+    # account only after consent and are removed with it (ON DELETE CASCADE).
+    "oauth_clients",
+    "oauth_authorizations",
 }
 
 _KNOWN_DATABASE_TABLES = {

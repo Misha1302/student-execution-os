@@ -141,6 +141,7 @@ class V22BotayMigrationTests(unittest.TestCase):
             )
             self.assertEqual(counts, 0)
             # Later releases roll back first (ADR 0027), then v22.
+            conn.executescript(Path("src/student_execution_os/persistence/rollback/026_oauth_connect_down.sql").read_text(encoding="utf-8"))
             conn.executescript(Path("src/student_execution_os/persistence/rollback/025_capability_grants_down.sql").read_text(encoding="utf-8"))
             conn.executescript(Path("src/student_execution_os/persistence/rollback/024_academic_schedule_down.sql").read_text(encoding="utf-8"))
             conn.executescript(Path("src/student_execution_os/persistence/rollback/023_series_exceptions_down.sql").read_text(encoding="utf-8"))

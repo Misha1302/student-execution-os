@@ -148,7 +148,12 @@ export default {
         await setAuth(issued.token, issued.user);
         clearAll();
         const firstRun = mode === 'register';
-        shell.go('today');
+        let returnTo = null;
+        try { returnTo = sessionStorage.getItem('seos.returnTo'); sessionStorage.removeItem('seos.returnTo'); } catch { /* private mode */ }
+        // Only a pending app-connection consent is resumed; anything else starts at Today.
+        const connect = /^#\/connect\/([A-Za-z0-9_-]{16,64})$/.exec(returnTo || '');
+        if (connect) shell.go('connect', { params: [connect[1]] });
+        else shell.go('today');
         window.dispatchEvent(new CustomEvent('seos-signed-in', { detail: { firstRun } }));
       } catch (err) {
         toast(err.code === 'NETWORK' ? t('welcome.unreachable') : authError(err), { error: true });

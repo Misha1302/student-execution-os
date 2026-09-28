@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import mimetypes
-from urllib.parse import unquote
+from urllib.parse import parse_qsl, unquote
 from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Request
@@ -34,10 +34,22 @@ from student_execution_os.academic.model import AcademicProviderError
 from student_execution_os.academic.ical import MAX_ICS_BYTES
 
 from student_execution_os.capabilities import SCOPES, CapabilityDenied, CapabilityStore, InvalidGrant
+from student_execution_os.oauth import (
+    OAuthError,
+    OAuthServer,
+    RedirectError,
+    authorization_server_metadata,
+    protected_resource_metadata,
+)
 
 from .auth import AuthConfig, RateLimited, Session, SQLiteAuthStore, Unauthenticated
 from .external import CapabilityGateway, handle_mcp
-from .queries import UiService
+from .queries import UiService, _AccountLimiter
+
+# Dynamic client registration is unauthenticated by design (RFC 7591); bound it per IP.
+REGISTRATION_LIMITER = _AccountLimiter(10)
+# Starting an authorization is unauthenticated too (it only stores a 10-minute request).
+AUTHORIZE_LIMITER = _AccountLimiter(30)
 
 
 _ERROR_MAP: tuple[tuple[type[Exception], str, int], ...] = (
@@ -74,7 +86,9 @@ def _error(exc: Exception) -> JSONResponse:
                         "retryable": status == 429,
                     }
                 },
-                headers={"WWW-Authenticate": 'Bearer realm="botay-capabilities"'}
+                headers={"WWW-Authenticate": (
+                    f'Bearer realm="botay-capabilities", resource_metadata="{exc.resource_metadata}"'
+                    if getattr(exc, "resource_metadata", None) else 'Bearer realm="botay-capabilities"')}
                 if isinstance(exc, InvalidGrant) else None,
             )
     return JSONResponse(
@@ -646,8 +660,104 @@ def create_app(
     def current_gateway(request: Request) -> CapabilityGateway:
         with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
             repo.initialize()
-            grant = CapabilityStore(repo).authenticate(_bearer(request))
+            try:
+                grant = CapabilityStore(repo).authenticate(_bearer(request))
+            except InvalidGrant as exc:
+                # MCP authorization discovery (RFC 9728): tell the client where to start OAuth.
+                exc.resource_metadata = f"{_origin(request)}/.well-known/oauth-protected-resource"
+                raise
         return CapabilityGateway(str(database), grant, now=now)
+
+    # ---- OAuth 2.1 for MCP clients (ChatGPT, Codex): consent issues a capability grant --
+    def _origin(request: Request) -> str:
+        configured = os.environ.get("SEOS_PUBLIC_ORIGIN", "").strip().rstrip("/")
+        return configured or str(request.base_url).rstrip("/")
+
+    def _oauth_error(exc: OAuthError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"error": exc.error, "error_description": str(exc)},
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/.well-known/oauth-protected-resource")
+    @app.get("/.well-known/oauth-protected-resource/mcp")
+    def oauth_protected_resource(request: Request) -> dict[str, Any]:
+        return protected_resource_metadata(_origin(request))
+
+    @app.get("/.well-known/oauth-authorization-server")
+    def oauth_authorization_server(request: Request) -> dict[str, Any]:
+        return authorization_server_metadata(_origin(request))
+
+    @app.post("/oauth/register", status_code=201)
+    def oauth_register(request: Request, payload: dict[str, Any] = Body(...)):
+        if not REGISTRATION_LIMITER.allow(request.client.host if request.client else "unknown"):
+            return JSONResponse(status_code=429, content={"error": "slow_down",
+                                                          "error_description": "too many registrations"})
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            try:
+                return OAuthServer(repo, issuer=_origin(request)).register(payload)
+            except OAuthError as exc:
+                return _oauth_error(exc)
+
+    @app.get("/oauth/authorize")
+    def oauth_authorize(request: Request):
+        if not AUTHORIZE_LIMITER.allow(request.client.host if request.client else "unknown"):
+            return JSONResponse(status_code=429, content={"error": "slow_down",
+                                                          "error_description": "too many authorization requests"})
+        params = dict(request.query_params)
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            server = OAuthServer(repo, issuer=_origin(request))
+            try:
+                request_id = server.start(params)
+            except RedirectError as exc:
+                return Response(status_code=302, headers={"Location": exc.location(server.issuer)})
+            except OAuthError as exc:
+                # Unknown client or unregistered redirect_uri: never redirect anywhere.
+                return JSONResponse(status_code=400, content={"error": exc.error, "error_description": str(exc)})
+        # Consent happens inside the signed-in app (sessions are bearer tokens there).
+        return Response(status_code=302, headers={"Location": f"/#/connect/{request_id}"})
+
+    @app.get("/api/v1/oauth/requests/{request_id}")
+    def oauth_request(request_id: str, request: Request,
+                      service: UiService = Depends(current_service)) -> dict[str, Any]:
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            return OAuthServer(repo, issuer=_origin(request)).describe(request_id)
+
+    @app.post("/api/v1/oauth/requests/{request_id}/approve")
+    def oauth_approve(request_id: str, request: Request, payload: dict[str, Any] = Body(...),
+                      service: UiService = Depends(current_service)) -> dict[str, Any]:
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            return OAuthServer(repo, issuer=_origin(request)).approve(request_id, service.account_id, payload)
+
+    @app.post("/api/v1/oauth/requests/{request_id}/deny")
+    def oauth_deny(request_id: str, request: Request,
+                   service: UiService = Depends(current_service)) -> dict[str, Any]:
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            return OAuthServer(repo, issuer=_origin(request)).deny(request_id, service.account_id)
+
+    @app.post("/oauth/token")
+    async def oauth_token(request: Request):
+        raw = await request.body()
+        if len(raw) > 8192:
+            return _oauth_error(OAuthError("invalid_request", "request too large"))
+        if request.headers.get("content-type", "").split(";")[0].strip() == "application/json":
+            try:
+                parsed = json.loads(raw or b"{}")
+            except ValueError:
+                parsed = None
+            form = {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
+        else:
+            form = dict(parse_qsl(raw.decode("utf-8", "replace"), keep_blank_values=True))
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            try:
+                return JSONResponse(content=OAuthServer(repo, issuer=_origin(request)).exchange(form),
+                                    headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+            except OAuthError as exc:
+                return _oauth_error(exc)
 
     @app.get("/api/v1/ext/capabilities")
     def ext_capabilities(gateway: CapabilityGateway = Depends(current_gateway)) -> dict[str, Any]:

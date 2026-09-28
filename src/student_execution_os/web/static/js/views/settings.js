@@ -10,6 +10,7 @@ import { healthSection, healthActions, loadHealth } from '../health.js';
 import { syncSection, syncActions, loadConnectors } from '../sync-panel.js';
 import { appUpdateService, UpdateChannel, UpdateState } from '../update-service.js';
 import { academicScheduleSection, academicScheduleActions, loadAcademicSchedule } from '../academic-schedule.js';
+import { connectedAppsSection, connectedAppsActions, loadConnectedApps } from '../connected-apps.js';
 
 async function loadUpdates() {
   if (!isNative()) return null;
@@ -203,7 +204,7 @@ export default {
   detail: true,
   title: () => t('nav.settings'),
   async load({ fresh }) {
-    const [diag, deletion, prefs, llm, profile, health, connectors, updates, academic] = await Promise.all([
+    const [diag, deletion, prefs, llm, profile, health, connectors, updates, academic, apps] = await Promise.all([
       load('/api/v1/settings/diagnostics', { fresh }),
       load('/api/v1/account/deletion-policy', { fresh }),
       load('/api/v1/notification-preferences', { fresh }).catch(() => ({ data: null })),
@@ -213,10 +214,11 @@ export default {
       loadConnectors(),
       loadUpdates(),
       loadAcademicSchedule(),
+      session.authMode === 'session' ? loadConnectedApps() : Promise.resolve(null),
     ]);
-    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors, updates, academic }, stale: diag.stale, fetchedAt: diag.fetchedAt };
+    return { data: { diag: diag.data, deletion: deletion.data, prefs: prefs.data, llm, profile: profile.data, health, connectors, updates, academic, apps }, stale: diag.stale, fetchedAt: diag.fetchedAt };
   },
-  render({ diag, deletion, prefs, llm, profile, health, connectors, updates, academic }) {
+  render({ diag, deletion, prefs, llm, profile, health, connectors, updates, academic, apps }) {
     this._deletion = deletion;
     this._prefs = prefs;
     this._profile = profile;
@@ -268,6 +270,7 @@ export default {
       </section>` : ''}
 
       ${academicScheduleSection(academic)}
+      ${apps ? connectedAppsSection(apps) : ''}
 
       ${aiSection(llm)}
 
@@ -378,5 +381,6 @@ export default {
     ...healthActions,
     ...syncActions,
     ...academicScheduleActions,
+    ...connectedAppsActions,
   },
 };
