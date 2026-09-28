@@ -694,7 +694,18 @@ which grouped several of G5–G13 together.
     Anthropic keys, PEM private keys, capability tokens, server secret variables, keystores)
     plus build-password canaries, on CI-built APKs (production APK from G11 onward). None
     of these is a proof that no secret can ever appear.
+- **FIXES VERIFIED (CI, PR #41 head `edf3725`):** `verify`, `apk`, `device` green (×2).
+  The `apk` job's `release_evidence.py` on the Gradle-built release APK: `fcm_config: true`,
+  exactly one signer (`CN=botay CI throwaway`, certificate SHA-256 recorded),
+  `tracked_changes: []` after `npm run sync` + Gradle, no credential material, versionCode/
+  Name as expected. The first CI run on `44635c4` caught a parser mismatch with the runner's
+  `apksigner` output (`V2 Signer: …`), fixed with the verbatim format as a test fixture.
+  Local on the branch: `make static` OK, `make test` 513/513.
 - **STATUS:** G1–G4 VERIFIED for `69fb504` (G4 in its pre-fix form: release-like build
-  without Firebase config; the fixed form is verified by this branch's CI). G5–G13 NOT
+  without Firebase config) and on PR #41's head for the fixed release path. After PR #41
+  merges, the release SHA is its merge commit: G1 there = CI on the push to `main` (and
+  tree identity with the tested head), G2/G3 carry over only through tree identity for
+  the files they exercise (#41 changes workflows, a script, tests and docs, not `src/`
+  or `deploy/Dockerfile`). G5–G13 NOT
   VERIFIED (owner-only; no production access was used). Verdict per the checklist
   definitions: **CLOSED-BETA READY** for `69fb504`; **not RELEASE-CANDIDATE READY**.
