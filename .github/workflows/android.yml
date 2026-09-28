@@ -82,7 +82,7 @@ jobs:
     # Real Android system (emulator): notification buttons against a real server,
     # instrumented device tests, and the install / upgrade / update-trust path.
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,13 +126,16 @@ jobs:
         timeout-minutes: 15
         run: mobile/scripts/ci_emulator.sh
       - name: Notification buttons end to end against a real server
+        timeout-minutes: 15
         run: python mobile/scripts/native_e2e.py
       - name: Instrumented device tests (wake alarm, update trust)
+        timeout-minutes: 15
         run: |
           cd mobile/android
           ./gradlew :app:connectedDebugAndroidTest --no-daemon --console=plain \
             -Pandroid.testInstrumentationRunnerArguments.notClass=io.github.misha1302.seos.reminders.ReminderNotificationEndToEndTest
       - name: Install, offline start, upgrade, downgrade refusal, foreign-key refusal
+        timeout-minutes: 10
         run: python mobile/scripts/install_upgrade_check.py "$RUNNER_TEMP/old.apk" "$RUNNER_TEMP/new.apk" "$RUNNER_TEMP/foreign.apk"
       - name: Diagnostics on failure
         if: failure() || cancelled()

@@ -91,7 +91,12 @@ def main() -> int:
             f"-Pandroid.testInstrumentationRunnerArguments.seosToken={issued['token']}",
             f"-Pandroid.testInstrumentationRunnerArguments.seosReminder={encoded}",
         ]
-        run = subprocess.run([str(gradle), "--no-daemon", "-q", ":app:connectedDebugAndroidTest", *args], cwd=gradle.parent)
+        try:
+            run = subprocess.run([str(gradle), "--no-daemon", "--console=plain", ":app:connectedDebugAndroidTest", *args],
+                                 cwd=gradle.parent, timeout=780)
+        except subprocess.TimeoutExpired:
+            print("device test did not finish within 13 minutes", file=sys.stderr)
+            return 1
         task = client.get("/api/v1/tasks/task-native-e2e").json()
         inbox = client.get("/api/v1/notifications").json()
         print(json.dumps({"task_status": task["status"], "acted": [m.get("acted_action") for m in inbox]}, ensure_ascii=False))
