@@ -4,6 +4,7 @@ import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead,
 import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../capture.js';
 import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
+import { upcomingItems, currentEvent as runningEvent } from '../upcoming.js';
 import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 export function parseWhyNow(value) {
@@ -237,9 +238,10 @@ function dailyIntentCard(data, tasks) {
   </article></section>`;
 }
 
-// Standalone reminders due today (and ones that rang and still wait for an answer).
-function todayReminders(reminders = [], cur = now()) {
-  const list = reminders.filter((r) => isOpen(r) && (sameDay(new Date(r.remind_at), cur) || r.status === 'FIRED'))
+// Standalone reminders due today (and ones that rang and still wait for an answer)
+// that "Soon" does not already show.
+function todayReminders(reminders = [], cur = now(), shown = new Set()) {
+  const list = reminders.filter((r) => isOpen(r) && !shown.has(r.id) && (sameDay(new Date(r.remind_at), cur) || r.status === 'FIRED'))
     .sort((a, b) => new Date(a.remind_at) - new Date(b.remind_at));
   if (!list.length) return '';
   return `<section class="section">
@@ -250,6 +252,39 @@ function todayReminders(reminders = [], cur = now()) {
       ${reminderStatusChip(r)}
     </button>`).join('')}</div>
   </section>`;
+}
+
+function eventBits(e, cur) {
+  const running = new Date(e.starts_at) <= cur;
+  const bits = [running ? t('today.eventNow') : fmtRelative(e.starts_at)];
+  if (!sameDay(new Date(e.starts_at), cur)) bits.push(fmtDateTime(e.starts_at));
+  if (e.attendance_policy !== 'REQUIRED') bits.push(code('attendance', e.attendance_policy));
+  if (e.location_effect?.kind && e.location_effect.kind !== 'NONE') bits.push(code('location', e.location_effect.kind));
+  if (e.remind_before_minutes != null) bits.push(t('event.remindShort', { n: e.remind_before_minutes }));
+  return bits.join(' · ');
+}
+
+function soonRow(x, cur) {
+  if (x.kind === 'EVENT') {
+    const e = x.event;
+    return `<button class="row soon-row${x.running ? ' current' : ''}" data-soon-kind="EVENT" data-action="open-event" data-id="${esc(e.id)}">
+      <span class="row-time"><strong>${esc(fmtTime(e.starts_at))}</strong><small>${esc(fmtTime(e.ends_at))}</small></span>
+      <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(eventBits(e, cur))}</small></span>
+      ${x.running ? chip(t('today.eventNowChip'), 'accent') : icon('event')}
+    </button>`;
+  }
+  if (x.kind === 'REMINDER') {
+    const r = x.reminder;
+    return `<button class="row soon-row" data-soon-kind="REMINDER" data-action="open-reminder" data-kind="REMINDER" data-id="${esc(r.id)}">
+      <span class="row-time"><strong>${esc(fmtTime(r.remind_at))}</strong><small>${icon(hasAlarm(r.delivery) ? 'clock' : 'bell')}</small></span>
+      <span class="row-main"><strong>${esc(r.title)}</strong><small>${esc(fmtRelative(r.remind_at))}</small></span>
+    </button>`;
+  }
+  return `<div class="row soon-row" data-soon-kind="TASK">
+    <button class="row-main plain" data-action="open-task" data-id="${esc(x.task.id)}"><strong>${esc(x.task.title)}</strong><small>${esc(x.why)}</small></button>
+    ${x.ready ? `<button class="button small ghost" data-action="start-task" data-id="${esc(x.task.id)}">${esc(t('today.start'))}</button>` : ''}
+    <button class="button small ghost" data-action="complete-task" data-id="${esc(x.task.id)}" aria-label="${esc(t('lifecycle.complete'))}">${icon('check')}</button>
+  </div>`;
 }
 
 export default {
@@ -274,10 +309,15 @@ export default {
     const unhealthy = (data.source_health || []).filter((s) => s.health_status !== 'CURRENT');
     const cur = now();
     const events = (data.events || plan.canonical_events || []).slice().sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
-    const currentEvent = events.find((e) => new Date(e.starts_at) <= cur && cur < new Date(e.ends_at));
+    // A running event takes "Now" unless a work session already does; then it leads "Soon".
+    const currentEvent = activeExecution ? null : runningEvent(data.upcoming_events || events, cur);
     const soon = soonTasks(data, cur);
-    const suggestion = !first ? soon.find((x) => x.ready) : null;
+    const suggestion = !first && !currentEvent && !activeExecution ? soon.find((x) => x.ready) : null;
     const later = soon.filter((x) => x !== suggestion);
+    const upcoming = upcomingItems({ events: data.upcoming_events || events, reminders: data.reminders || [], tasks: later }, cur,
+      { nowEventId: currentEvent?.id });
+    const inSoon = new Set(upcoming.filter((x) => x.kind !== 'TASK').map((x) => x.id));
+    const otherEvents = events.filter((e) => e.id !== currentEvent?.id && !inSoon.has(e.id));
     const atRisk = (data.tasks || []).filter((x) => ['AT_RISK', 'CRITICAL', 'IMPOSSIBLE', 'OVERDUE'].includes(x.risk?.state));
     const travel = travelCard(data.travel);
     const bounds = boundaries(data);
@@ -316,13 +356,9 @@ export default {
         }).join('')}</div>
       </section>` : ''}
 
-      ${later.length ? `<section class="section" data-soon>
+      ${upcoming.length ? `<section class="section" data-soon>
         ${sectionHead(t('today.soon'))}
-        <div class="list">${later.map((x) => `<div class="row soon-row">
-          <button class="row-main plain" data-action="open-task" data-id="${esc(x.task.id)}"><strong>${esc(x.task.title)}</strong><small>${esc(x.why)}</small></button>
-          ${x.ready ? `<button class="button small ghost" data-action="start-task" data-id="${esc(x.task.id)}">${esc(t('today.start'))}</button>` : ''}
-          <button class="button small ghost" data-action="complete-task" data-id="${esc(x.task.id)}" aria-label="${esc(t('lifecycle.complete'))}">${icon('check')}</button>
-        </div>`).join('')}</div>
+        <div class="list">${upcoming.map((x) => soonRow(x, cur)).join('')}</div>
       </section>` : ''}
 
       ${data.needs_refinement?.length ? `<section class="section">
@@ -343,7 +379,7 @@ export default {
         </button>`).join('')}</div>
       </section>` : ''}
 
-      ${todayReminders(data.reminders, cur)}
+      ${todayReminders(data.reminders, cur, inSoon)}
 
       ${(data.inbox_notes || []).length ? `<section class="section">
         ${sectionHead(t('today.captures'), `<button class="link" data-nav="notes">${esc(t('nav.notes'))}</button>`)}
@@ -356,18 +392,14 @@ export default {
 
       <section class="section">
         ${sectionHead(t('today.events'), `<button class="link" data-nav="calendar">${esc(t('nav.calendar'))}</button>`)}
-        ${events.length ? `<div class="list">${events.map((e) => {
+        ${otherEvents.length ? `<div class="list">${otherEvents.map((e) => {
           const running = new Date(e.starts_at) <= cur;
-          const bits = [running ? t('today.eventNow') : fmtRelative(e.starts_at)];
-          if (e.attendance_policy !== 'REQUIRED') bits.push(code('attendance', e.attendance_policy));
-          if (e.location_effect?.kind && e.location_effect.kind !== 'NONE') bits.push(code('location', e.location_effect.kind));
-          if (e.remind_before_minutes != null) bits.push(t('event.remindShort', { n: e.remind_before_minutes }));
           return `<button class="row${running ? ' current' : ''}" data-action="open-event" data-id="${esc(e.id)}">
           <span class="row-time"><strong>${esc(fmtTime(e.starts_at))}</strong><small>${esc(fmtTime(e.ends_at))}</small></span>
-          <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(bits.join(' · '))}</small></span>
+          <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(eventBits(e, cur))}</small></span>
           ${running ? chip(t('today.eventNowChip'), 'accent') : ''}
         </button>`;
-        }).join('')}</div>` : `<p class="muted pad">${esc(t('today.noEvents'))}</p>`}
+        }).join('')}</div>` : `<p class="muted pad">${esc(t(events.length ? 'today.eventsAbove' : 'today.noEvents'))}</p>`}
       </section>
 
       <section class="section">

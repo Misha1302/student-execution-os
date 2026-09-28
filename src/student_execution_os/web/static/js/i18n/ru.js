@@ -358,6 +358,7 @@ export default {
   'today.travel': 'Дорога',
   'today.atRisk': 'Под риском',
   'today.events': 'События сегодня',
+  'today.eventsAbove': 'Ближайшие события — выше, в «Скоро».',
   'today.noEvents': 'Сегодня больше нет событий.',
   'today.boundaries': 'Ближайшие сроки',
   'today.noBoundaries': 'Ближайших дедлайнов нет.',

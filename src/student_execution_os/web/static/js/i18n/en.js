@@ -358,6 +358,7 @@ export default {
   'today.travel': 'Travel',
   'today.atRisk': 'At risk',
   'today.events': 'Events today',
+  'today.eventsAbove': 'Upcoming events are listed under Coming up.',
   'today.noEvents': 'No more events today.',
   'today.boundaries': 'Coming up',
   'today.noBoundaries': 'No upcoming deadlines.',
