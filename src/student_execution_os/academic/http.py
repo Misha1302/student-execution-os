@@ -2,22 +2,56 @@
 
 Calendar URLs are bearer credentials.  This module therefore never includes a URL,
 response body, or underlying client exception in a public error.
+
+DNS pinning: each attempt resolves the host once, validates the complete address set,
+and the transport then connects only to those validated literals.  TLS SNI, certificate
+verification and the Host header keep the original hostname, so a DNS answer changed
+after validation (rebinding) cannot steer the connection to a private address.  Ambient
+``HTTPS_PROXY``-style variables are ignored: a proxy would resolve the name itself.
 """
 from __future__ import annotations
 
 import ipaddress
 import socket
+import ssl
 import time
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
+import httpcore
 import httpx
 
 from .ical import MAX_ICS_BYTES
 from .model import AcademicProviderError
 
 
+IpAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
+_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
+
+
+def is_public_address(address: IpAddress) -> bool:
+    """``is_global``, plus embedded-IPv4 forms that ``ipaddress`` reports as global."""
+    if not address.is_global:
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        if address in _NAT64_LOCAL_USE:
+            return False
+        if address in _NAT64_WELL_KNOWN or address in _IPV4_COMPATIBLE:
+            return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF).is_global
+    return True
+
+
 def assert_public_feed_url(url: str, *, resolver: Callable[..., object] = socket.getaddrinfo) -> str:
+    return resolve_public_feed_url(url, resolver=resolver)[0]
+
+
+def resolve_public_feed_url(
+    url: str, *, resolver: Callable[..., object] = socket.getaddrinfo
+) -> tuple[str, str, tuple[IpAddress, ...]]:
+    """Return ``(url, hostname, validated addresses)`` or raise a safe provider error."""
     value = url.strip()
     parsed = urlsplit(value)
     if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
@@ -29,9 +63,87 @@ def assert_public_feed_url(url: str, *, resolver: Callable[..., object] = socket
         addresses = {ipaddress.ip_address(answer[4][0]) for answer in answers}  # type: ignore[index]
     except (OSError, ValueError, TypeError, IndexError) as exc:
         raise AcademicProviderError("calendar host could not be resolved", "NETWORK") from exc
-    if not addresses or any(not address.is_global for address in addresses):
+    if not addresses or any(not is_public_address(address) for address in addresses):
         raise AcademicProviderError("calendar URL does not resolve to a public address", "BLOCKED_URL")
-    return value
+    ordered = tuple(sorted(addresses, key=lambda address: (address.version, int(address))))
+    try:
+        # The exact (IDNA-encoded) name httpcore hands to the network backend and uses for SNI.
+        wire_host = httpx.URL(value).raw_host.decode("ascii")
+    except (httpx.InvalidURL, UnicodeError) as exc:
+        raise AcademicProviderError("calendar URL must be a public HTTPS address", "BLOCKED_URL") from exc
+    return value, wire_host, ordered
+
+
+class PinnedNetworkBackend(httpcore.NetworkBackend):
+    """Connect only to addresses validated for ``hostname`` in this attempt.
+
+    httpcore passes the *origin* hostname here and separately uses it for TLS
+    ``server_hostname``; only the TCP destination is replaced by a validated literal.
+    """
+
+    def __init__(
+        self,
+        hostname: str,
+        addresses: tuple[IpAddress, ...],
+        *,
+        inner: httpcore.NetworkBackend | None = None,
+    ) -> None:
+        if not addresses or any(not is_public_address(address) for address in addresses):
+            raise ValueError("pinned addresses must be validated public addresses")
+        self.hostname = hostname.lower().rstrip(".")
+        self.addresses = addresses
+        self.inner = inner or httpcore.SyncBackend()
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        if host.lower().rstrip(".") != self.hostname or port != 443:
+            raise httpcore.ConnectError("destination is not the validated calendar host")
+        last: Exception | None = None
+        for address in self.addresses:
+            try:
+                return self.inner.connect_tcp(
+                    str(address), port, timeout=timeout,
+                    local_address=local_address, socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last = exc
+        assert last is not None
+        raise last
+
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise httpcore.ConnectError("unix sockets are not calendar destinations")
+
+    def sleep(self, seconds: float) -> None:
+        self.inner.sleep(seconds)
+
+
+class PinnedTransport(httpx.HTTPTransport):
+    """``httpx.HTTPTransport`` with verified TLS and a pinned network backend."""
+
+    def __init__(
+        self, backend: httpcore.NetworkBackend, *, ssl_context: ssl.SSLContext | None = None
+    ) -> None:
+        super().__init__(verify=True, http1=True, http2=False, retries=0)
+        context = ssl_context or httpx.create_ssl_context(verify=True)
+        if context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname:
+            raise ValueError("calendar TLS must verify the certificate and hostname")
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=context,
+            max_connections=1,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=backend,
+        )
+
+
+def _default_client(transport: httpx.BaseTransport) -> httpx.Client:
+    return httpx.Client(
+        transport=transport,
+        trust_env=False,
+        timeout=httpx.Timeout(15.0, connect=5.0),
+        follow_redirects=False,
+        headers={"User-Agent": "botay-academic-calendar/1"},
+    )
 
 
 class HttpIcsReader:
@@ -41,19 +153,18 @@ class HttpIcsReader:
         self,
         url: str,
         *,
-        client_factory: Callable[[], httpx.Client] | None = None,
+        client_factory: Callable[[httpx.BaseTransport], httpx.Client] = _default_client,
         attempts: int = 3,
         sleep: Callable[[float], None] = time.sleep,
         resolver: Callable[..., object] = socket.getaddrinfo,
+        network_backend: httpcore.NetworkBackend | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         self.url = assert_public_feed_url(url, resolver=resolver)
-        self.client_factory = client_factory or (
-            lambda: httpx.Client(
-                timeout=httpx.Timeout(15.0, connect=5.0),
-                follow_redirects=False,
-                headers={"User-Agent": "botay-academic-calendar/1"},
-            )
-        )
+        # The factory receives the pinned transport and must route requests through it.
+        self.client_factory = client_factory
+        self.network_backend = network_backend
+        self.ssl_context = ssl_context
         self.attempts = max(1, min(3, attempts))
         self.sleep = sleep
         self.resolver = resolver
@@ -61,10 +172,14 @@ class HttpIcsReader:
     def __call__(self) -> bytes:
         last: AcademicProviderError | None = None
         for attempt in range(self.attempts):
-            # Re-resolve before every request to resist DNS rebinding between setup and refresh.
-            assert_public_feed_url(self.url, resolver=self.resolver)
+            # Resolve + validate once per attempt; the attempt connects only to that set.
+            _url, hostname, addresses = resolve_public_feed_url(self.url, resolver=self.resolver)
+            transport = PinnedTransport(
+                PinnedNetworkBackend(hostname, addresses, inner=self.network_backend),
+                ssl_context=self.ssl_context,
+            )
             try:
-                with self.client_factory() as client, client.stream("GET", self.url) as response:
+                with self.client_factory(transport) as client, client.stream("GET", self.url) as response:
                     if 300 <= response.status_code < 400:
                         raise AcademicProviderError("calendar redirects are not followed", "BLOCKED_REDIRECT")
                     if response.status_code in (401, 403):
@@ -102,4 +217,10 @@ class HttpIcsReader:
         raise AcademicProviderError("calendar provider could not be reached", "NETWORK")
 
 
-__all__ = ["HttpIcsReader", "assert_public_feed_url"]
+__all__ = [
+    "HttpIcsReader",
+    "PinnedNetworkBackend",
+    "PinnedTransport",
+    "assert_public_feed_url",
+    "resolve_public_feed_url",
+]
