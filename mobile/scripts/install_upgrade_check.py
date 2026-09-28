@@ -12,6 +12,7 @@ install starts with no data.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -63,7 +64,8 @@ def main(old: str, new: str, foreign: str) -> int:
     adb("install", old)
     old_code = version_code()
     start_app_offline()
-    adb("shell", "run-as", PACKAGE, "sh", "-c", "mkdir -p files && echo kept > files/seos-ci-marker")
+    # adb joins shell arguments with spaces, so the device shell must get one quoted command.
+    adb("shell", f"run-as {PACKAGE} sh -c {shlex.quote('mkdir -p files && echo kept > files/seos-ci-marker')}")
     assert marker() == "kept"
 
     adb("install", "-r", new)
