@@ -469,7 +469,8 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R9 — Smart reminders / notifications
 
-- **STATUS:** IMPLEMENTED on `feature/r9-reminders-reconciliation`; PR/CI/merge below.
+- **STATUS:** MERGED. PR #38 (`feature/r9-reminders-reconciliation`), head `6f618cb`,
+  merge `5ed9f02`. Remote CI on `6f618cb`: `verify` ×2 green (no mobile/static change).
 - **BASELINE (`a774be0`), existing and already tested:** adaptive prompts (intensity:
   unanswered cap, doubling backoff, daily cap), CRITICAL escalation ladder (48h…15m, each
   rung once, only the latest crossed), quiet hours, per-account spacing, grouping,
@@ -509,11 +510,10 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   travel push (travel is planner input); delivery is FCM-only (no web push).
 - **NEXT DEPENDENCY:** R10 Android release/update/push.
 
-
 ## R10 — Android release / update / push in CI
 
-- **STATUS:** IMPLEMENTED on `feature/r10-android-release-ci` (PR #39); merge SHA recorded
-  with R11.
+- **STATUS:** MERGED — PR #39, head `a027fdd`, merge `0ce78e2` (all `apk`, `device`,
+  `verify` checks green on the head).
 - **GAP FOUND:** PR CI only assembled a debug APK. Native unit tests, lint, the
   instrumented device tests (notification buttons, wake alarm, update trust) and the
   install/upgrade path ran nowhere but the manual release workflow.
@@ -543,3 +543,61 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 - **NOT COVERED (external):** a physical phone; real FCM delivery from Google (the
   dispatcher's exact FCM payload is exercised, the transport is not); Play/sideload update
   from a production-signed APK (needs the owner's release key, never in CI).
+
+## R11 — Global data lifecycle, migrations, final student journey
+
+- **STATUS:** IMPLEMENTED on `feature/r11-lifecycle-final`, PR #40 (includes `main` after R10);
+  merge SHA reported in the final RC report.
+- **LIFECYCLE (`tests.integration.test_r11_global_lifecycle`, 4; LOCAL INTEGRATION):**
+  one database populated through the real APIs with every feature — tasks with progress
+  and an active execution session, events with a reminder lead, notes, standalone
+  reminders, projects, routines, a manual series with a personal move, an imported
+  academic calendar with a personal note on one class (SOURCE + USER), a group with a
+  shared class and a second member, a capability grant, an encrypted BYOK key — then:
+  - backup (manifest: integrity ok, schema, 2 accounts) → restore into a clean path
+    (sha256 verified, integrity ok, 0 FK violations) → a fresh server on the restored file
+    returns byte-identical JSON for 12 read endpoints for both accounts; the grant token,
+    session and encrypted BYOK still work; no private data crosses accounts;
+  - export: contains the user's tasks, notes, reminders, projects, routines, series and the
+    personal class note; excludes the other account and every secret (BYOK, grant secret,
+    password, master/feed keys) and all credential tables;
+  - deletion: every table with `account_id` has 0 rows for the account (the tombstone keeps
+    only id + deletion metadata by design); session and grant stop working; integrity and FKs
+    ok; the other account's reads are unchanged and the shared group passes to them.
+- **UPGRADE FROM REAL OLD DATA:** `tests/fixtures/upgrade/v22_populated_by_r2.sqlite.gz`
+  (28 KB) was written by the actual R2 code (`d85ff2f`, schema v22; generator committed).
+  Opening it with current code migrates v22→v27; login, tasks (incl. completed), events,
+  notes, reminders read back through today's API; an offline op from before the upgrade
+  replays exactly once; integrity + FK ok; row counts preserved; the documented rollback
+  chain back to v22 is lossless for this data.
+- **MIGRATIONS OVERALL:** fresh → v27 in every test DB; repeated `initialize()`; each of
+  v23–v27 has an upgrade test from the previous version and a rollback test (lossless where
+  documented: v26; fail-closed while data would be lost: v23 source state, v24 connections,
+  v25 live grants, v27 groups); `tests/rollback_chain.py` drives chains from the current
+  version.
+- **FINAL STUDENT JOURNEY (`tests.browser.final_student_e2e`, PRODUCTION-LIKE: real uvicorn
+  server + Chromium 390 px RU):** register → import the university .ics → classes in Today
+  → capture task, note and reminder → personal note on one class → the feed changes
+  (re-import with new SEQUENCE) → personal note survives, no duplicate series → offline
+  capture → reconnect → exactly one row → study group shares an exam, classmate sees it and
+  none of the student's data → MCP grant: read, write (visible in the app), refused outside
+  scope → assistant answers via the local parser, labelled `LOCAL`/`NONE` → the real reminder
+  engine delivers the explicit reminder exactly once → backup → clean restore → a second
+  server returns identical tasks/notes/reminders/groups. 3/3 runs green.
+- **DEFECTS FOUND BY THE JOURNEY (fixed, each with a failing-first test):**
+  1. **Today could answer 500** ("plan id collision or non-deterministic projection"): the
+     plan store compared blocks in `ORDER BY starts_at` *string* order; imported classes carry
+     `+03:00` offsets next to `+00:00` ones, so the same plan read back looked different.
+     Now compared/returned in instant order (`planning/store.py`). Also: a search cut by its
+     wall-clock budget on a loaded server no longer raises — the complete result wins.
+  2. **Capture lost the reminder time**: "Завтра в 10:00 взять зачётку" switched to
+     *Reminder* (before or after the local parse) dropped the time the person wrote (it had
+     been read as the task's target) and left Create disabled. Now the written time becomes
+     the reminder time; a time set by hand is never overwritten by a later parse or AI answer.
+  3. **Group list vs detail**: after the last owner's account was deleted, the list still
+     showed the old role until the detail was opened; the list now applies the same
+     ownership hand-over.
+
+- **RELEASE CHECKLIST:** `docs/implementation/RELEASE_CHECKLIST.md` (code gate, secret
+  rotation, backup + restore drill, deploy, post-deploy smoke incl. `llm-smoke` and a live
+  ChatGPT/Codex connection, rollback plan).

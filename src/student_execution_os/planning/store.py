@@ -18,6 +18,20 @@ def _content_explanations(explanations: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(x for x in explanations if x not in _TRANSITION_EXPLANATIONS)
 
 
+# A search cut short by its wall-clock budget is the one legitimate way the same input
+# can project differently (a loaded server finds the witness later or not at all).
+_BUDGET_CUT = "EXACT_SEARCH_BUDGET_EXHAUSTED"
+
+
+def _budget_cut(plan: PlanSnapshot) -> bool:
+    return _BUDGET_CUT in plan.explanations
+
+
+def _chronological(blocks) -> tuple:
+    # Instants, not ISO strings: "+03:00" and "+00:00" offsets do not sort lexically.
+    return tuple(sorted(blocks, key=lambda block: (block.starts_at, block.ends_at, block.id)))
+
+
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -33,7 +47,15 @@ class SQLitePlanStore:
         if exists is not None:
             persisted = self.get(plan.account_id, plan.id)
             if persisted is None or not self._same_projection(persisted, plan):
-                raise RuntimeError("plan id collision or non-deterministic projection")
+                if persisted is not None and (_budget_cut(plan) or _budget_cut(persisted)):
+                    if _budget_cut(plan):
+                        plan = persisted  # keep what was already found; a timeout adds nothing
+                    else:
+                        # The complete result replaces the budget-cut one for this input.
+                        conn.execute("DELETE FROM plan_snapshots WHERE id=?", (plan.id,))
+                        exists = None
+                else:
+                    raise RuntimeError("plan id collision or non-deterministic projection")
         if exists is None:
             conn.execute(
                 "INSERT INTO plan_snapshots(id,account_id,plan_revision,input_server_revision,input_hash,horizon_start,horizon_end,feasibility_status,generated_at,explanations_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -64,7 +86,7 @@ class SQLitePlanStore:
             and left.horizon_start == right.horizon_start
             and left.horizon_end == right.horizon_end
             and left.feasibility_status == right.feasibility_status
-            and left.blocks == right.blocks
+            and _chronological(left.blocks) == _chronological(right.blocks)
             and _content_explanations(left.explanations) == _content_explanations(right.explanations)
         )
 
@@ -82,6 +104,7 @@ class SQLitePlanStore:
             obligation_id=b["obligation_id"], source_constraint_ids=tuple(json.loads(b["source_constraint_ids_json"])),
             source_event_id=b["source_event_id"], travel_estimate_id=b["travel_estimate_id"], explanation=b["explanation"],
         ) for b in block_rows)
+        blocks = _chronological(blocks)
         return PlanSnapshot(
             id=row["id"], account_id=row["account_id"], plan_revision=row["plan_revision"],
             input_server_revision=int(row["input_server_revision"]), input_hash=row["input_hash"],

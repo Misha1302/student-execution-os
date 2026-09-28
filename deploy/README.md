@@ -493,5 +493,5 @@ counters or the database.
 
 See [docs/ROADMAP.md](../docs/ROADMAP.md): password reset/change, email verification,
 per-account rate limits across several server processes (the limiter is in-process),
-routing, OAuth, automated FCM credential rotation, and paid/managed AI. Local simulation
+routing, automated FCM credential rotation, and paid/managed AI. Local simulation
 is not presented as production delivery.
