@@ -1690,13 +1690,14 @@ class UiService:
                 raise ValueError(result.get("message") or result.get("code") or "task cannot be started")
             return result["entity"]
 
-    def sync(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def sync(self, payload: dict[str, Any], *, actor: ActorCategory = ActorCategory.USER_UI) -> dict[str, Any]:
         operations = payload.get("operations")
         if not isinstance(operations, list):
             raise ValueError("operations must be a list")
         with self._repo() as repo:
             service = SyncService(
-                repo, account_id=self.account_id, principal_id=self.principal.principal_id, now=self._now()
+                repo, account_id=self.account_id, principal_id=self.principal.principal_id, actor=actor,
+                now=self._now(),
             )
             return {
                 "results": service.apply_batch(operations),

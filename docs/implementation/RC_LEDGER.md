@@ -239,8 +239,15 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
 
 ## R5 — Production Groq / AI path
 
-- **STATUS:** IMPLEMENTED on `feature/r5-production-groq`; PR/CI/merge recorded below.
+- **STATUS:** MERGED (code/CI). PR #34 (`feature/r5-production-groq`), head `cab7931`,
+  merge `dab7081`. Remote CI on `cab7931`: `verify` ×2 green, `apk` ×2 green.
   LIVE GROQ: **NOT VERIFIED** (exact blocker below).
+- **CI FINDING FIXED IN THIS PR (`cab7931`):** the PR run on `08d90f9` failed in
+  `series_e2e` (class saved as `МатанализR205`, no room). Root cause: sheets focused their
+  first field from `setTimeout(80)`; on a slow runner (or a quick user) the timer fired
+  after another field was focused and stole the rest of the typing. `ui.js::focusSoon`
+  yields to a text control already chosen in the same sheet; used by all six
+  auto-focusing sheets; new browser regression test fails on the old code (`'R2' != 'R205'`).
 - **BASELINE (`ff0867c`), observed in code, not assumed:** resolution is
   `USER_BYOK > PLATFORM_MANAGED (STARTER) > deterministic local parser`
   (`agent/credentials.py::resolve`); a stored BYOK key keeps precedence even when it
@@ -310,4 +317,49 @@ One entry per stage. Each claim links to executed evidence (tests, CI runs, comm
   a `NETWORK` failure is charged in full even when the connect never happened (httpx
   error classes are merged); relay/proxy endpoints are operator-trusted and not pinned.
 - **NEXT DEPENDENCY:** R6 external capability API + MCP.
+
+## R6 — External capability API + MCP (schema v25)
+
+- **STATUS:** IMPLEMENTED on `feature/r6-external-capabilities-mcp`; PR/CI/merge below.
+- **BASELINE (`dab7081`):** no external-agent surface. Session tokens carry the full
+  authority of the app. Canonical owners: reads = `web/queries.py::UiService`;
+  mutations = typed operations in `sync/commands.py::SyncService` (op_id log in
+  `client_operations`, savepoint per op, field-level LWW + lifecycle-intent `CONFLICT`,
+  account-scoped lookups). No per-op `expected_version` exists in the sync protocol;
+  the conflict contract is the one documented at the top of `sync/commands.py`.
+- **OWNER / IMPLEMENTATION (ADR 0030):** `capabilities.py` (grant store, scopes,
+  deny-by-default operation→scope map, `destructive` for `*.delete`, SHA-256 token
+  hash + constant-time compare, ≤20 active grants, expiry ≤366 d);
+  `web/external.py` (`CapabilityGateway` → `UiService` reads with per-scope withholding,
+  whole-batch authorization then `UiService.sync(actor=USER_VIA_LLM)`; MCP Streamable
+  HTTP stateless JSON at `/mcp`, protocol 2025-06-18/2025-03-26/2024-11-05, tools
+  filtered by scope, denials as `isError` tool results); `web/app.py` (session-only
+  grant management `/api/v1/settings/capabilities`, grant-only `/api/v1/ext/*` and
+  `/mcp`, `INVALID_GRANT` 401 + `WWW-Authenticate`, `CAPABILITY_DENIED` 403);
+  migration `025_capability_grants.sql` + fail-closed `rollback/025_…_down.sql`;
+  lifecycle: grants are account credentials (purged on deletion, never exported).
+- **TESTS (`tests.web.test_capabilities_mcp`, 14, LOCAL INTEGRATION — real app + SQLite):**
+  token shown once / only hash stored (full DB dump checked) / revocation immediate
+  (REST + MCP); owner isolation (Bob cannot list/revoke Alice's grant), grant ≠ session
+  both ways, grant cannot manage grants; scope/expiry validation and expiry at the
+  boundary; allowed vs denied reads per scope, Today withholds `inbox_notes` without
+  `notes:read`; reads never cross accounts; allowed mutation lands in the app's canonical
+  state with `principal_id=grant:<id>` and audit actor `USER_VIA_LLM`; op replay (agent
+  and app outbox share the op_id log), `OP_ID_REUSED`; mixed batch with one denied op
+  applies nothing and records no op_id; unmapped types (projects, constraints, series
+  create/holiday, execution, calibration, transcripts, unknown) denied; `*.delete` needs
+  `destructive`; cross-account update/delete/create/`note.link` rejected without leaking;
+  malformed envelopes / invalid payload / lifecycle `CONFLICT TASK_CANCELLED`; MCP
+  initialize + version negotiation, notification 202, scope-filtered `tools/list`,
+  unknown method/tool, batch 400, missing `jsonrpc`, GET 405; MCP `create_task`
+  exactly-once by op_id, denied tool → `CAPABILITY_DENIED` tool error; account deletion
+  purges only that account's grants (FK + integrity checks); v24→v25 upgrade
+  (idempotent, integrity + FK) and fail-closed rollback until grants are revoked.
+  Rollback chains in v14/v22/v23/v24 tests extended with the v25 step.
+- **LOCAL VERIFICATION (Python 3.13, on `dab7081` + R6):** `make static` OK; `make test`
+  473/473; `make api` 29/29; `make smoke` OK.
+- **KNOWN LIMITATIONS:** tokens are pasted by the user (OAuth consent flow for ChatGPT
+  comes with R7); no per-grant rate limit; a request already authenticated when a grant
+  is revoked completes; the management UI comes with R7.
+- **NEXT DEPENDENCY:** R7 ChatGPT/Codex integration on top of this surface.
 
