@@ -47,6 +47,11 @@ class PlanStoreIntegrationTests(unittest.TestCase):
             store.save(same_projection_new_time)
             with self.assertRaisesRegex(RuntimeError, "non-deterministic projection"):
                 store.save(replace(plan, explanations=("tampered",)))
+            # A -> B -> A: the rebuilt A carries a replan note but is the same plan.
+            other = replace(plan, id="other-plan", input_hash="other-input", plan_revision="other-revision", blocks=())
+            store.save(other)
+            store.save(replace(plan, explanations=plan.explanations + ("REPLAN_INPUT_CHANGED",)))
+            self.assertEqual(store.get_current("a", snapshot.input_hash), plan)
 
 
 if __name__ == "__main__":

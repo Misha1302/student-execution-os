@@ -8,6 +8,16 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 from student_execution_os.planning.model import FeasibilityStatus, PlanBlock, PlanBlockType, PlanSnapshot
 
 
+# How a plan was reached, not what it contains: the plan id is content-addressed by
+# the input hash, so returning to an earlier input (an edit and its undo, two surfaces
+# alternating) rebuilds the same plan with a different transition note.
+_TRANSITION_EXPLANATIONS = frozenset({"REPLAN_INPUT_CHANGED"})
+
+
+def _content_explanations(explanations: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(x for x in explanations if x not in _TRANSITION_EXPLANATIONS)
+
+
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -55,7 +65,7 @@ class SQLitePlanStore:
             and left.horizon_end == right.horizon_end
             and left.feasibility_status == right.feasibility_status
             and left.blocks == right.blocks
-            and left.explanations == right.explanations
+            and _content_explanations(left.explanations) == _content_explanations(right.explanations)
         )
 
     def get(self, account_id: str, plan_id: str) -> PlanSnapshot | None:
