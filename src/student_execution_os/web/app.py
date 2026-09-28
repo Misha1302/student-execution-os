@@ -27,17 +27,23 @@ from student_execution_os.domain.errors import (
     VersionConflict,
 )
 
+from student_execution_os.domain.clock import Clock, FrozenClock, SystemClock
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 from student_execution_os.agent.usage import StarterUsageStore
 from student_execution_os.academic.model import AcademicProviderError
 from student_execution_os.academic.ical import MAX_ICS_BYTES
 
+from student_execution_os.capabilities import SCOPES, CapabilityDenied, CapabilityStore, InvalidGrant
+
 from .auth import AuthConfig, RateLimited, Session, SQLiteAuthStore, Unauthenticated
+from .external import CapabilityGateway, handle_mcp
 from .queries import UiService
 
 
 _ERROR_MAP: tuple[tuple[type[Exception], str, int], ...] = (
     (Unauthenticated, "UNAUTHENTICATED", 401),
+    (InvalidGrant, "INVALID_GRANT", 401),
+    (CapabilityDenied, "CAPABILITY_DENIED", 403),
     (RateLimited, "RATE_LIMITED", 429),
     (EntityNotFound, "NOT_FOUND", 404),
     (VersionConflict, "VERSION_CONFLICT", 409),
@@ -68,6 +74,8 @@ def _error(exc: Exception) -> JSONResponse:
                         "retryable": status == 429,
                     }
                 },
+                headers={"WWW-Authenticate": 'Bearer realm="botay-capabilities"'}
+                if isinstance(exc, InvalidGrant) else None,
             )
     return JSONResponse(
         status_code=500,
@@ -110,6 +118,9 @@ def create_app(
         startup_repo.initialize()
         StarterUsageStore(startup_repo).backfill_entitlements()
     auth_store = None if auth is None else SQLiteAuthStore(database, config=auth, now=now)
+
+    def _clock() -> Clock:
+        return FrozenClock(now()) if now is not None else SystemClock()
     bound_service = None
     if account_id is not None:
         bound_service = UiService(
@@ -608,6 +619,89 @@ def create_app(
                 "No AI key is set up for this account. Deterministic task/event capture remains available."
             ),
         }
+
+    # ---- External agents (MCP / ChatGPT / Codex): capability grants -----------------
+    # Grants are managed only by the signed-in owner (session); a grant token cannot
+    # manage grants. The plaintext token is returned once, at creation.
+    @app.get("/api/v1/settings/capabilities")
+    def list_capability_grants(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        with SQLiteCanonicalRepository(database) as repo:
+            repo.initialize()
+            return {"grants": CapabilityStore(repo).list(service.account_id),
+                    "scopes": [{"id": scope, "description": text} for scope, text in SCOPES.items()]}
+
+    @app.post("/api/v1/settings/capabilities", status_code=201)
+    def create_capability_grant(payload: dict[str, Any] = Body(...),
+                                service: UiService = Depends(current_service)) -> dict[str, Any]:
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            return CapabilityStore(repo).create(service.account_id, service.principal.principal_id, payload)
+
+    @app.delete("/api/v1/settings/capabilities/{grant_id}")
+    def revoke_capability_grant(grant_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            return CapabilityStore(repo).revoke(service.account_id, grant_id)
+
+    def current_gateway(request: Request) -> CapabilityGateway:
+        with SQLiteCanonicalRepository(database, clock=_clock()) as repo:
+            repo.initialize()
+            grant = CapabilityStore(repo).authenticate(_bearer(request))
+        return CapabilityGateway(str(database), grant, now=now)
+
+    @app.get("/api/v1/ext/capabilities")
+    def ext_capabilities(gateway: CapabilityGateway = Depends(current_gateway)) -> dict[str, Any]:
+        return gateway.capabilities()
+
+    @app.get("/api/v1/ext/today")
+    def ext_today(gateway: CapabilityGateway = Depends(current_gateway)) -> dict[str, Any]:
+        return gateway.today()
+
+    @app.get("/api/v1/ext/tasks")
+    def ext_tasks(gateway: CapabilityGateway = Depends(current_gateway)) -> list[dict[str, Any]]:
+        return gateway.tasks()
+
+    @app.get("/api/v1/ext/calendar")
+    def ext_calendar(range: str = "week", anchor: str | None = None,
+                     gateway: CapabilityGateway = Depends(current_gateway)) -> dict[str, Any]:
+        return gateway.calendar(range, anchor)
+
+    @app.get("/api/v1/ext/events")
+    def ext_events(gateway: CapabilityGateway = Depends(current_gateway)) -> list[dict[str, Any]]:
+        return gateway.events()
+
+    @app.get("/api/v1/ext/notes")
+    def ext_notes(q: str = "", include_archived: bool = False,
+                  gateway: CapabilityGateway = Depends(current_gateway)) -> list[dict[str, Any]]:
+        return gateway.notes(q, include_archived)
+
+    @app.get("/api/v1/ext/notes/{note_id}")
+    def ext_note(note_id: str, gateway: CapabilityGateway = Depends(current_gateway)) -> dict[str, Any]:
+        return gateway.note(note_id)
+
+    @app.get("/api/v1/ext/reminders")
+    def ext_reminders(gateway: CapabilityGateway = Depends(current_gateway)) -> list[dict[str, Any]]:
+        return gateway.reminders()
+
+    @app.post("/api/v1/ext/operations")
+    def ext_operations(payload: dict[str, Any] = Body(...),
+                       gateway: CapabilityGateway = Depends(current_gateway)) -> dict[str, Any]:
+        return gateway.apply(payload.get("operations"))
+
+    @app.post("/mcp")
+    def mcp(payload: Any = Body(...), gateway: CapabilityGateway = Depends(current_gateway)):
+        if isinstance(payload, list):  # JSON-RPC batches are not part of MCP 2025-06-18
+            return JSONResponse(status_code=400, content={"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32600, "message": "batch requests are not supported"}})
+        response = handle_mcp(payload, lambda: gateway)
+        if response is None:
+            return Response(status_code=202)
+        return JSONResponse(content=response)
+
+    @app.get("/mcp")
+    def mcp_stream() -> Response:
+        # Stateless JSON mode: no server-initiated SSE stream is offered.
+        return Response(status_code=405, headers={"Allow": "POST"})
 
     # Per-account AI (LLM) credentials. Responses carry only a masked key hint.
     @app.get("/api/v1/settings/llm")

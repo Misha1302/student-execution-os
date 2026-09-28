@@ -264,8 +264,8 @@ _CHILD_TABLE_QUERIES: dict[str, str] = {
 }
 
 
-# Login credentials, session token hashes, encrypted AI provider keys and private
-# academic subscription URLs are
+# Login credentials, session token hashes, encrypted AI provider keys, private
+# academic subscription URLs and external-agent capability grants are
 # account-scoped and purged with the account, but they are never part of the user
 # data export contract.
 _ACCOUNT_CREDENTIAL_TABLES = (
@@ -274,6 +274,7 @@ _ACCOUNT_CREDENTIAL_TABLES = (
     "mobile_devices",
     "llm_credentials",
     "academic_schedule_connections",
+    "capability_grants",
 )
 SECRET_REVOCATION_STATUS = "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER"
 
