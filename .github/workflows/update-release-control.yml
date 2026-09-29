@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: update-control-${{ inputs.channel }}
+  group: update-channel-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
@@ -50,17 +50,37 @@ jobs:
           test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
           test -n "$SEOS_UPDATE_SIGNING_KEY_ID"
           channel="$(printf '%s' '${{ inputs.channel }}' | tr '[:upper:]' '[:lower:]')"
-          tag="updates-$channel"
+          branch="update-$channel"
+          repo="$GITHUB_REPOSITORY"
           mkdir current
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir current
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$repo/contents/policy.json?ref=$branch" > current/policy.json
           python tools/update_policy.py verify --policy current/policy.json
+          current_sequence="$(python -c 'import json; print(json.load(open("current/policy.json"))["sequence"])')"
+          requested_sequence="${{ inputs.sequence }}"
+          if test "$requested_sequence" -le "$current_sequence"; then
+            echo "policy sequence must increase: current=$current_sequence requested=$requested_sequence" >&2
+            exit 1
+          fi
+
           python tools/update_policy.py control --policy current/policy.json --output policy.json \
-            --sequence "${{ inputs.sequence }}" --status "${{ inputs.status }}" \
+            --sequence "$requested_sequence" --status "${{ inputs.status }}" \
             --rollout "${{ inputs.rollout }}" --key-id "$SEOS_UPDATE_SIGNING_KEY_ID"
           python tools/update_policy.py verify --policy policy.json
-          # Discovery metadata is the only mutable asset and is published last.
-          gh release upload "$tag" policy.json --repo "$GITHUB_REPOSITORY" --clobber
+
+          current_sha="$(gh api "repos/$repo/contents/policy.json?ref=$branch" --jq .sha)"
+          gh api --method PUT "repos/$repo/contents/policy.json" \
+            -f message="Control $channel update policy sequence $requested_sequence" \
+            -f content="$(base64 -w0 policy.json)" -f branch="$branch" -f sha="$current_sha" >/dev/null
+
           mkdir published
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir published
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$repo/contents/policy.json?ref=$branch" > published/policy.json
           cmp policy.json published/policy.json
           python tools/update_policy.py verify --policy published/policy.json
+
+          public_url="https://raw.githubusercontent.com/$repo/$branch/policy.json?run=$GITHUB_RUN_ID"
+          curl --fail --location --silent --show-error --header 'Cache-Control: no-cache' \
+            "$public_url" -o published/public-policy.json
+          cmp policy.json published/public-policy.json
+          python tools/update_policy.py verify --policy published/public-policy.json

@@ -66,7 +66,9 @@ class UpdateReleaseContractTests(unittest.TestCase):
         self.assertIn("WITHDRAWN", workflow)
         self.assertIn("--sequence", workflow)
         self.assertIn("update_policy.py verify", workflow)
-        self.assertIn("Discovery metadata is the only mutable asset and is published last", workflow)
+        self.assertIn('branch="update-$channel"', workflow)
+        self.assertIn("repos/$repo/contents/policy.json", workflow)
+        self.assertNotIn('gh release upload "$tag" policy.json', workflow)
 
     def test_client_has_no_hosting_token_or_signature_bypass(self):
         sources = "\n".join(path.read_text(errors="ignore") for path in [

@@ -56,7 +56,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ inputs.channel }}
+  group: update-channel-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
@@ -277,14 +277,43 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          POLICY_SEQUENCE: ${{ inputs.policy_sequence }}
         run: |
           channel="$(printf '%s' '${{ inputs.channel }}' | tr '[:upper:]' '[:lower:]')"
-          tag="updates-$channel"
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-              --title "Signed $channel update policy" --notes "Machine-readable signed metadata; artifacts are in immutable version tags."
-          gh release upload "$tag" policy.json --repo "$GITHUB_REPOSITORY" --clobber
+          branch="update-$channel"
+          repo="$GITHUB_REPOSITORY"
+          current_sha=""
+
+          if gh api "repos/$repo/git/ref/heads/$branch" >/dev/null 2>&1; then
+            if gh api -H "Accept: application/vnd.github.raw+json" \
+              "repos/$repo/contents/policy.json?ref=$branch" > current-policy.json 2>/dev/null; then
+              python tools/update_policy.py verify --policy current-policy.json
+              current_sequence="$(python -c 'import json; print(json.load(open("current-policy.json"))["sequence"])')"
+              if test "$POLICY_SEQUENCE" -le "$current_sequence"; then
+                echo "policy sequence must increase: current=$current_sequence requested=$POLICY_SEQUENCE" >&2
+                exit 1
+              fi
+              current_sha="$(gh api "repos/$repo/contents/policy.json?ref=$branch" --jq .sha)"
+            fi
+          else
+            gh api --method POST "repos/$repo/git/refs" \
+              -f ref="refs/heads/$branch" -f sha="$GITHUB_SHA" >/dev/null
+          fi
+
+          args=(--method PUT "repos/$repo/contents/policy.json"
+            -f message="Publish $channel update policy sequence $POLICY_SEQUENCE"
+            -f content="$(base64 -w0 policy.json)" -f branch="$branch")
+          if test -n "$current_sha"; then args+=(-f sha="$current_sha"); fi
+          gh api "${args[@]}" >/dev/null
+
           mkdir published
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir published
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$repo/contents/policy.json?ref=$branch" > published/policy.json
           cmp policy.json published/policy.json
           python tools/update_policy.py verify --policy published/policy.json
+
+          public_url="https://raw.githubusercontent.com/$repo/$branch/policy.json?run=$GITHUB_RUN_ID"
+          curl --fail --location --silent --show-error --header 'Cache-Control: no-cache' \
+            "$public_url" -o published/public-policy.json
+          cmp policy.json published/public-policy.json
+          python tools/update_policy.py verify --policy published/public-policy.json

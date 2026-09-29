@@ -66,7 +66,7 @@ Release builds intended for sideload auto-update also require the independent si
 policy configuration:
 
 ```bash
-export SEOS_UPDATE_POLICY_URL_TEMPLATE='https://github.com/OWNER/REPO/releases/download/updates-{channel}/policy.json'
+export SEOS_UPDATE_POLICY_URL_TEMPLATE='https://raw.githubusercontent.com/OWNER/REPO/update-{channel}/policy.json'
 export SEOS_UPDATE_TRUST_KEYS_JSON='{"release-2026":"BASE64_ED25519_PUBLIC_KEY"}'
 ```
 
