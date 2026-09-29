@@ -14,4 +14,13 @@ JS, clusters failures, and writes the evidence bundle under
 
 The workflow has a baseline mutation allowlist and fails if the research commit
 changes production source files. Semantic failures do **not** fail the workflow;
-they are the result being measured.
+they are the result being measured. The canonical final evidence run is:
+
+```bash
+PYTHONPATH=src TZ=Europe/Moscow python scripts/run_capture_research_pipeline.py
+```
+
+It executes corpus generation, named coverage audit, JS/Python differential,
+property probes, 12 rendered UI/API/SQLite scenarios, targeted mutations, a
+parser-blind deterministic realism review, true failure shrinking, and report
+generation. `pipeline-run.json` records exact commands, results, and durations.

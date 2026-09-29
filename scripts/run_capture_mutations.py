@@ -10,10 +10,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PY = ROOT / "src/student_execution_os/agent/nlparse.py"
 JS = ROOT / "src/student_execution_os/web/static/js/nlparse.js"
+CAPTURE = ROOT / "src/student_execution_os/web/static/js/capture.js"
+EVENTS = ROOT / "src/student_execution_os/web/static/js/events.js"
 OUT = ROOT / "artifacts/capture-adversarial/mutation-testing.json"
 
 PY_TEST = [sys.executable, "-m", "unittest", "tests.unit.test_nl_capture"]
 JS_TEST = ["node", "tests/js/capture_kind_cases.mjs"]
+BOUNDARY_TEST = ["node", "tests/adversarial_capture/baseline_boundary_cases.mjs"]
 
 
 def digest(path: Path) -> str:
@@ -95,10 +98,52 @@ def main() -> None:
             "const fallback = rx(LONG_EVENT_WORDS).test(parser.low) ? 90 : 61;",
             JS_TEST,
         ),
+        run_mutant(
+            "PY_DEADLINE_ROLE_BECOMES_REMINDER",
+            PY,
+            '"deadline": "actual_cutoff", "remind": "remind_at", "start": "actionable_from"',
+            '"deadline": "remind_at", "remind": "remind_at", "start": "actionable_from"',
+            PY_TEST,
+        ),
+        run_mutant(
+            "JS_DEADLINE_ROLE_BECOMES_REMINDER",
+            JS,
+            "deadline: 'actual_cutoff', remind: 'remind_at', start: 'actionable_from'",
+            "deadline: 'remind_at', remind: 'remind_at', start: 'actionable_from'",
+            JS_TEST,
+        ),
+        run_mutant(
+            "JS_ACTION_VERB_KIND_SIGNAL_REMOVED",
+            JS,
+            "return dated || ACTION_VERB.test(text) ? 'TASK' : 'NOTE';",
+            "return dated ? 'TASK' : 'NOTE';",
+            JS_TEST,
+        ),
+        run_mutant(
+            "JS_ARBITRARY_EVENT_REMINDER_OFFSET_DROPPED",
+            EVENTS,
+            "if (fields.remind_before_minutes != null) payload.remind_before_minutes = fields.remind_before_minutes;",
+            "if (fields.remind_before_minutes != null && fields.remind_before_minutes !== 50) payload.remind_before_minutes = fields.remind_before_minutes;",
+            BOUNDARY_TEST,
+        ),
+        run_mutant(
+            "JS_MANUAL_REMINDER_TIME_OVERRIDE_REMOVED",
+            CAPTURE,
+            "if (old.whenChosen) next.remind_at = old.remind_at;",
+            "if (false && old.whenChosen) next.remind_at = old.remind_at;",
+            BOUNDARY_TEST,
+        ),
+        run_mutant(
+            "JS_MANUAL_REMINDER_DELIVERY_OVERRIDE_REMOVED",
+            CAPTURE,
+            "if (old.deliveryChosen) next.delivery = old.delivery;",
+            "if (false && old.deliveryChosen) next.delivery = old.delivery;",
+            BOUNDARY_TEST,
+        ),
     ]
     payload = {
         "baseline_sha": "7ba92ae0fa99c1526b083cd6bc8afed82dc993fc",
-        "scope": "targeted natural-capture parser mutation testing",
+        "scope": "targeted natural-capture parser, kind, reminder-role, offset and merge mutation testing",
         "results": results,
         "counts": {
             "killed": sum(x["status"] == "KILLED" for x in results),

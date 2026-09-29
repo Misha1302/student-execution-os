@@ -48,6 +48,7 @@ def event_case(i,src='structured',style='STRUCTURED',human=False,correction=Fals
         u=forms[i%len(forms)]
     tags=['EVENT','DATE','TIME','DURATION','RUSSIAN'];
     if r is not None: tags+=['REMINDER_OFFSET',f'OFFSET_{r}']
+    if r is not None and norm(u).startswith(('напомни ', 'пни ')): tags+=['WORD_ORDER']
     if '\n' in u: tags+=['MULTILINE']
     if correction: tags+=['CORRECTION','SELF_CORRECTING']
     return mk(f'{src}-event-{i:04d}',src,style,u,intent,evexp(toks,cat,d,t,dur,r),tags)
@@ -66,14 +67,14 @@ def task_case(i,src='structured',style='STRUCTURED',human=False):
     else:
         u=f'короче {s} {dlx} на это {efx}{rt.replace("напомни","пни")}'
     exp={'kind':'TASK','title_tokens':toks,'category':cat,'deadline':dl.strftime('%Y-%m-%d %H:%M'),'effort':ef,'remind':ra.strftime('%Y-%m-%d %H:%M') if ra else None}
-    return mk(f'{src}-task-{i:04d}',src,style,u,{'kind':'TASK','subject':s,'category':cat,'deadline':dl.isoformat(),'effort_minutes':ef,'remind_at':ra.isoformat() if ra else None},exp,['TASK','DEADLINE','EFFORT']+(['REMINDER'] if ra else []))
+    return mk(f'{src}-task-{i:04d}',src,style,u,{'kind':'TASK','subject':s,'category':cat,'deadline':dl.isoformat(),'effort_minutes':ef,'remind_at':ra.isoformat() if ra else None},exp,['TASK','DATE','TIME','DEADLINE','EFFORT']+(['REMINDER'] if ra else []))
 
 def reminder_case(i,src='structured',style='STRUCTURED',human=False):
     objs=[('купить хлеб',['купить','хлеб']),('написать преподавателю',['напис','преподав']),('позвонить маме',['позвон','мам'])]; j=i%45; s,toks=objs[j%3]; days=[('сегодня',date(2026,9,29)),('завтра',date(2026,9,30)),('послезавтра',date(2026,10,1))]; wd,dd=days[(j//3)%3]; wh=datetime.combine(dd,time(9+(j//9)%5),TZ); w=f'{wd} в {wh:%H:%M}'
     if not human or style == 'REALISTIC_CLEAN': u=f'напомни {w} {s}'
     elif style == 'SPEECH': u=f'так напомни мне пожалуйста {w} {s}'
     else: u=f'{w} пни {s}'
-    return mk(f'{src}-rem-{i:04d}',src,style,u,{'kind':'REMINDER','subject':s,'remind_at':wh.isoformat()},{'kind':'REMINDER','title_tokens':toks,'remind':wh.strftime('%Y-%m-%d %H:%M')},['REMINDER','RUSSIAN'])
+    return mk(f'{src}-rem-{i:04d}',src,style,u,{'kind':'REMINDER','subject':s,'remind_at':wh.isoformat()},{'kind':'REMINDER','title_tokens':toks,'remind':wh.strftime('%Y-%m-%d %H:%M')},['REMINDER','DATE','TIME','RUSSIAN'])
 
 def language_humanize(case, mode):
     intent=case['intent']; kind=intent['kind']
@@ -160,7 +161,7 @@ def build():
         for name,fn in [('LOWER',str.lower),('POLITE',lambda s:'пожалуйста '+s),('PUNCT',lambda s:s.replace(',',' —').replace('.','!'))]:
             x=dict(b); x['id']=f'meta-{i}-{name}'; x['source']='metamorphic'; x['style']=name; x['utterance']=fn(b['utterance']); x['tags']=b['tags']+['METAMORPHIC',name]; meta.append(x)
     seed=event_case(7777,'seed','REALISTIC_CLEAN',True); seed['id']='seed-known-production-like'; seed['utterance']='созвон с ариадной в 18:00 завтра на пол часа.\nНапомни за 50 минут до начала'; seed['intent']={'kind':'EVENT','subject':'созвон с Ариадной','category':'MEETING','date':'2026-09-30','time':'18:00','duration_minutes':30,'remind_before_minutes':50,'deadline':None}; seed['expected']=evexp(['созвон','ариадн'],'MEETING',date(2026,9,30),time(18),30,50); seed['tags']+=['PERMANENT_REGRESSION_SEED']
-    ambiguous=[]; amb=['созвон завтра вечером','позвонить маме в 7','созвон часов в 6','до завтра сделать лабу','напомни перед встречей','врач завтра днем','пни заранее перед созвоном','на следующей неделе наверное курсовая']
+    ambiguous=[]; amb=['созвон завтра вечером','позвонить маме в 7','созвон часов в 6','до завтра сделать лабу','напомни перед встречей','врач завтра днем','пни заранее перед созвоном','созвон завтра в 7']
     for i in range(80): ambiguous.append({'id':f'amb-{i:03d}','utterance':(['','слушай ','эм ','пожалуйста '][(i//8)%4]+amb[i%8]),'ambiguity':'AMBIGUOUS','must_preserve':{'surface_fact':amb[i%8]},'must_not_invent':['exact_minutes','unsupported_exact_date_or_time'],'acceptable_behaviors':['unresolved_field','clarification','conservative_interpretation']})
     return seed,structured,human,meta,ambiguous
 
@@ -239,7 +240,8 @@ def main():
     if distinct_structured < 400: raise RuntimeError(f'structured corpus has only {distinct_structured} distinct semantic intents')
     if unique_human < 800: raise RuntimeError(f'human corpus has only {unique_human} unique utterances')
     wide=[seed,*structured,*human,*meta]; res=run(root,wide); ad=adaptive(wide,res); ar=run(root,ad) if ad else []; cases=wide+ad; res+=ar; by={c['id']:c for c in cases}; fail=[{**r,'utterance':by[r['id']]['utterance'],'source':by[r['id']]['source'],'style':by[r['id']]['style'],'tags':by[r['id']]['tags']} for r in res if not r['pass']]
-    for name,rows in [('seed_regressions',[seed]),('structured_phrases',structured),('human_phrases',human),('ambiguous_phrases',amb),('metamorphic_cases',meta),('adaptive_cases',ad),('failures',fail),('intents',[{'id':c['id'],'intent':c['intent'],'expected':c['expected'],'source':c['source']} for c in cases])]: wr(out/f'{name}.jsonl',rows)
+    full_results=[{**r,'utterance':by[r['id']]['utterance'],'source':by[r['id']]['source'],'style':by[r['id']]['style'],'tags':by[r['id']]['tags']} for r in res]
+    for name,rows in [('seed_regressions',[seed]),('structured_phrases',structured),('human_phrases',human),('ambiguous_phrases',amb),('metamorphic_cases',meta),('adaptive_cases',ad),('results',full_results),('failures',fail),('intents',[{'id':c['id'],'intent':c['intent'],'expected':c['expected'],'source':c['source']} for c in cases])]: wr(out/f'{name}.jsonl',rows)
     grp=Counter(r['cluster'] for r in res if r['cluster']); sev={cl:next(r['severity'] for r in res if r['cluster']==cl) for cl in grp}; sc=Counter(sev.values()); agr=sum(r['js_python_agree'] for r in res); both=sum(r['js_python_agree'] and not r['pass'] for r in res); fields=defaultdict(list)
     for r in res:
         for k,v in r['fields'].items(): fields[k].append(v)
