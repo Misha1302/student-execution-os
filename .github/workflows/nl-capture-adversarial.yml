@@ -41,11 +41,13 @@ jobs:
           fi
       - name: Syntax check research harness
         run: |
-          python -m py_compile scripts/run_capture_adversarial.py scripts/run_capture_mutations.py tests/adversarial_capture/capture_e2e_probe.py
+          python -m py_compile scripts/run_capture_adversarial.py scripts/run_capture_mutations.py tests/adversarial_capture/capture_e2e_probe.py tests/adversarial_capture/property_probe.py
           node --check tests/adversarial_capture/run_js_batch.mjs
           node --check tests/adversarial_capture/ui_payload_probe.mjs
       - name: Run immutable-baseline adversarial capture research
         run: python scripts/run_capture_adversarial.py
+      - name: Run generated semantic property probes
+        run: python tests/adversarial_capture/property_probe.py
       - name: Run rendered capture to real API persistence probe
         run: python -m unittest tests.adversarial_capture.capture_e2e_probe.CaptureAdversarialProbe.test_known_seed_preview_create_api_and_persistence
       - name: Run targeted mutation testing
