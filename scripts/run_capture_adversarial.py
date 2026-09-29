@@ -75,6 +75,53 @@ def reminder_case(i,src='structured',style='STRUCTURED',human=False):
     else: u=f'{w} пни {s}'
     return mk(f'{src}-rem-{i:04d}',src,style,u,{'kind':'REMINDER','subject':s,'remind_at':wh.isoformat()},{'kind':'REMINDER','title_tokens':toks,'remind':wh.strftime('%Y-%m-%d %H:%M')},['REMINDER','RUSSIAN'])
 
+def language_humanize(case, mode):
+    intent=case['intent']; kind=intent['kind']
+    days={'2026-09-29':('сегодня','today'),'2026-09-30':('завтра','tomorrow'),'2026-10-01':('послезавтра','the day after tomorrow'),'2026-10-02':('в пятницу','on Friday')}
+    event_names={
+        'созвон с Ариадной':('call with Ariadna','call с Ариадной'),
+        'встреча с Димой':('meeting with Dima','meeting с Димой'),
+        'лекция по матану':('lecture on calculus','lecture по матану'),
+        'семинар по алгебре':('seminar on algebra','seminar по алгебре'),
+        'приём у врача':('appointment with the doctor','appointment у врача'),
+        'тренировка':('workout','workout'),
+    }
+    task_names={
+        'сдать лабу':('submit the lab','submit лабу'),
+        'закончить отчёт':('finish the report','finish отчёт'),
+        'сделать домашку':('do the homework','do домашку'),
+        'забрать документы':('pick up the documents','pick up документы'),
+    }
+    reminder_names={
+        'купить хлеб':('buy bread','купить bread'),
+        'написать преподавателю':('message the professor','написать professor'),
+        'позвонить маме':('call mom','позвонить mom'),
+    }
+    if kind == 'EVENT':
+        ru_day,en_day=days[intent['date']]; en, mix=event_names[intent['subject']]; dur=intent['duration_minutes']; lead=intent['remind_before_minutes']
+        if mode == 'ENGLISH':
+            u=f"{en_day.capitalize()} at {intent['time']}, {en} for {dur} minutes"
+            if lead is not None: u+=f". Remind me {lead} minutes before"
+        else:
+            u=f"{ru_day} {mix} в {intent['time']} на {dur} min"
+            if lead is not None: u+=f", reminder за {lead} min до начала"
+    elif kind == 'TASK':
+        en,mix=task_names[intent['subject']]; deadline=datetime.fromisoformat(intent['deadline']); ru_day,en_day=days[deadline.date().isoformat()]; effort=intent['effort_minutes']; remind_at=intent.get('remind_at')
+        if mode == 'ENGLISH':
+            u=f"{en}, due {en_day} by {deadline:%H:%M}; about {effort} minutes of work"
+            if remind_at:
+                rr=datetime.fromisoformat(remind_at); rru,ren=days[rr.date().isoformat()]; u+=f". Remind me {ren} at {rr:%H:%M} to start"
+        else:
+            u=f"{mix} {ru_day} до {deadline:%H:%M}, effort {effort} min"
+            if remind_at:
+                rr=datetime.fromisoformat(remind_at); rru,_=days[rr.date().isoformat()]; u+=f", reminder {rru} в {rr:%H:%M} начать"
+    else:
+        en,mix=reminder_names[intent['subject']]; at=datetime.fromisoformat(intent['remind_at']); ru_day,en_day=days[at.date().isoformat()]
+        u=(f"Remind me {en_day} at {at:%H:%M} to {en}" if mode == 'ENGLISH' else f"remind {ru_day} в {at:%H:%M} {mix}")
+    case['utterance']=u
+    case['tags']=[t for t in case['tags'] if t not in {'RUSSIAN','RU_EN','ENGLISH'}]+[mode]
+    return case
+
 def build():
     structured=[event_case(i) for i in range(300)]+[task_case(i) for i in range(120)]+[reminder_case(i) for i in range(40)]
     structured += [mk(f'structured-note-{i:03d}','structured','NOTE','Идея: сравнить варианты архитектуры',{'kind':'NOTE'},{'kind':'NOTE','title_tokens':[]},['NOTE']) for i in range(20)]
@@ -87,6 +134,14 @@ def build():
             elif i%10<9: human.append(task_case(i+1000,'human',style,True))
             else: human.append(reminder_case(i+1000,'human',style,True))
     human += [event_case(i+3000,'human','SELF_CORRECTING',True,True) for i in range(80)]
+    # Language variants are rendered from the independent semantic intent, never
+    # from parser output: 70% RU, 15% RU/EN, 15% EN across the 800 human cases.
+    for i,x in enumerate(human[:720]):
+        if i % 6 == 0: language_humanize(x,'RU_EN')
+        elif i % 6 == 1: language_humanize(x,'ENGLISH')
+        else: x['tags']=[t for t in x['tags'] if t not in {'RU_EN','ENGLISH'}]+(['RUSSIAN'] if 'RUSSIAN' not in x['tags'] else [])
+    for x in human[720:]:
+        x['tags']=[t for t in x['tags'] if t not in {'RU_EN','ENGLISH'}]+(['RUSSIAN'] if 'RUSSIAN' not in x['tags'] else [])
     # Human utterances are evidence only when they are genuinely distinct.  Preserve
     # the independently constructed intent and vary harmless discourse markers on
     # collisions rather than changing expected semantics to fit generated text.
@@ -189,7 +244,7 @@ def main():
     for r in res:
         for k,v in r['fields'].items(): fields[k].append(v)
     probe=json.loads(subprocess.run(['node',str(root/'tests/adversarial_capture/ui_payload_probe.mjs')],text=True,capture_output=True,env={**os.environ,'TZ':Z},check=True).stdout); probe['backend_accepts_50']=extras.parse_lead(50)==50
-    summ={'baseline_sha':BASE,'baseline_tree':TREE,'release':'v0.6.2','timezone':Z,'total_strict_cases':len(cases),'wide_strict_cases':len(wide),'structured_cases':len(structured),'distinct_structured_intents':distinct_structured,'human_cases':len(human),'unique_human_utterances':unique_human,'human_style_counts':dict(Counter(x['style'] for x in human)),'adaptive_human_cases':len(ad),'ambiguous_cases':len(amb),'metamorphic_cases':len(meta),'failure_cases':len(fail),'semantic_accuracy':round(1-len(fail)/len(res),4),'human_accuracy':round(sum(r['pass'] for r in res if by[r['id']]['source'] in {'human','adaptive'})/sum(1 for r in res if by[r['id']]['source'] in {'human','adaptive'}),4),'field_accuracy':{k:round(sum(v)/len(v),4) for k,v in fields.items()},'clusters':dict(grp),'cluster_severity_counts':dict(sc),'js_python_agreement':agr,'js_python_disagreement':len(res)-agr,'js_python_agreement_but_both_wrong':both,'ui_api_probe':probe,'remaining_gaps':['second independent semantic verifier / manual realism adjudication; workflow emits mutation-testing.json, property-testing.json and ui-api-e2e.json separately']}
+    summ={'baseline_sha':BASE,'baseline_tree':TREE,'release':'v0.6.2','timezone':Z,'total_strict_cases':len(cases),'wide_strict_cases':len(wide),'structured_cases':len(structured),'distinct_structured_intents':distinct_structured,'human_cases':len(human),'unique_human_utterances':unique_human,'human_style_counts':dict(Counter(x['style'] for x in human)),'human_language_counts':dict(Counter(next((t for t in x['tags'] if t in {'RUSSIAN','RU_EN','ENGLISH'}),'UNMARKED') for x in human)),'adaptive_human_cases':len(ad),'ambiguous_cases':len(amb),'metamorphic_cases':len(meta),'failure_cases':len(fail),'semantic_accuracy':round(1-len(fail)/len(res),4),'human_accuracy':round(sum(r['pass'] for r in res if by[r['id']]['source'] in {'human','adaptive'})/sum(1 for r in res if by[r['id']]['source'] in {'human','adaptive'}),4),'field_accuracy':{k:round(sum(v)/len(v),4) for k,v in fields.items()},'clusters':dict(grp),'cluster_severity_counts':dict(sc),'js_python_agreement':agr,'js_python_disagreement':len(res)-agr,'js_python_agreement_but_both_wrong':both,'ui_api_probe':probe,'remaining_gaps':['second independent semantic verifier / manual realism adjudication; workflow emits mutation-testing.json, property-testing.json and ui-api-e2e.json separately']}
     (out/'capture-adversarial-summary.json').write_text(json.dumps(summ,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
     tops=[]; top_seen=set()
     for x in sorted((z for z in fail if z['source'] != 'adaptive'),key=lambda x:(int((x['severity'] or 'P9')[1]),len(x['utterance']))):
