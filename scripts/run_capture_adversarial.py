@@ -28,7 +28,7 @@ def evexp(tokens,cat,d,t,dur,r):
 def mk(i,src,style,u,intent,exp,tags): return {'id':i,'source':src,'style':style,'utterance':u,'intent':intent,'expected':exp,'ambiguity':'STRICT','tags':tags}
 
 def event_case(i,src='structured',style='STRUCTURED',human=False,correction=False):
-    s,toks,cat=SUB[i%len(SUB)]; dt,d=DATES[(i*3+i//7)%len(DATES)]; tt,t=TIMES[(i*7+i//11)%len(TIMES)]; du,dur=DURS[(i*5+i//13)%len(DURS)]; r=OFF[(i*7+i//9)%len(OFF)]
+    j=i%330; s,toks,cat=SUB[(j*5)%len(SUB)]; dt,d=DATES[(j*7)%len(DATES)]; tt,t=TIMES[(j//66)%len(TIMES)]; du,dur=DURS[(j//11)%len(DURS)]; r=OFF[j%len(OFF)]
     intent={'kind':'EVENT','subject':s,'category':cat,'date':d.isoformat(),'time':t.strftime('%H:%M'),'duration_minutes':dur,'remind_before_minutes':r,'deadline':None}
     rr='' if r is None else f' напомни {rem(r)} до начала'
     if correction:
@@ -47,13 +47,13 @@ def event_case(i,src='structured',style='STRUCTURED',human=False,correction=Fals
 
 def task_case(i,src='structured',style='STRUCTURED',human=False):
     ss=[('сдать лабу',['сдать','лаб'],'HOMEWORK'),('закончить отчёт',['законч','отчет'],'WORK'),('сделать домашку',['сдел','домаш'],'HOMEWORK'),('забрать документы',['забрат','документ'],'ADMIN')]
-    s,toks,cat=ss[i%4]; dls=[('завтра до 20:00',datetime(2026,9,30,20,tzinfo=TZ)),('к пятнице к 18:00',datetime(2026,10,2,18,tzinfo=TZ)),('сегодня до 23:00',datetime(2026,9,29,23,tzinfo=TZ))]; dlx,dl=dls[(i*2)%3]; efs=[('30 минут работы',30),('час работы',60),('2 часа работы',120),('3 часа работы',180)]; efx,ef=efs[(i*3)%4]; ra=None if i%3==0 else datetime(2026,9,29,17,tzinfo=TZ); rt='' if ra is None else ' напомни сегодня в 17:00 начать'
+    j=i%144; s,toks,cat=ss[j%4]; dls=[('завтра до 20:00',datetime(2026,9,30,20,tzinfo=TZ)),('к пятнице к 18:00',datetime(2026,10,2,18,tzinfo=TZ)),('сегодня до 23:00',datetime(2026,9,29,23,tzinfo=TZ))]; dlx,dl=dls[(j//4)%3]; efs=[('30 минут работы',30),('час работы',60),('2 часа работы',120),('3 часа работы',180)]; efx,ef=efs[(j//12)%4]; ropts=[(None,''),(datetime(2026,9,29,17,tzinfo=TZ),' напомни сегодня в 17:00 начать'),(datetime(2026,9,30,16,tzinfo=TZ),' напомни завтра в 16:00 начать')]; ra,rt=ropts[(j//48)%3]
     u=(f'{s} {dlx}, {efx}.{rt}' if not human or i%2==0 else f'короче {s} {dlx} на это {efx}{rt.replace("напомни","пни")}')
     exp={'kind':'TASK','title_tokens':toks,'category':cat,'deadline':dl.strftime('%Y-%m-%d %H:%M'),'effort':ef,'remind':ra.strftime('%Y-%m-%d %H:%M') if ra else None}
     return mk(f'{src}-task-{i:04d}',src,style,u,{'kind':'TASK','subject':s,'category':cat,'deadline':dl.isoformat(),'effort_minutes':ef,'remind_at':ra.isoformat() if ra else None},exp,['TASK','DEADLINE','EFFORT']+(['REMINDER'] if ra else []))
 
 def reminder_case(i,src='structured',style='STRUCTURED',human=False):
-    objs=[('купить хлеб',['купить','хлеб']),('написать преподавателю',['напис','преподав']),('позвонить маме',['позвон','мам'])]; s,toks=objs[i%3]; wh=datetime(2026,9,30,9+(i%4),tzinfo=TZ); w=f'завтра в {wh:%H:%M}'; u=f'{w} пни {s}' if human else f'напомни {w} {s}'
+    objs=[('купить хлеб',['купить','хлеб']),('написать преподавателю',['напис','преподав']),('позвонить маме',['позвон','мам'])]; j=i%45; s,toks=objs[j%3]; days=[('сегодня',date(2026,9,29)),('завтра',date(2026,9,30)),('послезавтра',date(2026,10,1))]; wd,dd=days[(j//3)%3]; wh=datetime.combine(dd,time(9+(j//9)%5),TZ); w=f'{wd} в {wh:%H:%M}'; u=f'{w} пни {s}' if human else f'напомни {w} {s}'
     return mk(f'{src}-rem-{i:04d}',src,style,u,{'kind':'REMINDER','subject':s,'remind_at':wh.isoformat()},{'kind':'REMINDER','title_tokens':toks,'remind':wh.strftime('%Y-%m-%d %H:%M')},['REMINDER','RUSSIAN'])
 
 def build():
@@ -65,6 +65,15 @@ def build():
         elif i%10<9: human.append(task_case(i+1000,'human','REALISTIC_MESSY',True))
         else: human.append(reminder_case(i+1000,'human','TELEGRAM',True))
     human += [event_case(i+3000,'human','SELF_CORRECTING',True,True) for i in range(80)]
+    # Human utterances are evidence only when they are genuinely distinct.  Preserve
+    # the independently constructed intent and vary harmless discourse markers on
+    # collisions rather than changing expected semantics to fit generated text.
+    fillers=['пожалуйста','плз','если что','заранее спасибо','ок','можно так','спасибо','плиз','🙏','если удобно']
+    seen={}
+    for x in human:
+        base=x['utterance']; n=seen.get(base,0); seen[base]=n+1
+        if n:
+            x['utterance']=f"{base} {fillers[(n-1)%len(fillers)]}" + (f" {n}" if n>len(fillers) else '')
     meta=[]
     for i,b in enumerate(structured[:40]):
         for name,fn in [('LOWER',str.lower),('POLITE',lambda s:'пожалуйста '+s),('PUNCT',lambda s:s.replace(',',' —').replace('.','!'))]:
