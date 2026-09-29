@@ -32,11 +32,15 @@ def event_case(i,src='structured',style='STRUCTURED',human=False,correction=Fals
     intent={'kind':'EVENT','subject':s,'category':cat,'date':d.isoformat(),'time':t.strftime('%H:%M'),'duration_minutes':dur,'remind_before_minutes':r,'deadline':None}
     rr='' if r is None else f' напомни {rem(r)} до начала'
     if correction:
-        wrong=(datetime.combine(d,t)-timedelta(hours=1)).time().strftime('%H:%M'); u=f'{s} {dt} в {wrong} ой нет {tt}, на час... нет {du}'+(f', напомни за час хотя лучше {rem(r)}' if r is not None else '')
+        wrong=(datetime.combine(d,t)-timedelta(hours=1)).time().strftime('%H:%M')
+        wrong_du='на полчаса' if dur == 60 else 'на час'
+        wrong_rem='за полтора часа' if r == 60 else 'за час'
+        u=f'{s} {dt} в {wrong} ой нет {tt}, {wrong_du}... нет {du}'+(f', напомни {wrong_rem} хотя лучше {rem(r)}' if r is not None else '')
     elif human:
-        clean=[f'{dt} {tt} {s} {du},{rr}',f'{s} {dt} {tt} {du}.{rr}']
+        tail='' if not rr else f',{rr}'
+        clean=[f'{dt} {tt} {s} {du}{tail}',f'{s} {dt} {tt} {du}.{rr}']
         messy=[f'короче {dt} {s} {tt} где-то {du}{rr}',f'{dt} {s}\n{tt}\n{dur} мин'+(f'\nпни {r} мин заранее' if r is not None else ''),f'{dt} {s} {tt.replace(":",".")} {dur}мин'+(f' за {r}мин пингани' if r is not None else '')]
-        speech=[f'так {dt} значит у меня {s} {tt} ну {du} наверное'+(f' и напомни минут за {r}' if r is not None else ''),f'эм {dt} у меня {s} {tt} где-то {du} ну и'+(f' пни меня за {r} минут' if r is not None else ' всё')]
+        speech=[f'так {dt} значит у меня {s} {tt} ну {du} наверное'+(f' и напомни {rem(r)}' if r is not None else ''),f'эм {dt} у меня {s} {tt} где-то {du} ну и'+(f' пни меня {rem(r)}' if r is not None else ' всё')]
         pool = clean if style == 'REALISTIC_CLEAN' else speech if style == 'SPEECH' else messy
         u=pool[i%len(pool)]
     else:
@@ -50,7 +54,9 @@ def event_case(i,src='structured',style='STRUCTURED',human=False,correction=Fals
 
 def task_case(i,src='structured',style='STRUCTURED',human=False):
     ss=[('сдать лабу',['сдать','лаб'],'HOMEWORK'),('закончить отчёт',['законч','отчет'],'WORK'),('сделать домашку',['сдел','домаш'],'HOMEWORK'),('забрать документы',['забрат','документ'],'ADMIN')]
-    j=i%144; s,toks,cat=ss[j%4]; dls=[('завтра до 20:00',datetime(2026,9,30,20,tzinfo=TZ)),('к пятнице к 18:00',datetime(2026,10,2,18,tzinfo=TZ)),('сегодня до 23:00',datetime(2026,9,29,23,tzinfo=TZ))]; dlx,dl=dls[(j//4)%3]; efs=[('30 минут работы',30),('час работы',60),('2 часа работы',120),('3 часа работы',180)]; efx,ef=efs[(j//12)%4]; ropts=[(None,''),(datetime(2026,9,29,17,tzinfo=TZ),' напомни сегодня в 17:00 начать'),(datetime(2026,9,30,16,tzinfo=TZ),' напомни завтра в 16:00 начать')]; ra,rt=ropts[(j//48)%3]
+    j=i%144; s,toks,cat=ss[j%4]; dls=[('завтра до 20:00',datetime(2026,9,30,20,tzinfo=TZ)),('в пятницу до 18:00',datetime(2026,10,2,18,tzinfo=TZ)),('сегодня до 23:00',datetime(2026,9,29,23,tzinfo=TZ))]; dlx,dl=dls[(j//4)%3]; efs=[('30 минут работы',30),('час работы',60),('2 часа работы',120),('3 часа работы',180)]; efx,ef=efs[(j//12)%4]; ropts=[(None,''),(datetime(2026,9,29,17,tzinfo=TZ),' напомни сегодня в 17:00 начать'),(datetime(2026,9,30,16,tzinfo=TZ),' напомни завтра в 16:00 начать')]; ra,rt=ropts[(j//48)%3]
+    if ra is not None and ra >= dl:
+        ra=datetime(2026,9,29,17,tzinfo=TZ); rt=' напомни сегодня в 17:00 начать'
     if not human:
         u=f'{s} {dlx}, {efx}.{rt}'
     elif style == 'REALISTIC_CLEAN':
