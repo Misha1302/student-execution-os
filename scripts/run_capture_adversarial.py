@@ -34,8 +34,11 @@ def event_case(i,src='structured',style='STRUCTURED',human=False,correction=Fals
     if correction:
         wrong=(datetime.combine(d,t)-timedelta(hours=1)).time().strftime('%H:%M'); u=f'{s} {dt} в {wrong} ой нет {tt}, на час... нет {du}'+(f', напомни за час хотя лучше {rem(r)}' if r is not None else '')
     elif human:
-        forms=[f'{dt} {tt} {s} {du},{rr}',f'{s} {dt} {tt} {du}.{rr}',f'короче {dt} {s} {tt} где-то {du}{rr}',f'{dt} {s}\n{tt}\n{dur} мин'+(f'\nпни {r} мин заранее' if r is not None else ''),f'так {dt} значит у меня {s} {tt} ну {du} наверное'+(f' и напомни минут за {r}' if r is not None else ''),f'{dt} {s} {tt.replace(":",".")} {dur}мин'+(f' за {r}мин пингани' if r is not None else '')]
-        u=forms[i%len(forms)]
+        clean=[f'{dt} {tt} {s} {du},{rr}',f'{s} {dt} {tt} {du}.{rr}']
+        messy=[f'короче {dt} {s} {tt} где-то {du}{rr}',f'{dt} {s}\n{tt}\n{dur} мин'+(f'\nпни {r} мин заранее' if r is not None else ''),f'{dt} {s} {tt.replace(":",".")} {dur}мин'+(f' за {r}мин пингани' if r is not None else '')]
+        speech=[f'так {dt} значит у меня {s} {tt} ну {du} наверное'+(f' и напомни минут за {r}' if r is not None else ''),f'эм {dt} у меня {s} {tt} где-то {du} ну и'+(f' пни меня за {r} минут' if r is not None else ' всё')]
+        pool = clean if style == 'REALISTIC_CLEAN' else speech if style == 'SPEECH' else messy
+        u=pool[i%len(pool)]
     else:
         forms=[f'{dt} {tt} {s} {du}{rr}',f'{s} {dt} {tt} {du}.{rr}',f'{tt} {dt} {s}, {du}{rr}',f'{du}, {s} {dt} {tt}{rr}',(f'напомни {rem(r)} до начала. ' if r is not None else '')+f'{s} {dt} {tt}, {du}',f'{dt}\n{s}\n{tt}\n{du}'+(f'\nнапомни {rem(r)}' if r is not None else '')]
         u=forms[i%len(forms)]
@@ -48,22 +51,35 @@ def event_case(i,src='structured',style='STRUCTURED',human=False,correction=Fals
 def task_case(i,src='structured',style='STRUCTURED',human=False):
     ss=[('сдать лабу',['сдать','лаб'],'HOMEWORK'),('закончить отчёт',['законч','отчет'],'WORK'),('сделать домашку',['сдел','домаш'],'HOMEWORK'),('забрать документы',['забрат','документ'],'ADMIN')]
     j=i%144; s,toks,cat=ss[j%4]; dls=[('завтра до 20:00',datetime(2026,9,30,20,tzinfo=TZ)),('к пятнице к 18:00',datetime(2026,10,2,18,tzinfo=TZ)),('сегодня до 23:00',datetime(2026,9,29,23,tzinfo=TZ))]; dlx,dl=dls[(j//4)%3]; efs=[('30 минут работы',30),('час работы',60),('2 часа работы',120),('3 часа работы',180)]; efx,ef=efs[(j//12)%4]; ropts=[(None,''),(datetime(2026,9,29,17,tzinfo=TZ),' напомни сегодня в 17:00 начать'),(datetime(2026,9,30,16,tzinfo=TZ),' напомни завтра в 16:00 начать')]; ra,rt=ropts[(j//48)%3]
-    u=(f'{s} {dlx}, {efx}.{rt}' if not human or i%2==0 else f'короче {s} {dlx} на это {efx}{rt.replace("напомни","пни")}')
+    if not human:
+        u=f'{s} {dlx}, {efx}.{rt}'
+    elif style == 'REALISTIC_CLEAN':
+        u=f'{s} {dlx}, {efx}.{rt}'
+    elif style == 'SPEECH':
+        u=f'так мне надо {s} {dlx} ну на это где-то {efx}{rt}'
+    else:
+        u=f'короче {s} {dlx} на это {efx}{rt.replace("напомни","пни")}'
     exp={'kind':'TASK','title_tokens':toks,'category':cat,'deadline':dl.strftime('%Y-%m-%d %H:%M'),'effort':ef,'remind':ra.strftime('%Y-%m-%d %H:%M') if ra else None}
     return mk(f'{src}-task-{i:04d}',src,style,u,{'kind':'TASK','subject':s,'category':cat,'deadline':dl.isoformat(),'effort_minutes':ef,'remind_at':ra.isoformat() if ra else None},exp,['TASK','DEADLINE','EFFORT']+(['REMINDER'] if ra else []))
 
 def reminder_case(i,src='structured',style='STRUCTURED',human=False):
-    objs=[('купить хлеб',['купить','хлеб']),('написать преподавателю',['напис','преподав']),('позвонить маме',['позвон','мам'])]; j=i%45; s,toks=objs[j%3]; days=[('сегодня',date(2026,9,29)),('завтра',date(2026,9,30)),('послезавтра',date(2026,10,1))]; wd,dd=days[(j//3)%3]; wh=datetime.combine(dd,time(9+(j//9)%5),TZ); w=f'{wd} в {wh:%H:%M}'; u=f'{w} пни {s}' if human else f'напомни {w} {s}'
+    objs=[('купить хлеб',['купить','хлеб']),('написать преподавателю',['напис','преподав']),('позвонить маме',['позвон','мам'])]; j=i%45; s,toks=objs[j%3]; days=[('сегодня',date(2026,9,29)),('завтра',date(2026,9,30)),('послезавтра',date(2026,10,1))]; wd,dd=days[(j//3)%3]; wh=datetime.combine(dd,time(9+(j//9)%5),TZ); w=f'{wd} в {wh:%H:%M}'
+    if not human or style == 'REALISTIC_CLEAN': u=f'напомни {w} {s}'
+    elif style == 'SPEECH': u=f'так напомни мне пожалуйста {w} {s}'
+    else: u=f'{w} пни {s}'
     return mk(f'{src}-rem-{i:04d}',src,style,u,{'kind':'REMINDER','subject':s,'remind_at':wh.isoformat()},{'kind':'REMINDER','title_tokens':toks,'remind':wh.strftime('%Y-%m-%d %H:%M')},['REMINDER','RUSSIAN'])
 
 def build():
     structured=[event_case(i) for i in range(300)]+[task_case(i) for i in range(120)]+[reminder_case(i) for i in range(40)]
     structured += [mk(f'structured-note-{i:03d}','structured','NOTE','Идея: сравнить варианты архитектуры',{'kind':'NOTE'},{'kind':'NOTE','title_tokens':[]},['NOTE']) for i in range(20)]
     human=[]
-    for i in range(720):
-        if i%10<7: human.append(event_case(i+1000,'human',['REALISTIC_CLEAN','REALISTIC_MESSY','SPEECH','TELEGRAM','MOBILE','COLLOQUIAL'][i%6],True))
-        elif i%10<9: human.append(task_case(i+1000,'human','REALISTIC_MESSY',True))
-        else: human.append(reminder_case(i+1000,'human','TELEGRAM',True))
+    serial=0
+    for style,count in [('REALISTIC_CLEAN',400),('REALISTIC_MESSY',200),('SPEECH',120)]:
+        for _ in range(count):
+            i=serial; serial+=1
+            if i%10<7: human.append(event_case(i+1000,'human',style,True))
+            elif i%10<9: human.append(task_case(i+1000,'human',style,True))
+            else: human.append(reminder_case(i+1000,'human',style,True))
     human += [event_case(i+3000,'human','SELF_CORRECTING',True,True) for i in range(80)]
     # Human utterances are evidence only when they are genuinely distinct.  Preserve
     # the independently constructed intent and vary harmless discourse markers on
@@ -73,7 +89,11 @@ def build():
     for x in human:
         base=x['utterance']; n=seen.get(base,0); seen[base]=n+1
         if n:
-            x['utterance']=f"{base} {fillers[(n-1)%len(fillers)]}" + (f" {n}" if n>len(fillers) else '')
+            a=fillers[(n-1)%len(fillers)]
+            b=fillers[((n-1)//len(fillers))%len(fillers)]
+            c=fillers[((n-1)//(len(fillers)*len(fillers)))%len(fillers)]
+            suffix=' '.join([a] + ([b] if n>len(fillers) else []) + ([c] if n>len(fillers)*len(fillers) else []))
+            x['utterance']=f"{base} {suffix}"
     meta=[]
     for i,b in enumerate(structured[:40]):
         for name,fn in [('LOWER',str.lower),('POLITE',lambda s:'пожалуйста '+s),('PUNCT',lambda s:s.replace(',',' —').replace('.','!'))]:
