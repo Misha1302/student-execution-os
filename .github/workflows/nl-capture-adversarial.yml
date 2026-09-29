@@ -27,6 +27,8 @@ jobs:
           python-version: '3.13'
       - name: Install project test dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: Install browser for rendered E2E
+        run: python -m playwright install --with-deps chromium
       - name: Baseline guard
         shell: bash
         run: |
@@ -39,11 +41,13 @@ jobs:
           fi
       - name: Syntax check research harness
         run: |
-          python -m py_compile scripts/run_capture_adversarial.py scripts/run_capture_mutations.py
+          python -m py_compile scripts/run_capture_adversarial.py scripts/run_capture_mutations.py tests/adversarial_capture/capture_e2e_probe.py
           node --check tests/adversarial_capture/run_js_batch.mjs
           node --check tests/adversarial_capture/ui_payload_probe.mjs
       - name: Run immutable-baseline adversarial capture research
         run: python scripts/run_capture_adversarial.py
+      - name: Run rendered capture to real API persistence probe
+        run: python -m unittest tests.adversarial_capture.capture_e2e_probe.CaptureAdversarialProbe.test_known_seed_preview_create_api_and_persistence
       - name: Run targeted mutation testing
         run: python scripts/run_capture_mutations.py
       - name: Upload evidence bundle
