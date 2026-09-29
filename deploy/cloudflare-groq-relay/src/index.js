@@ -2,17 +2,20 @@
 //
 // This is NOT a general HTTP proxy. It relays exactly one endpoint,
 //   POST /openai/v1/chat/completions
-// to exactly one hard-coded upstream. Nothing in the request (query, headers, body)
+// to exactly one fixed provider route through Cloudflare AI Gateway. Nothing in the
+// request (query, headers, body)
 // can select another scheme, host, port or path.
 //
 // Trust: the Worker terminates the SEOS -> Worker TLS connection, so it necessarily
 // sees the user's Groq key (Authorization) and the request body before opening a new
 // TLS connection to Groq. It never logs, stores or echoes either, and forwards the key
-// only to UPSTREAM. Worker-generated errors carry X-SEOS-Relay-Error; responses that
+// only to the Groq provider route. Worker-generated errors carry X-SEOS-Relay-Error; responses that
 // come from Groq never do, so SEOS can tell "relay refused" from "Groq refused".
 
 export const RELAY_PATH = "/openai/v1/chat/completions";
-export const UPSTREAM = "https://api.groq.com/openai/v1/chat/completions";
+export const AI_GATEWAY_ID = "default";
+export const AI_GATEWAY_PROVIDER = "groq";
+export const UPSTREAM_PATH = "/chat/completions";
 export const MAX_BODY_BYTES = 1 * 1024 * 1024;
 export const RELAY_ERROR_HEADER = "X-SEOS-Relay-Error";
 // Only these upstream response headers are passed back; everything else is dropped.
@@ -42,6 +45,22 @@ async function tokenMatches(presented, expected) {
   let diff = 0;
   for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
   return diff === 0;
+}
+
+async function resolveUpstream(env) {
+  if (!env?.AI || typeof env.AI.gateway !== "function") return null;
+  try {
+    const base = await env.AI.gateway(AI_GATEWAY_ID).getUrl(AI_GATEWAY_PROVIDER);
+    const url = new URL(base);
+    // The binding supplies the account segment. Everything else remains pinned here.
+    if (url.protocol !== "https:" || url.hostname !== "gateway.ai.cloudflare.com"
+        || url.username !== "" || url.password !== "" || url.port !== ""
+        || url.search !== "" || url.hash !== ""
+        || !/^\/v1\/[^/]+\/default\/groq\/?$/.test(url.pathname)) return null;
+    return `${url.origin}${url.pathname.replace(/\/$/, "")}${UPSTREAM_PATH}`;
+  } catch {
+    return null;
+  }
 }
 
 // Reads the body without ever buffering more than MAX_BODY_BYTES (+ one chunk).
@@ -77,6 +96,8 @@ export async function handle(request, env) {
 
   const expected = typeof env?.RELAY_TOKEN === "string" ? env.RELAY_TOKEN : "";
   if (expected.length < MIN_TOKEN_LENGTH) return relayError(500, "relay_misconfigured");
+  const gatewayToken = typeof env?.AI_GATEWAY_TOKEN === "string" ? env.AI_GATEWAY_TOKEN : "";
+  if (gatewayToken.length < MIN_TOKEN_LENGTH) return relayError(500, "relay_misconfigured");
   const presented = request.headers.get("X-SEOS-Relay-Token") || "";
   if (!(await tokenMatches(presented, expected))) return relayError(401, "unauthorized");
 
@@ -91,12 +112,24 @@ export async function handle(request, env) {
   const body = await readLimited(request);
   if (body === null) return relayError(413, "invalid_request");
 
+  const upstreamUrl = await resolveUpstream(env);
+  if (upstreamUrl === null) return relayError(500, "relay_misconfigured");
+
   let upstream;
   try {
-    upstream = await fetch(UPSTREAM, {
+    upstream = await fetch(upstreamUrl, {
       method: "POST",
       // A fresh header set: nothing from the client except the provider credential.
-      headers: { Authorization: authorization, "Content-Type": "application/json", Accept: "application/json" },
+      // AI Gateway logging and caching are disabled per request because prompts and
+      // responses can contain private student data.
+      headers: {
+        Authorization: authorization,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "cf-aig-authorization": `Bearer ${gatewayToken}`,
+        "cf-aig-collect-log": "false",
+        "cf-aig-skip-cache": "true",
+      },
       body,
       // Never follow a redirect: it would carry the provider credential elsewhere.
       redirect: "manual",

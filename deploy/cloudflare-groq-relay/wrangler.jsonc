@@ -1,5 +1,5 @@
 // Cloudflare Worker: SEOS -> Groq relay. See README.md.
-// No secrets here: RELAY_TOKEN is a Worker secret (`wrangler secret put RELAY_TOKEN`).
+// No secrets here: RELAY_TOKEN and AI_GATEWAY_TOKEN are Worker secrets.
 {
   "name": "seos-groq-relay",
   "main": "src/index.js",
@@ -7,6 +7,9 @@
   // Served only at https://seos-groq-relay.<account-subdomain>.workers.dev.
   "workers_dev": true,
   "preview_urls": false,
+  // The binding resolves the fixed Groq provider URL through AI Gateway. This avoids
+  // direct Worker-to-provider egress while retaining the caller's Groq credential.
+  "ai": { "binding": "AI" },
   // No Workers Logs / invocation logs: requests carry a provider key and prompts.
   "observability": { "enabled": false },
   "logpush": false

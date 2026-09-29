@@ -7,10 +7,15 @@ It is **not** a general proxy. It accepts only
 
     POST /openai/v1/chat/completions   (no query string)
 
-with a valid `X-SEOS-Relay-Token`, a `Authorization: Bearer …` header,
-`Content-Type: application/json` and a body of at most 1 MiB, and forwards it to the
-hard-coded `https://api.groq.com/openai/v1/chat/completions` with `redirect: "manual"`.
-No query parameter or header can choose another scheme, host, port or path.
+with a valid `X-SEOS-Relay-Token`, an `Authorization: Bearer …` header,
+`Content-Type: application/json` and a body of at most 1 MiB. It forwards the request
+through the Worker AI binding to the fixed `default` AI Gateway, fixed `groq` provider,
+and fixed `/chat/completions` path with `redirect: "manual"`. No query parameter or
+header can choose another scheme, host, port, provider, gateway or path.
+
+The relay authenticates to AI Gateway with the `AI_GATEWAY_TOKEN` Worker secret. It
+sets `cf-aig-collect-log: false` and `cf-aig-skip-cache: true` on every upstream request
+so AI Gateway does not retain or cache prompts and responses.
 
 | Case | Status | `X-SEOS-Relay-Error` |
 |---|---|---|
@@ -31,9 +36,9 @@ response has `Cache-Control: no-store`.
 ## Trust
 
 The Worker terminates TLS: Cloudflare can technically see the provider key and prompts
-in transit. The code never logs, stores or echoes them, `observability` is disabled in
-`wrangler.jsonc`, and the key is sent only to the constant upstream. Avoid `wrangler
-tail` on this Worker in production.
+in transit. The code never logs, stores or echoes them, Worker observability is disabled,
+and AI Gateway logging and caching are disabled per request. The key is sent only to the
+pinned Groq provider route. Avoid `wrangler tail` on this Worker in production.
 
 ## Deploy
 
@@ -44,6 +49,8 @@ npx wrangler deploy
 # generate the shared secret into a private file and store it without echoing it
 umask 077; openssl rand -hex 32 > /secure/place/relay-token
 npx wrangler secret put RELAY_TOKEN < /secure/place/relay-token
+# create a least-privilege Cloudflare token with AI Gateway Run permission
+npx wrangler secret put AI_GATEWAY_TOKEN < /secure/place/ai-gateway-token
 ```
 
 The same value goes into the API secret file `llm-egress-relay.token` (see
