@@ -1,0 +1,49 @@
+name: nl-capture-adversarial
+
+on:
+  push:
+    branches:
+      - research/nl-capture-adversarial-v0.6.2-20260929
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src
+      TZ: Europe/Moscow
+    steps:
+      - name: Checkout exact research revision
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Baseline guard
+        shell: bash
+        run: |
+          baseline=7ba92ae0fa99c1526b083cd6bc8afed82dc993fc
+          git merge-base --is-ancestor "$baseline" HEAD
+          git diff --name-only "$baseline"...HEAD | tee /tmp/research-files.txt
+          if grep -Ev '^(\.github/workflows/nl-capture-adversarial\.yml|scripts/run_capture_adversarial\.py|tests/adversarial_capture/)' /tmp/research-files.txt | grep -q .; then
+            echo 'Research branch changed files outside the mutation allowlist' >&2
+            exit 1
+          fi
+      - name: Syntax check research harness
+        run: |
+          python -m py_compile scripts/run_capture_adversarial.py
+          node --check tests/adversarial_capture/run_js_batch.mjs
+          node --check tests/adversarial_capture/ui_payload_probe.mjs
+      - name: Run immutable-baseline adversarial capture research
+        run: python scripts/run_capture_adversarial.py
+      - name: Upload evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-adversarial-${{ github.sha }}
+          path: artifacts/capture-adversarial/**
+          if-no-files-found: error
+          retention-days: 30
