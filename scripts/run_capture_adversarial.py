@@ -146,15 +146,34 @@ def adaptive(cases,results):
     by={c['id']:c for c in cases}; groups=defaultdict(list)
     for r in results:
         if r['cluster'] and r['severity']=='P1': groups[r['cluster']].append(r)
-    out=[]; funcs=[lambda s:'слушай '+s,lambda s:'пожалуйста '+s,lambda s:s.lower(),lambda s:s.replace(',',''),lambda s:s.replace('. ','\n'),lambda s:s.replace('минут','мин'),lambda s:'короче '+s,lambda s:s+' плз']
+    funcs=[
+        lambda s:s.lower(),
+        lambda s:'слушай '+s,
+        lambda s:'пожалуйста '+s,
+        lambda s:s.replace(',',''),
+        lambda s:s.replace('. ','\n'),
+        lambda s:s.replace(' минут',' мин'),
+        lambda s:'короче '+s,
+        lambda s:s+' пожалуйста',
+        lambda s:re.sub(r'(\\d{1,2}):(\\d{2})',r'\\1.\\2',s),
+        lambda s:s.replace('ё','е'),
+    ]
+    out=[]
     for cl,rs in groups.items():
-        b=min((by[r['id']] for r in rs),key=lambda x:len(x['utterance']))
+        bases=[]
+        base_seen=set()
+        for r in sorted(rs,key=lambda x:len(by[x['id']]['utterance'])):
+            b=by[r['id']]
+            if b['utterance'] not in base_seen:
+                base_seen.add(b['utterance']); bases.append(b)
         seen=set(); n=0; i=0
-        while n<50:
-            base=funcs[i%len(funcs)](b['utterance']); u=base+('' if i<len(funcs) else ('!'*(1+i//len(funcs))))
-            if u not in seen:
+        while n<50 and bases:
+            b=bases[i%len(bases)]
+            u=funcs[(i//len(bases))%len(funcs)](b['utterance'])
+            if u not in seen and u != b['utterance']:
                 seen.add(u); x=dict(b); x['id']=f'adaptive-{cl.lower()}-{n:03d}'; x['source']='adaptive'; x['style']='ADAPTIVE_HUMAN'; x['utterance']=u; x['tags']=b['tags']+['ADAPTIVE',cl]; out.append(x); n+=1
             i+=1
+            if i > len(bases)*len(funcs)*3: break
     return out
 
 def main():
@@ -170,9 +189,14 @@ def main():
     for r in res:
         for k,v in r['fields'].items(): fields[k].append(v)
     probe=json.loads(subprocess.run(['node',str(root/'tests/adversarial_capture/ui_payload_probe.mjs')],text=True,capture_output=True,env={**os.environ,'TZ':Z},check=True).stdout); probe['backend_accepts_50']=extras.parse_lead(50)==50
-    summ={'baseline_sha':BASE,'baseline_tree':TREE,'release':'v0.6.2','timezone':Z,'total_strict_cases':len(cases),'wide_strict_cases':len(wide),'structured_cases':len(structured),'distinct_structured_intents':distinct_structured,'human_cases':len(human),'unique_human_utterances':unique_human,'human_style_counts':dict(Counter(x['style'] for x in human)),'adaptive_human_cases':len(ad),'ambiguous_cases':len(amb),'metamorphic_cases':len(meta),'failure_cases':len(fail),'semantic_accuracy':round(1-len(fail)/len(res),4),'human_accuracy':round(sum(r['pass'] for r in res if by[r['id']]['source'] in {'human','adaptive'})/sum(1 for r in res if by[r['id']]['source'] in {'human','adaptive'}),4),'field_accuracy':{k:round(sum(v)/len(v),4) for k,v in fields.items()},'clusters':dict(grp),'cluster_severity_counts':dict(sc),'js_python_agreement':agr,'js_python_disagreement':len(res)-agr,'js_python_agreement_but_both_wrong':both,'ui_api_probe':probe,'remaining_gaps':['targeted mutation execution','full rendered Playwright preview->Create->persisted entity E2E','second LLM verifier/manual realism review']}
+    summ={'baseline_sha':BASE,'baseline_tree':TREE,'release':'v0.6.2','timezone':Z,'total_strict_cases':len(cases),'wide_strict_cases':len(wide),'structured_cases':len(structured),'distinct_structured_intents':distinct_structured,'human_cases':len(human),'unique_human_utterances':unique_human,'human_style_counts':dict(Counter(x['style'] for x in human)),'adaptive_human_cases':len(ad),'ambiguous_cases':len(amb),'metamorphic_cases':len(meta),'failure_cases':len(fail),'semantic_accuracy':round(1-len(fail)/len(res),4),'human_accuracy':round(sum(r['pass'] for r in res if by[r['id']]['source'] in {'human','adaptive'})/sum(1 for r in res if by[r['id']]['source'] in {'human','adaptive'}),4),'field_accuracy':{k:round(sum(v)/len(v),4) for k,v in fields.items()},'clusters':dict(grp),'cluster_severity_counts':dict(sc),'js_python_agreement':agr,'js_python_disagreement':len(res)-agr,'js_python_agreement_but_both_wrong':both,'ui_api_probe':probe,'remaining_gaps':['second independent semantic verifier / manual realism adjudication; workflow emits mutation-testing.json, property-testing.json and ui-api-e2e.json separately']}
     (out/'capture-adversarial-summary.json').write_text(json.dumps(summ,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
-    tops=sorted(fail,key=lambda x:(int((x['severity'] or 'P9')[1]),len(x['utterance'])))[:30]; lines=['# Capture adversarial report','','## Executive summary',f'- Baseline: `{BASE}`',f'- Strict cases: **{len(cases)}**',f'- Human-like: **{len(human)+len(ad)}**',f'- Failures: **{len(fail)}**',f'- Clusters: **{len(grp)}**',f'- P0/P1/P2/P3 clusters: **{dict(sc)}**',f'- JS==Python but both wrong: **{both}**','','## Confirmed structural findings','- Non-range `_event` rejects any `remind_spans`, so EVENT+reminder is structurally disqualified before event construction.','- Event UI lead presets omit 50, while event payload/backend accept 50.','','## Clusters']
+    tops=[]; top_seen=set()
+    for x in sorted((z for z in fail if z['source'] != 'adaptive'),key=lambda x:(int((x['severity'] or 'P9')[1]),len(x['utterance']))):
+        if x['utterance'] in top_seen: continue
+        top_seen.add(x['utterance']); tops.append(x)
+        if len(tops) >= 30: break
+    lines=['# Capture adversarial report','','## Executive summary',f'- Baseline: `{BASE}`',f'- Strict cases: **{len(cases)}**',f'- Human-like: **{len(human)+len(ad)}**',f'- Failures: **{len(fail)}**',f'- Clusters: **{len(grp)}**',f'- P0/P1/P2/P3 clusters: **{dict(sc)}**',f'- JS==Python but both wrong: **{both}**','','## Confirmed structural findings','- Non-range `_event` rejects any `remind_spans`, so EVENT+reminder is structurally disqualified before event construction.','- Event UI lead presets omit 50, while event payload/backend accept 50.','','## Clusters']
     for cl,n in grp.most_common(): lines+=['',f'### {sev[cl]} — {cl} ({n})',f'- Minimal observed: `{min((x["utterance"] for x in fail if x["cluster"]==cl),key=len).replace(chr(10)," / ")}`']
     lines+=['','## Top failing phrases']+[f'- **{x["severity"]} {x["cluster"]}** — `{x["utterance"].replace(chr(10)," / ")}`' for x in tops]+['','## Recommended v0.6.3 scope','1. Preserve EVENT identity when reminder language is present; assign event start/duration/reminder as separate roles.','2. Carry arbitrary event reminder offsets end-to-end; do not coerce 50 to presets.','3. Make the seed a permanent independent-oracle regression.','4. Define correction policy and repair deadline/reminder role confusion shown by clusters.','','## Remaining first-phase gaps','- Targeted mutation runner not yet executed.','- Full rendered Playwright preview -> Create -> persisted entity E2E not yet added.','- Human corpus is deterministic and diverse but still needs manual/second-verifier realism spot-check.','']; (out/'capture-adversarial-report.md').write_text('\n'.join(lines),encoding='utf8')
     print(json.dumps({'strict_cases':len(cases),'human_like':len(human)+len(ad),'ambiguous':len(amb),'failures':len(fail),'clusters':len(grp),'severity':dict(sc),'js_python_agreement_but_both_wrong':both,'report':str(out/'capture-adversarial-report.md')},ensure_ascii=False,indent=2))
