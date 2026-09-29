@@ -4,10 +4,29 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, test } from "node:test";
 
-import worker, { MAX_BODY_BYTES, RELAY_PATH, UPSTREAM } from "../src/index.js";
+import worker, {
+  AI_GATEWAY_ID, AI_GATEWAY_PROVIDER, MAX_BODY_BYTES, RELAY_PATH, UPSTREAM_PATH,
+} from "../src/index.js";
 
 const TOKEN = "t".repeat(64);
-const ENV = { RELAY_TOKEN: TOKEN };
+const GATEWAY_TOKEN = "g".repeat(64);
+const GATEWAY_BASE = "https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/default/groq";
+const UPSTREAM = GATEWAY_BASE + UPSTREAM_PATH;
+const ENV = {
+  RELAY_TOKEN: TOKEN,
+  AI_GATEWAY_TOKEN: GATEWAY_TOKEN,
+  AI: {
+    gateway(id) {
+      assert.equal(id, AI_GATEWAY_ID);
+      return {
+        async getUrl(provider) {
+          assert.equal(provider, AI_GATEWAY_PROVIDER);
+          return GATEWAY_BASE;
+        },
+      };
+    },
+  },
+};
 const BASE = "https://seos-groq-relay.example.workers.dev";
 const realFetch = globalThis.fetch;
 let calls;
@@ -79,6 +98,18 @@ test("a missing or weak Worker secret fails closed", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("a missing or weak AI Gateway token fails closed", async () => {
+  for (const gatewayToken of [undefined, "", "short"]) {
+    const env = { ...ENV };
+    if (gatewayToken === undefined) delete env.AI_GATEWAY_TOKEN;
+    else env.AI_GATEWAY_TOKEN = gatewayToken;
+    const response = await worker.fetch(relayRequest(), env);
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "relay_misconfigured");
+  }
+  assert.equal(calls.length, 0);
+});
+
 test("provider Authorization and JSON content type are required", async () => {
   let response = await worker.fetch(relayRequest({ headers: { Authorization: "" } }), ENV);
   assert.equal(response.status, 400);
@@ -107,11 +138,19 @@ test("a valid request goes only to the hard-coded upstream with a fresh header s
   assert.equal(response.status, 200);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, UPSTREAM);
-  assert.equal(UPSTREAM, "https://api.groq.com/openai/v1/chat/completions");
+  assert.equal(AI_GATEWAY_ID, "default");
+  assert.equal(AI_GATEWAY_PROVIDER, "groq");
+  assert.equal(UPSTREAM_PATH, "/chat/completions");
   assert.equal(calls[0].init.method, "POST");
   assert.equal(calls[0].init.redirect, "manual");
-  assert.deepEqual(Object.keys(calls[0].init.headers).sort(), ["Accept", "Authorization", "Content-Type"]);
+  assert.deepEqual(Object.keys(calls[0].init.headers).sort(), [
+    "Accept", "Authorization", "Content-Type", "cf-aig-authorization", "cf-aig-collect-log",
+    "cf-aig-skip-cache",
+  ]);
   assert.equal(calls[0].init.headers.Authorization, "Bearer gsk-test");
+  assert.equal(calls[0].init.headers["cf-aig-authorization"], `Bearer ${GATEWAY_TOKEN}`);
+  assert.equal(calls[0].init.headers["cf-aig-collect-log"], "false");
+  assert.equal(calls[0].init.headers["cf-aig-skip-cache"], "true");
   assert.equal(new TextDecoder().decode(calls[0].init.body), '{"model":"m"}');
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(response.headers.get("X-SEOS-Relay-Error"), null);
@@ -165,18 +204,38 @@ test("an unreachable upstream is a relay error", async () => {
   assert.equal(response.headers.get("X-SEOS-Relay-Error"), "provider_unreachable");
 });
 
+test("a missing, broken or unexpected AI Gateway binding fails closed", async () => {
+  const badEnvironments = [
+    { RELAY_TOKEN: TOKEN, AI_GATEWAY_TOKEN: GATEWAY_TOKEN },
+    { RELAY_TOKEN: TOKEN, AI_GATEWAY_TOKEN: GATEWAY_TOKEN, AI: {} },
+    { RELAY_TOKEN: TOKEN, AI_GATEWAY_TOKEN: GATEWAY_TOKEN, AI: { gateway: () => ({ getUrl: async () => "https://evil.example/groq" }) } },
+    { RELAY_TOKEN: TOKEN, AI_GATEWAY_TOKEN: GATEWAY_TOKEN, AI: { gateway: () => ({ getUrl: async () => `${GATEWAY_BASE}/other` }) } },
+    { RELAY_TOKEN: TOKEN, AI_GATEWAY_TOKEN: GATEWAY_TOKEN, AI: { gateway: () => ({ getUrl: async () => { throw new Error("broken"); } }) } },
+  ];
+  for (const env of badEnvironments) {
+    const response = await worker.fetch(relayRequest(), env);
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get("X-SEOS-Relay-Error"), "relay_misconfigured");
+  }
+  assert.equal(calls.length, 0);
+});
+
 test("the source never logs and has no generic target parsing", () => {
   const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /console\./);
   // One outbound call site; the other "fetch(" is the handler definition itself.
   assert.equal((source.match(/\bfetch\(/g) || []).length, 2);
   assert.match(source, /^  fetch\(request, env\) \{$/m);
-  assert.match(source, /await fetch\(UPSTREAM,/);
+  assert.match(source, /await fetch\(upstreamUrl,/);
   assert.match(source, /redirect: "manual"/);
-  assert.doesNotMatch(source, /searchParams|X-Target|x-target|\.get\("url"\)|new URL\([^r]/);
+  assert.match(source, /gateway\(AI_GATEWAY_ID\)\.getUrl\(AI_GATEWAY_PROVIDER\)/);
+  assert.match(source, /"cf-aig-collect-log": "false"/);
+  assert.match(source, /"cf-aig-skip-cache": "true"/);
+  assert.doesNotMatch(source, /searchParams|X-Target|x-target|\.get\("url"\)/);
   const config = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   assert.match(config, /"name": "seos-groq-relay"/);
   assert.match(config, /"observability": \{ "enabled": false \}/);
+  assert.match(config, /"ai": \{ "binding": "AI" \}/);
   assert.doesNotMatch(config, /RELAY_TOKEN"\s*:|"vars"/);
 });
 
