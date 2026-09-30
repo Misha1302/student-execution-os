@@ -80,7 +80,7 @@ export default {
           <button type="button" class="chip-toggle" data-action="detail-edit" data-focus="effort">${esc(t('duration.other'))}</button></div>
         <small class="help">${esc(t('task.draftHelp'))}</small>
       </section>` : `<section class="card effort-card">
-        <div class="effort-row"><span>${esc(t('task.effort'))}</span><strong>${esc(t('task.effortValue', { left: fmtDuration(left), total: fmtDuration(total) }))}</strong></div>
+        <div class="effort-row"><span>${esc(t('task.effort'))}</span><strong>${esc(task.effort_estimate_source === 'SYSTEM_PROVISIONAL' ? t('task.provisional', { lo: fmtDuration(task.remaining_effort_low_minutes ?? 15), hi: fmtDuration(task.remaining_effort_high_minutes ?? 60) }) : t('task.effortValue', { left: fmtDuration(left), total: fmtDuration(total) }))}</strong></div>
         ${task.count_progress ? `<div class="effort-row"><span>${esc(t('task.countProgress'))}</span><strong>${esc(t('task.countValue', { done: task.count_progress.done, total: task.count_progress.total, unit: task.count_progress.unit || '', pct: Math.round((task.count_progress.done / task.count_progress.total) * 100) }))}</strong></div>` : ''}
         <span class="progress big" aria-label="${pct}%"><span data-w="${pct}"></span></span>
         ${task.remaining_effort_low_minutes != null && task.remaining_effort_high_minutes != null ? `<p class="help">${esc(t('task.range', { lo: fmtDuration(task.remaining_effort_low_minutes), hi: fmtDuration(task.remaining_effort_high_minutes) }))}</p>` : ''}
@@ -186,4 +186,3 @@ export default {
     }
   },
 };
-

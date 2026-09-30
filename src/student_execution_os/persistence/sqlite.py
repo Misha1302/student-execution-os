@@ -344,6 +344,7 @@ class SQLiteCanonicalRepository:
         remaining_effort_low_minutes: int | None = None,
         remaining_effort_high_minutes: int | None = None,
         lifecycle_status: LifecycleStatus | None = None,
+        effort_estimate_source: str | None = None,
     ) -> Task:
         resolved_status = lifecycle_status or (
             LifecycleStatus.DRAFT if estimated_total_effort_minutes is None else LifecycleStatus.ACTIVE
@@ -372,6 +373,7 @@ class SQLiteCanonicalRepository:
             estimated_total_effort_high_minutes=estimated_total_effort_high_minutes,
             remaining_effort_low_minutes=remaining_effort_low_minutes,
             remaining_effort_high_minutes=remaining_effort_high_minutes,
+            effort_estimate_source=effort_estimate_source,
         )
         with self._tx() as conn:
             self._require_account(account_id)
@@ -405,6 +407,7 @@ class SQLiteCanonicalRepository:
                 entity_id=obligation.id,
                 action="CREATE_TASK",
                 actor=actor,
+                payload={'effort_estimate_source': task.effort_estimate_source},
             )
         return task
 
@@ -423,6 +426,14 @@ class SQLiteCanonicalRepository:
             boundary=CutoffBoundary(row["cutoff_boundary"]) if row["cutoff_boundary"] else None,
             precision=TemporalPrecision(row["cutoff_precision"]) if row["cutoff_precision"] else None,
         )
+        source = None
+        if row['estimated_total_effort_low_minutes'] is not None:
+            provenance = self.connection.execute(
+                "SELECT payload_json FROM audit_changes WHERE account_id=? AND entity_id=? AND action='CREATE_TASK' ORDER BY server_revision DESC LIMIT 1",
+                (account_id, obligation_id),
+            ).fetchone()
+            if provenance:
+                source = json.loads(provenance['payload_json'] or '{}').get('effort_estimate_source')
         return Task(
             obligation=obligation,
             estimated_total_effort_minutes=(
@@ -443,6 +454,7 @@ class SQLiteCanonicalRepository:
             remaining_effort_high_minutes=row["remaining_effort_high_minutes"],
             started_at=_dt(row["started_at"]),
             last_progress_at=_dt(row["last_progress_at"]),
+            effort_estimate_source=source,
         )
 
     def _obligation_from_row(self, row: sqlite3.Row) -> Obligation:
@@ -526,6 +538,13 @@ class SQLiteCanonicalRepository:
         )
         if current.estimated_total_effort_minutes is None and next_estimate is not None and remaining_effort_minutes is _UNSET:
             next_remaining = next_estimate
+        if estimated_total_effort_minutes is not _UNSET:
+            if current.effort_estimate_source == 'SYSTEM_PROVISIONAL' and remaining_effort_minutes is _UNSET:
+                next_remaining = next_estimate
+            if remaining_effort_low_minutes is _UNSET:
+                remaining_effort_low_minutes = None
+            if remaining_effort_high_minutes is _UNSET:
+                remaining_effort_high_minutes = None
         candidate = Task(
             obligation=new_obligation,
             estimated_total_effort_minutes=next_estimate,
@@ -536,12 +555,13 @@ class SQLiteCanonicalRepository:
             actionable_from=current.actionable_from if actionable_from is _UNSET else actionable_from,
             actual_cutoff=current.actual_cutoff if actual_cutoff is _UNSET else actual_cutoff,
             target_at=current.target_at if target_at is _UNSET else target_at,
-            estimated_total_effort_low_minutes=current.estimated_total_effort_low_minutes,
-            estimated_total_effort_high_minutes=current.estimated_total_effort_high_minutes,
+            estimated_total_effort_low_minutes=current.estimated_total_effort_low_minutes if estimated_total_effort_minutes is _UNSET else None,
+            estimated_total_effort_high_minutes=current.estimated_total_effort_high_minutes if estimated_total_effort_minutes is _UNSET else None,
             remaining_effort_low_minutes=(current.remaining_effort_low_minutes if remaining_effort_low_minutes is _UNSET else remaining_effort_low_minutes),
             remaining_effort_high_minutes=(current.remaining_effort_high_minutes if remaining_effort_high_minutes is _UNSET else remaining_effort_high_minutes),
             started_at=current.started_at if started_at is _UNSET else started_at,
             last_progress_at=current.last_progress_at if last_progress_at is _UNSET else last_progress_at,
+            effort_estimate_source=current.effort_estimate_source if estimated_total_effort_minutes is _UNSET else None,
         )
         with self._tx() as conn:
             cur = conn.execute(
@@ -556,7 +576,7 @@ class SQLiteCanonicalRepository:
             if cur.rowcount != 1:
                 raise VersionConflict("obligation version changed before commit")
             conn.execute(
-                "UPDATE tasks SET estimated_total_effort_minutes=?,remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,splittable=?,min_chunk_minutes=?,max_chunk_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=?,started_at=?,last_progress_at=? WHERE obligation_id=?",
+                "UPDATE tasks SET estimated_total_effort_minutes=?,remaining_effort_minutes=?,remaining_effort_low_minutes=?,remaining_effort_high_minutes=?,splittable=?,min_chunk_minutes=?,max_chunk_minutes=?,actionable_from=?,cutoff_state=?,actual_cutoff_at=?,cutoff_boundary=?,cutoff_precision=?,target_at=?,started_at=?,last_progress_at=?,estimated_total_effort_low_minutes=?,estimated_total_effort_high_minutes=? WHERE obligation_id=?",
                 (
                     candidate.estimated_total_effort_minutes,
                     candidate.remaining_effort_minutes,
@@ -573,6 +593,8 @@ class SQLiteCanonicalRepository:
                     _iso(candidate.target_at),
                     _iso(candidate.started_at),
                     _iso(candidate.last_progress_at),
+                    candidate.estimated_total_effort_low_minutes,
+                    candidate.estimated_total_effort_high_minutes,
                     obligation_id,
                 ),
             )

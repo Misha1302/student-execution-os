@@ -345,6 +345,7 @@ class UiService:
             "status": task.obligation.lifecycle_status.value,
             "version": task.obligation.version,
             "estimated_total_effort_minutes": task.estimated_total_effort_minutes,
+            "effort_estimate_source": task.effort_estimate_source,
             "estimated_total_effort_low_minutes": task.estimated_total_effort_low_minutes,
             "estimated_total_effort_high_minutes": task.estimated_total_effort_high_minutes,
             "remaining_effort_minutes": task.remaining_effort_minutes,
@@ -1592,6 +1593,12 @@ class UiService:
         effort = None if raw_effort in (None, "") else int(raw_effort)
         raw_remaining = payload.get("remaining_effort_minutes", effort)
         remaining = None if raw_remaining in (None, "") else int(raw_remaining)
+        provisional = payload.get("provisional_effort", "estimated_total_effort_minutes" not in payload)
+        if not isinstance(provisional, bool):
+            raise ValueError("provisional_effort must be a boolean")
+        provisional = effort is None and provisional
+        if provisional:
+            effort = remaining = 30
         with self._repo() as repo:
             task = repo.create_task(
                 account_id=self.account_id,
@@ -1600,17 +1607,18 @@ class UiService:
                 category=ObligationCategory(payload.get("category", ObligationCategory.GENERAL.value)),
                 importance=Importance(payload.get("importance", Importance.NORMAL.value)),
                 estimated_total_effort_minutes=effort,
-                estimated_total_effort_low_minutes=payload.get("estimated_total_effort_low_minutes"),
-                estimated_total_effort_high_minutes=payload.get("estimated_total_effort_high_minutes"),
+                estimated_total_effort_low_minutes=15 if provisional else payload.get("estimated_total_effort_low_minutes"),
+                estimated_total_effort_high_minutes=60 if provisional else payload.get("estimated_total_effort_high_minutes"),
                 remaining_effort_minutes=remaining,
-                remaining_effort_low_minutes=payload.get("remaining_effort_low_minutes"),
-                remaining_effort_high_minutes=payload.get("remaining_effort_high_minutes"),
+                remaining_effort_low_minutes=15 if provisional else payload.get("remaining_effort_low_minutes"),
+                remaining_effort_high_minutes=60 if provisional else payload.get("remaining_effort_high_minutes"),
+                effort_estimate_source='SYSTEM_PROVISIONAL' if provisional else None,
                 splittable=bool(payload.get("splittable", False)),
                 min_chunk_minutes=payload.get("min_chunk_minutes"),
                 max_chunk_minutes=payload.get("max_chunk_minutes"),
                 actionable_from=_dt(payload.get("actionable_from")),
                 target_at=_dt(payload.get("target_at")),
-                actual_cutoff=_cutoff(payload.get("actual_cutoff")),
+                actual_cutoff=_cutoff(payload.get("actual_cutoff", {"state": "ABSENT"} if provisional else None)),
                 actor=ActorCategory.USER_UI,
             )
             ReminderStore(repo).touch(self.account_id, task.obligation.id, self._now())

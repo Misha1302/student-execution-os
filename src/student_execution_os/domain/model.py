@@ -217,8 +217,14 @@ class Task:
     # drive reminder follow-ups, never feasibility.
     started_at: datetime | None = None
     last_progress_at: datetime | None = None
+    effort_estimate_source: str | None = None
 
     def __post_init__(self) -> None:
+        if self.effort_estimate_source is None:
+            source = 'UNKNOWN' if self.estimated_total_effort_minutes is None else 'RANGE' if self.estimated_total_effort_low_minutes is not None else 'EXPLICIT'
+            object.__setattr__(self, 'effort_estimate_source', source)
+        if self.effort_estimate_source not in {'UNKNOWN', 'RANGE', 'EXPLICIT', 'SYSTEM_PROVISIONAL'}:
+            raise ValidationError('invalid effort estimate source')
         if self.obligation.kind is not ObligationKind.TASK:
             raise ValidationError("Task requires TASK obligation kind")
         active = self.obligation.lifecycle_status is LifecycleStatus.ACTIVE
