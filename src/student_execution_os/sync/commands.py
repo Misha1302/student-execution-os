@@ -371,6 +371,12 @@ class Commands:
                 raise ValidationError("task id is already in use")
             return Outcome(NOOP, task_payload(self._task(task_id)), "ALREADY_EXISTS", "task already exists")
         effort = _minutes(payload.get("estimated_total_effort_minutes"), "estimated_total_effort_minutes", allow_none=True)
+        provisional = payload.get("provisional_effort", "estimated_total_effort_minutes" not in payload)
+        if not isinstance(provisional, bool):
+            raise ValidationError("provisional_effort must be a boolean")
+        low = high = None
+        if effort is None and provisional:
+            effort, low, high = 30, 15, 60
         splittable = bool(payload.get("splittable", False))
         remind = self._remind_at(payload)
         task = self.repo.create_task(
@@ -379,12 +385,15 @@ class Commands:
             category=ObligationCategory(payload.get("category") or ObligationCategory.GENERAL.value),
             importance=Importance(payload.get("importance") or Importance.NORMAL.value),
             estimated_total_effort_minutes=effort, remaining_effort_minutes=effort,
+            estimated_total_effort_low_minutes=low, estimated_total_effort_high_minutes=high,
+            remaining_effort_low_minutes=low, remaining_effort_high_minutes=high,
+            effort_estimate_source='SYSTEM_PROVISIONAL' if low is not None else None,
             splittable=splittable,
             min_chunk_minutes=_minutes(payload.get("min_chunk_minutes"), "min_chunk_minutes", allow_none=True) if splittable else None,
             max_chunk_minutes=_minutes(payload.get("max_chunk_minutes"), "max_chunk_minutes", allow_none=True) if splittable else None,
             actionable_from=parse_instant(payload.get("actionable_from"), "actionable_from"),
             target_at=parse_instant(payload.get("target_at"), "target_at"),
-            actual_cutoff=parse_cutoff(payload.get("actual_cutoff")),
+            actual_cutoff=parse_cutoff(payload.get("actual_cutoff", {"state": "ABSENT"} if low is not None else None)),
             actor=self._capture_actor(payload),
         )
         changed, count = self._count(payload, None)
@@ -445,6 +454,8 @@ class Commands:
             estimate = _minutes(payload["estimated_total_effort_minutes"], "estimated_total_effort_minutes",
                                 allow_none=current.obligation.lifecycle_status is LifecycleStatus.DRAFT)
             fields["estimated_total_effort_minutes"] = estimate
+            fields["remaining_effort_low_minutes"] = None
+            fields["remaining_effort_high_minutes"] = None
             if estimate is None:
                 fields["remaining_effort_minutes"] = None
         if "remaining_effort_minutes" in payload and estimate is not None:

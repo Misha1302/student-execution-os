@@ -370,7 +370,7 @@ class _Parser:
         prep = r"(?:(к|до|в|во|около|после|с|со|не\s+позже|не\s+позднее|не\s+раньше|at|by|before|until|after|from|around)\s+)?"
         suffix = r"(?:\s*(утра|дня|вечера|ночи|am|pm|a\.m\.|p\.m\.))?"
         # 18:00, 9.30 pm, в 18:30
-        for match in self.scan(rf"(?<![\w.:]){prep}(\d{{1,2}})[:.](\d{{2}})(?![\w.:]){suffix}"):
+        for match in self.scan(rf"(?<![\w.:]){prep}(\d{{1,2}})[:.](\d{{2}})(?![\w:]|\.\d){suffix}"):
             hour, minute = int(match.group(2)), int(match.group(3))
             if hour < 24 and minute < 60:
                 self._time_piece(match, _hour(hour, match.group(4), explicit=True), minute, match.group(1))
@@ -511,6 +511,7 @@ class _Parser:
             rf"(?<!\w)(?:за\s+)?({_NUM})\s*{unit}\s+(?:до\s+начала|заранее|before(?:\s+(?:the\s+)?start)?)(?!\w)",
             rf"(?<!\w){cue}\s+(?:за\s+)?(час|полчаса|полтора\s+часа)(?:\s+(?:до\s+начала|заранее|before(?:\s+(?:the\s+)?start)?))?(?!\w)",
         ]
+        latest_position, latest_minutes = -1, None
         for pattern in patterns:
             for match in self.scan(pattern):
                 token = match.group(1)
@@ -530,8 +531,13 @@ class _Parser:
                     continue
                 self.take(match.start(), match.end())
                 self.remind_word = True
-                return minutes
-        return None
+                if match.start() > latest_position:
+                    latest_position, latest_minutes = match.start(), minutes
+        for match in self.scan(r"(?<!\w)(?:без\s+напоминания|no\s+reminder|without\s+(?:a\s+)?reminder)(?!\w)"):
+            self.take(match.start(), match.end())
+            if match.start() > latest_position:
+                latest_position, latest_minutes = match.start(), None
+        return latest_minutes
 
     def deadline_words(self) -> bool:
         return bool(re.search(r"(?<!\w)(?:сдать|сдача|сдаю|дедлайн\w*|срок\w*|отправить\s+до|due|deadline|submit|hand\s+in|turn\s+in)(?!\w)", self.low))
@@ -633,6 +639,56 @@ def _group(pieces: list[_Piece], low: str) -> list[_Moment]:
     return moments
 
 
+def _temporal_propositions(text: str, now: datetime, zone: ZoneInfo) -> _Parser:
+    parser = _Parser(text, now, zone)
+    parser.relative()
+    parser.period_ends()
+    parser.dates()
+    parser.intervals()
+    parser.times()
+    return parser
+
+
+def _corrected_text(text: str, now: datetime, zone: ZoneInfo) -> str:
+    turns = re.split(r"(?<!\w)(?:нет(?=\s*[,،]|\s+не\b|\s+в\b)\s*[,،]?\s*|no\b\s*[,،]\s*|actually\b\s+(?:make\s+it\s+)?)", text, flags=re.IGNORECASE)
+    current = turns[0]
+    for turn in turns[1:]:
+        turn = turn.strip(" ,.—–")
+        turn = re.sub(r"^(?:не|not)\s+.*?\s*,?\s+(?:а|but)\s+", "", turn, flags=re.IGNORECASE)
+        turn = re.sub(r"\s+instead\b", "", turn, flags=re.IGNORECASE)
+        previous = _temporal_propositions(current, now, zone)
+        bare_clock = re.fullmatch(r"([1-7]):(\d{2})", turn)
+        old_clock = next((piece.value for piece in previous.pieces if piece.kind == "time"), None)
+        if bare_clock and old_clock and old_clock.hour >= 12:
+            turn = f"{int(bare_clock.group(1)) + 12}:{bare_clock.group(2)}"
+        replacement = _temporal_propositions(turn, now, zone)
+        kinds = {piece.kind for piece in replacement.pieces}
+        if not kinds:
+            current += " " + turn
+            continue
+        changes = []
+        additions = []
+        for piece in sorted(replacement.pieces, key=lambda piece: piece.start):
+            old = next((old for old in previous.pieces if old.kind == piece.kind), None)
+            value = turn[piece.start:piece.end]
+            if old:
+                changes.append((old.start, old.end, value))
+            else:
+                additions.append(value)
+        for start, end, value in sorted(changes, reverse=True):
+            current = current[:start] + value + current[end:]
+        remainder = "".join(char for index, char in enumerate(turn) if not replacement.taken[index]).strip(" ,.—–")
+        current = " ".join(additions) + " " + current.strip(" ,.—–") + " " + remainder
+    return current
+
+
+def _semantic_line(text: str, now: datetime, zone: ZoneInfo) -> bool:
+    parser = _temporal_propositions(text, now, zone)
+    return bool(parser.pieces or parser.effort() is not None or re.search(
+        r"(?<!\w)(?:нет|no|actually|напомни|напомнить|напоминание|пни|пингани|remind|reminder|будильник|alarm)(?!\w)",
+        text, re.IGNORECASE))
+
+
 class NaturalTaskParser:
     """Stateless façade; ``parse`` returns a task.create-compatible proposal."""
 
@@ -647,11 +703,12 @@ class NaturalTaskParser:
         semantic_lines = [clean_lines[0]]
         description_lines = []
         for line in clean_lines[1:]:
-            if re.search(r"(?<!\w)(?:напомни|напомнить|напоминание|пни|пингани|remind|reminder|будильник|alarm)(?!\w)", line, re.IGNORECASE):
+            if _semantic_line(line, now, zone):
                 semantic_lines.append(line)
             else:
                 description_lines.append(line)
         head = " ".join(" ".join(line.split()) for line in semantic_lines)
+        head = _corrected_text(head, now, zone)
         head = re.sub(r"^(?:задача|задачу|task|todo|to-do)\s*:\s*", "", head, flags=re.IGNORECASE)
         description = "\n".join(description_lines) or None
         parser = _Parser(head, now, zone)
@@ -679,6 +736,7 @@ class NaturalTaskParser:
         fields: dict[str, object] = {}
         moments = _group(parser.pieces, parser.low)
         has_deadline_words = parser.deadline_words()
+        starts_work = bool(re.search(r"(?<!\w)(?:начать|начну|заняться|starting|start)(?!\w)", parser.low))
         event = self._event(parser, moments, remind_spans, has_deadline_words, effort, zone)
         if event is not None:
             starts_at, ends_at = event
@@ -692,6 +750,7 @@ class NaturalTaskParser:
                 "starts_at": _iso(starts_at),
                 "ends_at": _iso(ends_at),
                 "duration_minutes": int((ends_at - starts_at).total_seconds() // 60),
+                "inferred_fields": ["ends_at", "duration_minutes"] if effort is None and not any(moment.get("range") for moment in moments) else [],
                 "remind_before_minutes": event_lead,
                 "unresolved": [] if title else ["title"],
                 "cutoff_time_assumed": False,
@@ -703,6 +762,8 @@ class NaturalTaskParser:
                 role = "remind"
             if role is None and remind_spans and "remind_at" not in fields and not has_deadline_words:
                 role = "remind"
+            if role is None and starts_work and not has_deadline_words:
+                role = "start"
             if role is None and (has_deadline_words or category == "EXAM") and "actual_cutoff" not in fields:
                 role = "deadline"
             if role is None and "actual_cutoff" not in fields and all(p.kind == "date" and p.date_only_relative for p in moment.pieces):

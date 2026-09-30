@@ -38,6 +38,7 @@ def task_payload(task, *, risk=None, effective=None, remind_at: datetime | None 
         "updated_at": jsonify(ob.updated_at),
         "completed_at": jsonify(ob.completed_at),
         "estimated_total_effort_minutes": task.estimated_total_effort_minutes,
+        "effort_estimate_source": task.effort_estimate_source,
         "estimated_total_effort_low_minutes": task.estimated_total_effort_low_minutes,
         "estimated_total_effort_high_minutes": task.estimated_total_effort_high_minutes,
         "remaining_effort_minutes": task.remaining_effort_minutes,

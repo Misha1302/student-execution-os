@@ -1,0 +1,57 @@
+import assert from 'node:assert/strict';
+import { reminderTurn } from '../../src/student_execution_os/web/static/js/nlparse.js';
+import { CaptureSession, reconcileCaptureCandidates, draftScope, readCaptureDraft, writeCaptureDraft, clearCaptureDrafts } from '../../src/student_execution_os/web/static/js/capture-session.js';
+
+const event = { kind: 'EVENT', payload: { title: 'Call', starts_at: '2026-10-01T15:00:00Z', ends_at: '2026-10-01T15:30:00Z', remind_before_minutes: 50 } };
+assert.equal(reminderTurn('И напомни за час'), true);
+assert.equal(reminderTurn('без напоминания'), true);
+assert.equal(reminderTurn('с Ариадной'), false);
+const session = new CaptureSession();
+session.input('Call tomorrow');
+session.interpret(event);
+session.edit('EVENT', { title: 'My title' });
+session.input('No, Friday', 'voice');
+const corrected = { ...event, payload: { ...event.payload, starts_at: '2026-10-02T15:00:00Z', ends_at: '2026-10-02T15:30:00Z' } };
+assert.equal(session.interpret(corrected).payload.title, 'My title');
+assert.equal(session.intent.payload.starts_at, corrected.payload.starts_at);
+const previousRevision = session.revision;
+session.input('More recent text');
+assert.equal(session.interpret(event, 'model', previousRevision), null);
+assert.equal(session.model, null);
+assert.equal(new CaptureSession(session.snapshot('tomorrow')).intent.payload.starts_at, corrected.payload.starts_at);
+session.interpret(corrected);
+assert.equal(session.interpret({ ...corrected, payload: { ...corrected.payload, title: 'AI title' } }, 'model').payload.title, 'My title');
+
+const conflict = reconcileCaptureCandidates(event, corrected);
+assert.equal(conflict.conflicts.length, 2);
+const latestCorrection = reconcileCaptureCandidates({ ...corrected, provenance: { starts_at: 'USER_TURN', ends_at: 'LOCAL_INFERRED' } }, event);
+assert.equal(latestCorrection.payload.starts_at, corrected.payload.starts_at);
+assert.equal(latestCorrection.payload.ends_at, corrected.payload.ends_at);
+assert.deepEqual(latestCorrection.conflicts, []);
+assert.equal(reconcileCaptureCandidates({ kind: 'TASK', payload: { actual_cutoff: { state: 'ABSENT' } }, provenance: { actual_cutoff: 'LOCAL_INFERRED' } },
+  { kind: 'TASK', payload: { actual_cutoff: { state: 'UNKNOWN' } } }).payload.actual_cutoff.state, 'ABSENT');
+assert.equal(reconcileCaptureCandidates({ ...event, payload: { ...event.payload, remind_before_minutes: 60 }, provenance: { remind_before_minutes: 'USER_TURN' } }, event).payload.remind_before_minutes, 60);
+assert.equal(session.choose(corrected).conflicts.length, 0);
+assert.equal(session.intent.provenance.starts_at, 'USER_EDIT');
+assert.equal(reconcileCaptureCandidates({ kind: 'NOTE', payload: {}, confidence: 0.35 }, { ...event, confidence: 0.95 }).kind, 'EVENT');
+assert.equal(reconcileCaptureCandidates({ ...event, provenance: { remind_before_minutes: 'LOCAL_INFERRED' } },
+  { ...event, payload: { ...event.payload, remind_before_minutes: 60 } }).payload.remind_before_minutes, 60);
+
+const values = {};
+const storage = { getItem(key) { return values[key] || null; }, setItem(key, value) { values[key] = value; this[key] = value; }, removeItem(key) { delete values[key]; delete this[key]; } };
+const owner = { server: 'https://one.test', authMode: 'session', user: { account_id: 'one' } };
+const scope = draftScope(owner, 'https://web.test');
+writeCaptureDraft(storage, scope, session.snapshot('Call Friday'), 1000);
+assert.equal(readCaptureDraft(storage, scope, 1001).raw, 'Call Friday');
+assert.equal(new CaptureSession(readCaptureDraft(storage, scope, 1001)).edits.EVENT.title, 'Call');
+assert.equal(readCaptureDraft(storage, draftScope({ ...owner, user: { account_id: 'two' } }, ''), 1001), null);
+assert.equal(readCaptureDraft(storage, draftScope({ ...owner, server: 'https://two.test' }, ''), 1001), null);
+assert.equal(draftScope({ authMode: 'session' }, ''), null);
+assert.equal(readCaptureDraft(storage, scope, 1000 + 8 * 86400000), null);
+writeCaptureDraft(storage, scope, { raw: 'Text' });
+writeCaptureDraft(storage, scope, null);
+assert.equal(readCaptureDraft(storage, scope), null);
+writeCaptureDraft(storage, scope, { raw: 'Text' });
+clearCaptureDrafts(storage);
+assert.equal(readCaptureDraft(storage, scope), null);
+console.log('capture session authority and recovery: ok');

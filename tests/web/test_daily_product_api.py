@@ -28,8 +28,8 @@ class DailyProductApiTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_title_only_capture_refine_activate_and_today_contract(self):
-        created = self.client.post("/api/v1/tasks", json={"title": "Unclear essay"})
+    def test_explicit_unknown_capture_refine_activate_and_today_contract(self):
+        created = self.client.post("/api/v1/tasks", json={"title": "Unclear essay", "estimated_total_effort_minutes": None})
         self.assertEqual(created.status_code, 201, created.text)
         draft = created.json()
         self.assertEqual(draft["status"], "DRAFT")
@@ -50,7 +50,7 @@ class DailyProductApiTests(unittest.TestCase):
         self.assertEqual(activated.status_code, 200, activated.text)
         self.assertEqual(activated.json()["status"], "ACTIVE")
 
-        second = self.client.post("/api/v1/tasks", json={"title": "Still unclear"}).json()
+        second = self.client.post("/api/v1/tasks", json={"title": "Still unclear", "estimated_total_effort_minutes": None}).json()
         cancelled = self.client.post(
             f"/api/v1/obligations/{second['id']}/cancel",
             json={"expected_version": second["version"]},
@@ -61,6 +61,24 @@ class DailyProductApiTests(unittest.TestCase):
         )
         self.assertEqual(reopened.status_code, 200, reopened.text)
         self.assertEqual(reopened.json()["status"], "DRAFT")
+
+    def test_title_only_task_is_immediately_plannable_without_fabricated_certainty(self):
+        created = self.client.post('/api/v1/tasks', json={'title': 'Buy milk'})
+        self.assertEqual(created.status_code, 201, created.text)
+        task = created.json()
+        self.assertEqual(task['status'], 'ACTIVE')
+        self.assertEqual(task['effort_estimate_source'], 'SYSTEM_PROVISIONAL')
+        self.assertEqual((task['estimated_total_effort_low_minutes'], task['estimated_total_effort_high_minutes']), (15, 60))
+        self.assertEqual(task['actual_cutoff']['state'], 'ABSENT')
+        today = self.client.get('/api/v1/today').json()
+        self.assertIn(task['id'], [item['id'] for item in today['tasks']])
+        self.assertNotIn(task['id'], [item['id'] for item in today['needs_refinement']])
+        self.assertIn(task['id'], [item['task_id'] for item in today['next_actions']])
+        refined = self.client.patch(f"/api/v1/tasks/{task['id']}", json={'expected_version': task['version'], 'estimated_total_effort_minutes': 20})
+        self.assertEqual(refined.status_code, 200, refined.text)
+        self.assertEqual(refined.json()['effort_estimate_source'], 'EXPLICIT')
+        self.assertEqual(refined.json()['remaining_effort_minutes'], 20)
+        self.assertIsNone(refined.json()['remaining_effort_high_minutes'])
 
         with SQLiteCanonicalRepository(self.database, clock=FrozenClock(NOW)) as repository:
             metric_names = {

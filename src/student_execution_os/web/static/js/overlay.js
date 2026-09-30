@@ -18,7 +18,8 @@ const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(valu
 const minutes = (value) => (value == null || value === '' ? null : Math.max(0, Math.round(Number(value))));
 
 function newTask(id, payload, at) {
-  const effort = minutes(payload.estimated_total_effort_minutes);
+  const provisional = (payload.provisional_effort === true || !Object.hasOwn(payload, 'estimated_total_effort_minutes') && payload.provisional_effort !== false) && payload.estimated_total_effort_minutes == null;
+  const effort = provisional ? 30 : minutes(payload.estimated_total_effort_minutes);
   const count = payload.count_total ? { total: Number(payload.count_total), done: Number(payload.count_done || 0), unit: payload.count_unit || null } : null;
   return {
     kind: 'TASK',
@@ -34,6 +35,11 @@ function newTask(id, payload, at) {
     completed_at: null,
     estimated_total_effort_minutes: effort,
     remaining_effort_minutes: effort,
+    estimated_total_effort_low_minutes: provisional ? 15 : null,
+    effort_estimate_source: provisional ? 'SYSTEM_PROVISIONAL' : effort == null ? 'UNKNOWN' : 'EXPLICIT',
+    estimated_total_effort_high_minutes: provisional ? 60 : null,
+    remaining_effort_low_minutes: provisional ? 15 : null,
+    remaining_effort_high_minutes: provisional ? 60 : null,
     splittable: Boolean(payload.splittable),
     min_chunk_minutes: payload.min_chunk_minutes ?? null,
     max_chunk_minutes: payload.max_chunk_minutes ?? null,
@@ -43,7 +49,7 @@ function newTask(id, payload, at) {
     last_progress_at: null,
     remind_at: payload.remind_at ?? null,
     count_progress: count,
-    actual_cutoff: payload.actual_cutoff || { state: 'UNKNOWN', at: null },
+    actual_cutoff: payload.actual_cutoff || { state: provisional ? 'ABSENT' : 'UNKNOWN', at: null },
     risk: null,
     cutoff_truth: null,
     _pending: true,
@@ -96,6 +102,13 @@ export function applyTaskOp(task, item) {
       }
       if ('estimated_total_effort_minutes' in p && !('remaining_effort_minutes' in p) && task.status === 'DRAFT') {
         next.remaining_effort_minutes = minutes(p.estimated_total_effort_minutes);
+      }
+      if ('estimated_total_effort_minutes' in p) {
+        next.effort_estimate_source = p.estimated_total_effort_minutes == null ? 'UNKNOWN' : 'EXPLICIT';
+        next.estimated_total_effort_low_minutes = next.estimated_total_effort_high_minutes = null;
+        if (!('remaining_effort_low_minutes' in p)) next.remaining_effort_low_minutes = null;
+        if (!('remaining_effort_high_minutes' in p)) next.remaining_effort_high_minutes = null;
+        if (task.effort_estimate_source === 'SYSTEM_PROVISIONAL' && !('remaining_effort_minutes' in p)) next.remaining_effort_minutes = minutes(p.estimated_total_effort_minutes);
       }
       if (next.status === 'DRAFT' && next.estimated_total_effort_minutes != null) next.status = 'ACTIVE';
       if ('count_total' in p) {

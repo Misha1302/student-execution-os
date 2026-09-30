@@ -47,9 +47,7 @@ class RelatedRegressionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def create_task(self, task_id: str, effort=None):
-        payload = {"title": task_id}
-        if effort is not None:
-            payload["estimated_total_effort_minutes"] = effort
+        payload = {"title": task_id, "estimated_total_effort_minutes": effort}
         self.commands.task_create(task_id, payload)
         return self.repo.get_task("a", task_id)
 

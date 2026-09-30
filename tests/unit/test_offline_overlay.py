@@ -50,7 +50,7 @@ const items = [
   op('task.defer', 'b', {{ until: '2026-09-23T11:00:00Z' }}),
   op('task.delete', 'c'),
   op('task.create', 'n', {{ title: 'New', estimated_total_effort_minutes: 30, actual_cutoff: {{ state: 'ABSENT' }} }}),
-  op('task.create', 'd', {{ title: 'Draft', actual_cutoff: {{ state: 'UNKNOWN' }} }}),
+  op('task.create', 'd', {{ title: 'Draft', estimated_total_effort_minutes: null, actual_cutoff: {{ state: 'UNKNOWN' }} }}),
   op('event.create', 'e1', {{ title: 'Занятие', starts_at: '2026-09-23T18:00:00Z', ends_at: '2026-09-23T19:00:00Z', remind_before_minutes: 15 }}),
   op('task.complete', 'x', {{}}, {{ state: 'REJECTED' }}),
 ];

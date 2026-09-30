@@ -322,6 +322,7 @@ const GLOBAL_ACTIONS = {
 };
 
 document.addEventListener('click', (event) => {
+  if (event.target.closest('summary') && !event.target.closest('summary').matches('[data-nav],[data-action]')) return;
   const el = event.target.closest('[data-nav],[data-action]');
   if (!el || el.disabled) return;
   if (el.hasAttribute('data-close-sheet')) closeAllSheets();
@@ -550,7 +551,7 @@ async function boot() {
     syncPreferences();
     flushSync().catch(() => {});
     // A brand-new account starts with its first task.
-    if (event.detail?.firstRun) setTimeout(() => openTutorial({ onDone: () => openCapture() }), 300);
+    if (event.detail?.firstRun) setTimeout(() => openTutorial(), 300);
   });
   hideSplash();
   // UI and offline data are usable before any updater network request begins.

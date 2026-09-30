@@ -169,6 +169,8 @@ export function focusSoon(target, delay = 80) {
 const sheetStack = [];
 
 export function openSheet({ title = '', eyebrow = '', body = '', actions = '', full = false, onClose } = {}) {
+  const previousFocus = document.activeElement;
+  const parentDialog = previousFocus?.closest('dialog');
   const dialog = document.createElement('dialog');
   dialog.className = `sheet${full ? ' sheet-full' : ''}`;
   dialog.innerHTML = `
@@ -187,6 +189,10 @@ export function openSheet({ title = '', eyebrow = '', body = '', actions = '', f
     const i = sheetStack.indexOf(dialog);
     if (i >= 0) sheetStack.splice(i, 1);
     dialog.remove();
+    if (parentDialog?.open) {
+      const target = previousFocus?.isConnected ? previousFocus : parentDialog.querySelector('input,textarea,button');
+      target?.focus({ preventScroll: true });
+    } else if (!document.querySelector('dialog[open]') && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
     onClose?.(dialog.returnValue);
   });
   dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close('cancel'); });
