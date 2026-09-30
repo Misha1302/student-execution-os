@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { reminderTurn } from '../../src/student_execution_os/web/static/js/nlparse.js';
 import { CaptureSession, reconcileCaptureCandidates, draftScope, readCaptureDraft, writeCaptureDraft, clearCaptureDrafts } from '../../src/student_execution_os/web/static/js/capture-session.js';
 
 const event = { kind: 'EVENT', payload: { title: 'Call', starts_at: '2026-10-01T15:00:00Z', ends_at: '2026-10-01T15:30:00Z', remind_before_minutes: 50 } };
+assert.equal(reminderTurn('И напомни за час'), true);
+assert.equal(reminderTurn('без напоминания'), true);
+assert.equal(reminderTurn('с Ариадной'), false);
 const session = new CaptureSession();
 session.input('Call tomorrow');
 session.interpret(event);
@@ -24,6 +28,9 @@ const latestCorrection = reconcileCaptureCandidates({ ...corrected, provenance: 
 assert.equal(latestCorrection.payload.starts_at, corrected.payload.starts_at);
 assert.equal(latestCorrection.payload.ends_at, corrected.payload.ends_at);
 assert.deepEqual(latestCorrection.conflicts, []);
+assert.equal(reconcileCaptureCandidates({ kind: 'TASK', payload: { actual_cutoff: { state: 'ABSENT' } }, provenance: { actual_cutoff: 'LOCAL_INFERRED' } },
+  { kind: 'TASK', payload: { actual_cutoff: { state: 'UNKNOWN' } } }).payload.actual_cutoff.state, 'ABSENT');
+assert.equal(reconcileCaptureCandidates({ ...event, payload: { ...event.payload, remind_before_minutes: 60 }, provenance: { remind_before_minutes: 'USER_TURN' } }, event).payload.remind_before_minutes, 60);
 assert.equal(session.choose(corrected).conflicts.length, 0);
 assert.equal(session.intent.provenance.starts_at, 'USER_EDIT');
 assert.equal(reconcileCaptureCandidates({ kind: 'NOTE', payload: {}, confidence: 0.35 }, { ...event, confidence: 0.95 }).kind, 'EVENT');

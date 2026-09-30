@@ -16,7 +16,7 @@ import { t, code, fmtDuration, fmtDateTime, fmtTime, fmtDay, now, getLocale, sam
 import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, setBusy, errorMessage, focusSoon } from './ui.js';
 import { mutate, change, shell } from './actions.js';
 import { newEntityId, settled } from './sync.js';
-import { parseTask, captureKind, correctedText } from './nlparse.js';
+import { parseTask, captureKind, correctedText, reminderTurn } from './nlparse.js';
 import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
@@ -341,6 +341,7 @@ function localCandidate(parsed, raw, correctedKinds = []) {
     provenance.actual_cutoff = 'LOCAL_INFERRED';
   }
   if (kind === 'REMINDER' && hasAlarm(parsed.delivery)) provenance.delivery = 'USER_TURN';
+  if (kind === 'EVENT' && correctedKinds.includes('reminder')) provenance.remind_before_minutes = 'USER_TURN';
   if (correctedKinds.some((field) => ['date', 'time', 'part', 'range', 'instant'].includes(field))) {
     const fields = kind === 'EVENT' ? ['starts_at', 'ends_at', 'duration_minutes'] : kind === 'REMINDER' ? ['remind_at'] : ['actionable_from', 'target_at', 'actual_cutoff'];
     for (const field of fields) if (payload[field] != null && provenance[field] !== 'LOCAL_INFERRED') provenance[field] = 'USER_TURN';
@@ -984,6 +985,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       voiceState('processing', heard);
       const before = input.value.trim();
       const correctedKinds = new Set();
+      if (reminderTurn(heard, now())) correctedKinds.add('reminder');
       const typeCorrection = /(?:сделай\s+(?:это\s+)?|это\s+|make\s+(?:it\s+)?(?:an?\s+)?)(событием|событие|задача|задачей|заметка|заметкой|event|task|note)/iu.exec(heard);
       if (typeCorrection) {
         const requested = typeCorrection[1].toLowerCase();

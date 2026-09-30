@@ -28,6 +28,7 @@ export function reconcileCaptureCandidates(local, model, { userKind = null, edit
   if (model?.kind === kind) {
     for (const [field, value] of Object.entries(model.payload || {})) {
       if (value === undefined || field in edits) continue;
+      if (field === 'actual_cutoff' && value?.state === 'UNKNOWN') continue;
       if (local?.provenance?.[field] === 'USER_TURN') continue;
       if (kind === 'EVENT' && ['starts_at', 'ends_at', 'duration_minutes'].includes(field)
         && local?.provenance?.starts_at === 'USER_TURN' && model.payload.starts_at

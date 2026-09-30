@@ -501,8 +501,8 @@ class Parser {
   // A lead relative to a named event is neither task effort nor a clock time.
   // Consume it before generic duration parsing so arbitrary values (for example
   // 50 minutes) remain exact and never disqualify the event.
-  eventReminderOffset() {
-    if (!rx(EVENT_WORDS).test(this.low) || rx(PREPARE_WORDS).test(this.low)) return null;
+  eventReminderOffset(requireEvent = true) {
+    if (requireEvent && (!rx(EVENT_WORDS).test(this.low) || rx(PREPARE_WORDS).test(this.low))) return null;
     const cue = '(?:напомни(?:те)?(?:\\s+мне)?|напомнить(?:\\s+мне)?|пни(?:\\s+меня)?|пингани|remind\\s+me(?:\\s+to)?|reminder)';
     const unit = '(минут\\w*|мин\\.?|minutes?|mins?|час(?:а|ов)?|hours?|hrs?)';
     const patterns = [
@@ -777,6 +777,12 @@ function temporalPropositions(text, now) {
   parser.intervals();
   parser.times();
   return parser;
+}
+
+export function reminderTurn(text, now = new Date()) {
+  const parser = new Parser(text, now);
+  parser.eventReminderOffset(false);
+  return parser.taken.some(Boolean);
 }
 
 export function correctedText(text, now = new Date(), correctedKinds = null) {
