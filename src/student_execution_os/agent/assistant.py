@@ -248,7 +248,9 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             raise ValidationError("assistant event times must be ISO-8601 instants") from exc
         if starts is None or ends is None or starts.utcoffset() is None or ends.utcoffset() is None or ends <= starts:
             raise ValidationError("assistant event needs offset-aware starts_at < ends_at")
-        duration = int((ends - starts).total_seconds() // 60)
+        duration = (ends - starts).total_seconds() / 60
+        if duration.is_integer():
+            duration = int(duration)
         supplied = payload.get("duration_minutes")
         if supplied is not None and (isinstance(supplied, bool) or not isinstance(supplied, int) or supplied != duration):
             raise ValidationError("assistant event duration_minutes must equal ends_at - starts_at")

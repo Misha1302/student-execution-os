@@ -159,6 +159,12 @@ class RelatedRegressionTests(unittest.TestCase):
         }))
         with self.assertRaisesRegex(ValidationError, "duration_minutes"):
             invalid.interpret("созвон завтра в 18:00 на полчаса")
+        fractional = self.assistant(Provider("CREATE_EVENT", {
+            "title": "Созвон", "starts_at": "2026-09-27T15:00:00+00:00",
+            "ends_at": "2026-09-27T15:30:30+00:00", "duration_minutes": 30,
+        }))
+        with self.assertRaisesRegex(ValidationError, "duration_minutes"):
+            fractional.interpret("созвон завтра в 18:00 на полчаса")
 
     def test_assistant_event_time_edit_rederives_duration_and_invalid_model_falls_back(self):
         service = self.assistant(Provider("CREATE_EVENT", {
