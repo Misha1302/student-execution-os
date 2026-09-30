@@ -12,7 +12,7 @@ static:
 	node tests/js/work_routines_overlay_cases.mjs
 	node tests/js/reflection_overlay_cases.mjs
 	node tests/js/capture_kind_cases.mjs
-	node tests/js/capture_semantic_cases.mjs
+	TZ=Europe/Moscow node tests/js/capture_semantic_cases.mjs
 	node tests/js/upcoming_cases.mjs
 	TZ=UTC node tests/js/series_overlay_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
