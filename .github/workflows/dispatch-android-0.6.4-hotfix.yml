@@ -1,0 +1,32 @@
+name: dispatch-android-0.6.4-hotfix
+
+on:
+  push:
+    branches:
+      - release/android-0.6.4-bootstrap
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch canonical Android release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/android-release.yml/dispatches" \
+            -f ref=main \
+            -f 'inputs[version]=0.6.4' \
+            -f 'inputs[build_number]=5' \
+            -f 'inputs[channel]=STABLE' \
+            -f 'inputs[policy_sequence]=9' \
+            -f 'inputs[rollout]=0' \
+            -f 'inputs[severity]=IMPORTANT' \
+            -f 'inputs[mandatory]=OPTIONAL' \
+            -f 'inputs[summary_en]=Android updater reliability hotfix.' \
+            -f 'inputs[summary_ru]=Исправление надежности обновлений Android.' \
+            -f 'inputs[change_en]=Accept normal JSON integer metadata in the native update bridge.' \
+            -f 'inputs[change_ru]=Исправлен прием обычных целых JSON-значений в нативном механизме обновления.'
