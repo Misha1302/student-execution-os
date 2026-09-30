@@ -362,7 +362,8 @@ export function reconcileCaptureCandidates(local, model, { userKind = null } = {
   if (model?.kind === kind) {
     for (const [key, value] of Object.entries(model.payload || {})) {
       if (value === undefined) continue;
-      const localHas = Object.prototype.hasOwnProperty.call(payload, key) && payload[key] != null;
+      const localHas = Object.prototype.hasOwnProperty.call(payload, key) && payload[key] != null
+        && !(key === 'actual_cutoff' && payload[key].state === 'UNKNOWN');
       const critical = (CORE_BY_KIND[kind] || []).includes(key);
       if (critical && localHas && !sameSemanticValue(payload[key], value, key)) {
         conflicts.push({ field: key, local: payload[key], model: value });

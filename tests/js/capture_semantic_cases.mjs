@@ -31,6 +31,11 @@ const durationConflict = reconcileCaptureCandidates({ kind: 'EVENT', payload: { 
   duration_minutes: 30 } }, { kind: 'EVENT', payload: { duration_minutes: 60 } });
 assert.equal(durationConflict.payload.duration_minutes, 30);
 assert.deepEqual(durationConflict.conflicts.map((x) => x.field), ['duration_minutes']);
+const filledDeadline = reconcileCaptureCandidates({ kind: 'TASK', payload: {
+  title: 'Сдать лабу', actual_cutoff: { state: 'UNKNOWN' } } }, { kind: 'TASK', payload: {
+  actual_cutoff: { state: 'KNOWN', at: '2026-09-30T17:00:00Z' } } });
+assert.equal(filledDeadline.payload.actual_cutoff.state, 'KNOWN', 'unknown is not an explicit deadline conflict');
+assert.deepEqual(filledDeadline.conflicts, []);
 
 const now = new Date('2026-09-29T12:00:00+03:00');
 const seed = parseTask('созвон с ариадной в 18:00 завтра на пол часа.\nНапомни за 50 минут до начала', now);
