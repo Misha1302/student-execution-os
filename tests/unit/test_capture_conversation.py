@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 import unittest
@@ -80,7 +81,7 @@ class CaptureConversationTest(unittest.TestCase):
         ]
         module = Path("src/student_execution_os/web/static/js/nlparse.js").resolve().as_uri()
         script = f"import {{ parseTask }} from '{module}'; const texts = {json.dumps(phrases)}; console.log(JSON.stringify(texts.map(text => parseTask(text, new Date('2026-09-30T12:00:00+03:00')))));"
-        result = subprocess.run(["node", "--input-type=module", "-e", script], env={"TZ": "Europe/Moscow"}, capture_output=True, text=True, check=True)
+        result = subprocess.run(["node", "--input-type=module", "-e", script], env={**os.environ, "TZ": "Europe/Moscow"}, capture_output=True, text=True, check=True)
         for text, device in zip(phrases, json.loads(result.stdout)):
             server = self.parse(text)
             for key in ("starts_at", "ends_at", "actionable_from", "target_at", "remind_at"):
