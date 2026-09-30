@@ -797,7 +797,12 @@ class BrowserUiTest(unittest.TestCase):
         page.fill("input[name=password2]", "correct horse")
         page.locator('[data-form="auth"] button[type=submit]').click()
         self._ready(page, "today")
+        tutorial = page.locator("dialog.sheet[open]")
+        tutorial.locator("[data-tutorial-skip]").wait_for()
+        self.assertIn("How to use botay!", tutorial.inner_text())
+        tutorial.locator("[data-tutorial-skip]").click()
         page.locator("dialog.sheet[open] #capture-text").wait_for()
+        self.assertEqual(page.evaluate("localStorage.getItem('seos.tutorial.capture-v1')"), "done")
         self.assertEqual(page.evaluate("window.Capacitor.Plugins.Preferences.get({ key: 'seos.server' })"), {"value": ORIGIN})
         self.assertIn(("/api/v1/auth/register", {"login": "newbie", "password": "correct horse", "device_label": "android"}), self.posts)
         self.assertEqual(self.page_errors, [])
@@ -907,6 +912,158 @@ class BrowserUiTest(unittest.TestCase):
         toast.locator(".toast-action").click()
         page.wait_for_timeout(200)
         self.assertIn(("task.unarchive", "done-task-0001"), [(o["type"], o["entity_id"]) for o in self._queued(page)])
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_capture_multiline_event_keeps_duration_and_arbitrary_reminder_distinct(self):
+        page = self._open(locale="ru", width=390, height=844)
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        phrase = "созвон с ариадной в 18:00 завтра на пол часа.\nНапомни за 50 минут до начала"
+        sheet.locator("#capture-text").fill(phrase)
+        card = sheet.locator('.event-card[data-kind="EVENT"]')
+        card.wait_for()
+        self.assertEqual(card.locator(".capture-title").inner_text(), "Созвон с Ариадной")
+        self.assertIn("18:00–18:30", card.locator("[data-event-when]").inner_text())
+        self.assertEqual(card.locator('[data-chip-group="card-lead"] .on').get_attribute("data-value"), "other")
+        self.assertEqual(card.locator("[data-card-lead-custom]").input_value(), "50")
+        self.assertNotIn("дедлайн", card.inner_text().lower())
+        self._assert_no_horizontal_scroll(page, 390)
+        self._screenshot(page, "capture-event-50m-mobile-light.png")
+
+        card.locator('[data-card-lead-custom]').fill('1441')
+        sheet.locator('[data-create]').click()
+        self.assertTrue(sheet.is_visible())
+        self.assertEqual([op for op in self._queued(page) if op['type'] == 'event.create'], [])
+        card.locator('[data-card-lead-custom]').fill('50')
+
+        sheet.locator("[data-create]").click()
+        self._wait_sync(page)
+        operation = self.posts[-1][1]["operations"][0]
+        payload = operation["payload"]
+        self.assertEqual((operation["type"], payload["title"], payload["remind_before_minutes"]),
+                         ("event.create", "Созвон с Ариадной", 50))
+        self.assertEqual((datetime.fromisoformat(payload["ends_at"].replace("Z", "+00:00"))
+                          - datetime.fromisoformat(payload["starts_at"].replace("Z", "+00:00"))).total_seconds(), 1800)
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_capture_reparse_clears_stale_semantics_but_preserves_user_event_edits(self):
+        page = self._open(locale="ru")
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        input_ = sheet.locator("#capture-text")
+        input_.fill("созвон с ариадной завтра в 18:00 на полчаса")
+        sheet.locator(".event-card").wait_for()
+        sheet.locator("[data-more] summary").click()
+        title = sheet.locator('[data-e="title"]')
+        title.fill("Мой созвон")
+        input_.fill("созвон с ариадной завтра в 18:00 на полчаса, онлайн")
+        sheet.locator(".event-card .capture-title", has_text="Мой созвон").wait_for()
+        page.wait_for_timeout(250)  # local reparse debounce has committed provenance
+        self.assertEqual(json.loads(sheet.get_attribute("data-field-provenance"))["title"], "USER_EDIT")
+
+        # A fresh parse without manual event fields must not leak old time/title/kind.
+        page.keyboard.press("Escape")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("встреча завтра в 18:00")
+        sheet.locator(".event-card").wait_for()
+        sheet.locator("#capture-text").fill("Купить молоко")
+        sheet.locator('.capture-card:not([data-kind="EVENT"])').wait_for()
+        self.assertEqual(sheet.locator('[data-chip-group="capture-kind"] .on').get_attribute("data-value"), "TASK")
+        self.assertEqual(sheet.locator(".capture-title").inner_text(), "Купить молоко")
+        self.assertEqual(sheet.locator("[data-event-when]").count(), 0)
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_capture_enter_is_multiline_ctrl_enter_creates_and_tutorial_reopens(self):
+        page = self._open(locale="en")
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator('[data-chip-group="capture-kind"] [data-value="NOTE"]').click()
+        input_ = sheet.locator("#capture-text")
+        input_.fill("Research idea")
+        input_.press("Enter")
+        input_.type("keep the second line")
+        self.assertEqual(input_.input_value(), "Research idea\nkeep the second line")
+        self.assertEqual(len(self.posts), 0)
+        sheet.locator(".note-card").wait_for()
+        self.assertFalse(sheet.locator("[data-create]").is_disabled())
+        input_.press("Control+Enter")
+        self._wait_sync(page)
+        operation = self.posts[-1][1]["operations"][0]
+        self.assertEqual((operation["type"], operation["payload"]["content"]),
+                         ("note.create", "Research idea\nkeep the second line"))
+
+        self._go(page, "settings")
+        page.locator('[data-action="tutorial-open"]').click()
+        tutorial = page.locator("dialog.sheet[open]")
+        tutorial.locator("[data-tutorial-done]").wait_for()
+        self.assertEqual(tutorial.locator(".tutorial-steps li").count(), 4)
+        self._screenshot(page, "tutorial-desktop-light.png")
+        tutorial.locator("[data-tutorial-done]").click()
+        self.assertEqual(page.locator("dialog.sheet[open]").count(), 0)
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_identical_toasts_are_deduplicated(self):
+        page = self._open(locale="en")
+        self._ready(page, "today")
+        page.evaluate("""async () => {
+          const { toast } = await import('/assets/js/ui.js');
+          toast('Same recoverable error', { error: true, duration: 10000 });
+          toast('Same recoverable error', { error: true, duration: 10000 });
+        }""")
+        self.assertEqual(page.locator(".toast.error", has_text="Same recoverable error").count(), 1)
+        page.evaluate("""async () => {
+          const { toast } = await import('/assets/js/ui.js');
+          window.undoRuns = [];
+          toast('Archived', { action: { label: 'Undo', run: () => window.undoRuns.push('first') } });
+          toast('Archived', { action: { label: 'Undo', run: () => window.undoRuns.push('second') } });
+        }""")
+        offers = page.locator('.toast', has_text='Archived')
+        self.assertEqual(offers.count(), 2)
+        offers.nth(0).locator('button').click()
+        offers.nth(0).locator('button').click()
+        self.assertEqual(page.evaluate('window.undoRuns'), ['first', 'second'])
+        self.assertEqual(self.page_errors, [])
+        page.close()
+
+    def test_capture_rendered_mobile_dark_and_desktop_light_states(self):
+        page = self._open(locale="ru", width=360, height=800, theme="dark")
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill(
+            "созвон с ариадной и командой проекта по очень важной итоговой презентации "
+            "завтра в 18:00 на пол часа.\nНапомни за 50 минут до начала"
+        )
+        sheet.locator(".event-card").wait_for()
+        sheet.locator("[data-more] summary").click()
+        self.assertTrue(sheet.locator('[data-e="description"]').is_visible())
+        self.assertLessEqual(sheet.evaluate("el => el.scrollWidth"), sheet.evaluate("el => el.clientWidth"))
+        self._screenshot(page, "capture-mobile-dark-long-expanded.png")
+        page.close()
+
+        page = self._open(locale="en", width=1280, height=800, theme="light")
+        self._ready(page, "today")
+        page.locator(".fab").click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator("#capture-text").fill("Prepare the project review\nInclude risks, decisions, and next steps")
+        sheet.locator(".capture-card").wait_for()
+        sheet.locator("[data-more] summary").click()
+        page.evaluate("""async () => {
+          const { toast } = await import('/assets/js/ui.js');
+          toast('Changes are not synced yet — retry is available', { error: true, duration: 10000 });
+          toast('Changes are not synced yet — retry is available', { error: true, duration: 10000 });
+        }""")
+        self.assertEqual(page.locator(".toast.error").count(), 1)
+        self._assert_no_horizontal_scroll(page, 1280)
+        self._screenshot(page, "capture-desktop-light-multiline-error.png")
         self.assertEqual(self.page_errors, [])
         page.close()
 
@@ -1122,9 +1279,10 @@ class BrowserUiTest(unittest.TestCase):
                 "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]})
 
     def test_explicit_alarm_survives_model_omission_and_conflict_up_to_the_queued_create(self):
-        at = "2026-09-24T08:00:00+00:00"
+        at = "2026-09-22T08:00:00+00:00"
         cases = {"omitted": {"title": "Будильник", "remind_at": at},
-                 "conflicting": {"title": "Будильник", "remind_at": at, "delivery": "PUSH", "wake_check": False}}
+                 "conflicting": {"title": "Будильник", "remind_at": at, "delivery": "PUSH", "wake_check": False},
+                 "different_day": {"title": "Будильник", "remind_at": "2026-09-24T08:00:00+00:00"}}
         for label, payload in cases.items():
             with self.subTest(label):
                 self._clear_posts()
@@ -1136,13 +1294,17 @@ class BrowserUiTest(unittest.TestCase):
                 sheet.locator("#capture-text").fill("разбуди меня в 11:00")
                 sheet.locator("[data-engine]", has_text="fake-model").wait_for()
                 sheet.locator(".reminder-card").wait_for()
+                if label == "different_day":
+                    # A different day is a visible conflict, not an alarm enrichment.
+                    self.assertTrue(sheet.locator("[data-capture-status]").is_visible())
                 sheet.locator("[data-create]").click()
                 self._wait_sync(page)
                 created = [o for o in self._queued(page) if o["type"] == "reminder.create"]
                 self.assertEqual(len(created), 1)
                 sent = created[0]["payload"]
                 self.assertEqual((sent["delivery"], sent["wake_check"], sent["raise_volume"]), ("ALARM", True, True))
-                self.assertEqual((sent["title"], sent["remind_at"]), ("Будильник", at))
+                expected_at = "2026-09-22T08:00:00.000Z" if label == "different_day" else at
+                self.assertEqual((sent["title"], sent["remind_at"]), ("Будильник", expected_at))
                 self.assertEqual(sent["assistant_batch_id"], "batch-ai-alarm")
                 self.assertEqual(self.page_errors, [])
                 page.close()

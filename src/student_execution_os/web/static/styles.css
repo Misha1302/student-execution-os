@@ -438,7 +438,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 
 .capture { display: flex; flex-direction: column; gap: 12px; }
 .capture-input { position: relative; display: flex; align-items: flex-start; gap: 8px; }
-.capture-input textarea { font-size: 18px; min-height: 76px; line-height: 1.35; flex: 1; }
+.capture-input textarea { font-size: 18px; min-height: 96px; max-height: 192px; line-height: 1.35; flex: 1; resize: none; overflow-y: hidden; }
+.event-lead-custom { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); }
+.event-lead-custom input { width: 7rem; }
+.tutorial-steps { list-style: none; display: grid; gap: 16px; padding: 4px 0; }
+.tutorial-steps li { display: flex; gap: 12px; align-items: flex-start; }
+.tutorial-steps p { color: var(--muted); margin-top: 3px; }
 .capture-input .mic { flex: none; width: 52px; height: 52px; border-radius: 16px; background: var(--accent-soft); color: var(--accent); }
 .capture-input .mic .icon { width: 26px; height: 26px; }
 .capture-input .mic.busy { background: var(--danger-soft); color: var(--danger); animation: pulse 1s ease-in-out infinite; }

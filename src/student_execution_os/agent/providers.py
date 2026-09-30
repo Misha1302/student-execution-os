@@ -53,8 +53,9 @@ CREATE_TASK payload (omit what the user did not say; no other keys are accepted)
   min_chunk_minutes?/max_chunk_minutes?: sitting length bounds
 CREATE_EVENT payload: something that happens at a fixed time with a start and an end
   (class, lecture, lesson, meeting, call, training, appointment, "с 21 до 22 провести
-  занятие", "в 18:00 созвон на час"): {title, starts_at, ends_at, description?, category?,
-  importance?, remind_before_minutes? (0-1440)}. The duration is ends_at − starts_at (default 60
+  занятие", "в 18:00 созвон на час"): {title, starts_at, ends_at, duration_minutes,
+  description?, category?, importance?, remind_before_minutes? (0-1440)}. TITLE is semantic output,
+  not input text with regex fragments removed. The duration must equal ends_at − starts_at (default 60
   minutes when only a start is given); a fixed-time event has no deadline and no effort estimate.
 CREATE_REMINDER payload: just a moment to get attention, nothing to plan ("напомни купить хлеб
   завтра в 18", "разбуди меня в 7", "напомни и поставь будильник"): {title, remind_at,

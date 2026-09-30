@@ -112,6 +112,12 @@ _CATEGORY_RULES = [
     ("LESSON", r"\bпар[аеуы]\b|лекци|семинар|занятие|урок|lecture|\bclass\b|seminar|lesson"),
 ]
 
+_MEETING_COMMON_PARTICIPANTS = {
+    "группой", "командой", "коллегой", "коллегами", "клиентом", "клиентами",
+    "научруком", "руководителем", "преподавателем", "куратором", "наставником",
+    "врачом", "доктором", "другом", "подругой", "мамой", "папой",
+}
+
 _FILLERS = {
     "надо", "нужно", "необходимо", "мне", "я", "пожалуйста", "плиз", "это", "а", "и", "но", "ещё", "еще",
     "please", "i", "need", "to", "have", "must", "should", "gotta", "it", "and", "also",
@@ -488,6 +494,45 @@ class _Parser:
                 self.remind_word = True
         return spans
 
+    def event_reminder_offset(self) -> int | None:
+        """Explicit lead time relative to a named event, never a clock/deadline.
+
+        This runs before generic duration parsing so ``за 50 минут до начала``
+        cannot become event duration or task effort. The event words are required:
+        a standalone ``напомни через 50 минут`` remains a standalone reminder.
+        """
+        if not re.search(_EVENT_WORDS, self.low) or re.search(_PREPARE_WORDS, self.low):
+            return None
+        cue = (r"(?:напомни(?:те)?(?:\s+мне)?|напомнить(?:\s+мне)?|пни(?:\s+меня)?|пингани|"
+               r"remind\s+me(?:\s+to)?|reminder)")
+        unit = r"(минут\w*|мин\.?|minutes?|mins?|час(?:а|ов)?|hours?|hrs?)"
+        patterns = [
+            rf"(?<!\w){cue}\s+(?:за\s+)?({_NUM})\s*{unit}(?:\s+(?:до\s+начала|заранее|before(?:\s+(?:the\s+)?start)?))?(?!\w)",
+            rf"(?<!\w)(?:за\s+)?({_NUM})\s*{unit}\s+(?:до\s+начала|заранее|before(?:\s+(?:the\s+)?start)?)(?!\w)",
+            rf"(?<!\w){cue}\s+(?:за\s+)?(час|полчаса|полтора\s+часа)(?:\s+(?:до\s+начала|заранее|before(?:\s+(?:the\s+)?start)?))?(?!\w)",
+        ]
+        for pattern in patterns:
+            for match in self.scan(pattern):
+                token = match.group(1)
+                if token == "час":
+                    minutes = 60
+                elif token == "полчаса":
+                    minutes = 30
+                elif token == "полтора часа":
+                    minutes = 90
+                else:
+                    amount = _num(token)
+                    if amount is None:
+                        continue
+                    unit_text = match.group(2)
+                    minutes = round(amount * 60) if unit_text.startswith(("час", "hour", "hr")) else round(amount)
+                if not 0 <= minutes <= 1440:
+                    continue
+                self.take(match.start(), match.end())
+                self.remind_word = True
+                return minutes
+        return None
+
     def deadline_words(self) -> bool:
         return bool(re.search(r"(?<!\w)(?:сдать|сдача|сдаю|дедлайн\w*|срок\w*|отправить\s+до|due|deadline|submit|hand\s+in|turn\s+in)(?!\w)", self.low))
 
@@ -599,13 +644,21 @@ class NaturalTaskParser:
         clean_lines = [line.strip() for line in str(text or "").strip().splitlines() if line.strip()]
         if not clean_lines:
             return {"title": "", "unresolved": ["title"]}
-        head = " ".join(clean_lines[0].split())
+        semantic_lines = [clean_lines[0]]
+        description_lines = []
+        for line in clean_lines[1:]:
+            if re.search(r"(?<!\w)(?:напомни|напомнить|напоминание|пни|пингани|remind|reminder|будильник|alarm)(?!\w)", line, re.IGNORECASE):
+                semantic_lines.append(line)
+            else:
+                description_lines.append(line)
+        head = " ".join(" ".join(line.split()) for line in semantic_lines)
         head = re.sub(r"^(?:задача|задачу|task|todo|to-do)\s*:\s*", "", head, flags=re.IGNORECASE)
-        description = "\n".join(clean_lines[1:]) or None
+        description = "\n".join(description_lines) or None
         parser = _Parser(head, now, zone)
 
         importance = parser.importance()
         absent = parser.no_deadline()
+        event_lead = parser.event_reminder_offset()
         remind_spans = parser.reminder_cue()
         parser.strip_deadline_labels()
         parser.start_words()
@@ -639,6 +692,7 @@ class NaturalTaskParser:
                 "starts_at": _iso(starts_at),
                 "ends_at": _iso(ends_at),
                 "duration_minutes": int((ends_at - starts_at).total_seconds() // 60),
+                "remind_before_minutes": event_lead,
                 "unresolved": [] if title else ["title"],
                 "cutoff_time_assumed": False,
             }
@@ -721,7 +775,7 @@ class NaturalTaskParser:
         ranged = next((m for m in moments if m.get("range") is not None), None)
         moment = ranged
         if moment is None:
-            if remind_spans or has_deadline_words or not re.search(_EVENT_WORDS, parser.low) or re.search(_PREPARE_WORDS, parser.low):
+            if has_deadline_words or not re.search(_EVENT_WORDS, parser.low) or re.search(_PREPARE_WORDS, parser.low):
                 return None
             moment = next((m for m in moments if m.get("time") is not None and m.get("instant") is None
                            and m.cue in {None, "start"}), None)
@@ -867,6 +921,16 @@ def _title(parser: _Parser, category: str) -> str:
     title = title.strip(" ,.;:!?—-–")
     if category == "EXAM":
         title = _exam_title(title)
+    if category == "MEETING":
+        # A one-person participant at the end of a meeting/call title is displayed
+        # as a name. Role and collective nouns retain normal sentence casing.
+        def participant_case(match: re.Match[str]) -> str:
+            participant = match.group(2)
+            if participant.casefold() in _MEETING_COMMON_PARTICIPANTS:
+                return match.group(1) + participant
+            return match.group(1) + participant.capitalize()
+        title = re.sub(r"(?i)(\b(?:с|со)\s+)([а-яё][а-яё-]+)$",
+                       participant_case, title)
     if title:
         title = title[0].upper() + title[1:]
     return title[:300]

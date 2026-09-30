@@ -13,6 +13,30 @@ export const LEADS = [['', 'event.lead.none'], ['0', 'event.lead.0'], ['5', 'eve
   ['30', 'event.lead.30'], ['60', 'event.lead.60']];
 export const DEFAULT_LEAD = 15;
 
+const presetLead = (value) => LEADS.some(([item]) => item === String(value ?? ''));
+
+export function leadPicker(name, value, customAttribute = 'data-lead-custom') {
+  const selected = presetLead(value) ? String(value ?? '') : 'other';
+  const custom = selected === 'other' ? Number(value) : 50;
+  return `${chipGroup(name, [...LEADS.map(([v, key]) => [v, t(key)]), ['other', t('form.custom')]], selected)}
+    <label class="event-lead-custom ${selected === 'other' ? '' : 'hidden'}"><span>${esc(t('duration.minutes'))}</span>
+      <input type="number" inputmode="numeric" min="0" max="1440" step="1" ${customAttribute} value="${esc(custom)}"></label>`;
+}
+
+export function readLead(root, name, customSelector = '[data-lead-custom]') {
+  const selected = chipValue(root, name);
+  if (selected === '') return null;
+  const raw = selected === 'other' ? root.querySelector(customSelector)?.value : selected;
+  const value = raw == null || String(raw).trim() === '' ? NaN : Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 1440) throw new Error(t('event.leadInvalid'));
+  return value;
+}
+
+function syncLeadPicker(root, name, customSelector) {
+  const input = root.querySelector(customSelector);
+  input?.closest('.event-lead-custom')?.classList.toggle('hidden', chipValue(root, name) !== 'other');
+}
+
 const minutesBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 60000);
 
 // "Сегодня, 21:00–22:00 · 1 ч"
@@ -56,7 +80,7 @@ export function eventFieldsHtml(draft) {
       ${field(t('form.ends'), `<input type="datetime-local" data-e="end" value="${esc(localInputValue(draft.ends_at))}">`)}
     </div>
     <p class="help" data-e-duration>${draft.starts_at && draft.ends_at ? esc(t('event.duration', { d: fmtDuration(minutesBetween(draft.starts_at, draft.ends_at)) })) : ''}</p>
-    <div class="field"><span>${esc(t('event.remind'))}</span>${chipGroup('e-lead', LEADS.map(([v, k]) => [v, t(k)]), lead)}</div>
+    <div class="field"><span>${esc(t('event.remind'))}</span>${leadPicker('e-lead', lead, 'data-e-lead-custom')}</div>
     <div class="field"><span>${esc(t('form.attendance'))}</span>
       ${chipGroup('e-attendance', ['REQUIRED', 'PREFERRED', 'OPTIONAL'].map((v) => [v, code('attendance', v)]), draft.attendance_policy || 'REQUIRED')}
       <small class="help">${esc(t('event.attendanceHelp'))}</small></div>
@@ -72,7 +96,6 @@ export function readEventFields(root) {
   const endsAt = isoFromLocalInput($e('end').value);
   if (!startsAt || !endsAt) throw new Error(t('form.titleAndTime'));
   if (new Date(endsAt) <= new Date(startsAt)) throw new Error(t('event.endBeforeStart'));
-  const lead = chipValue(root, 'e-lead');
   return {
     title: $e('title').value.trim(),
     description: $e('description').value.trim() || null,
@@ -80,7 +103,7 @@ export function readEventFields(root) {
     starts_at: startsAt,
     ends_at: endsAt,
     attendance_policy: chipValue(root, 'e-attendance') || 'REQUIRED',
-    remind_before_minutes: lead === '' || lead == null ? null : Number(lead),
+    remind_before_minutes: readLead(root, 'e-lead', '[data-e-lead-custom]'),
   };
 }
 
@@ -108,7 +131,11 @@ export function bindEventFields(root, { excludeId = null, onChange = () => {} } 
     refresh();
   });
   $e('end').addEventListener('change', refresh);
-  root.addEventListener('chipchange', () => onChange());
+  root.addEventListener('chipchange', (event) => {
+    if (event.detail.name === 'e-lead') syncLeadPicker(root, 'e-lead', '[data-e-lead-custom]');
+    onChange();
+  });
+  root.querySelector('[data-e-lead-custom]')?.addEventListener('input', onChange);
   refresh();
 }
 

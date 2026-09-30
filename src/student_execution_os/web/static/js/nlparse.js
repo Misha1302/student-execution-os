@@ -91,6 +91,12 @@ const CATEGORY_RULES = [
   ['LESSON', '\\bпар[аеуы]\\b|лекци|семинар|занятие|урок|lecture|\\bclass\\b|seminar|lesson'],
 ];
 
+const MEETING_COMMON_PARTICIPANTS = new Set([
+  'группой', 'командой', 'коллегой', 'коллегами', 'клиентом', 'клиентами',
+  'научруком', 'руководителем', 'преподавателем', 'куратором', 'наставником',
+  'врачом', 'доктором', 'другом', 'подругой', 'мамой', 'папой',
+]);
+
 const FILLERS = new Set([
   'надо', 'нужно', 'необходимо', 'мне', 'я', 'пожалуйста', 'плиз', 'это', 'а', 'и', 'но', 'ещё', 'еще',
   'please', 'i', 'need', 'to', 'have', 'must', 'should', 'gotta', 'it', 'and', 'also',
@@ -492,6 +498,39 @@ class Parser {
     return spans;
   }
 
+  // A lead relative to a named event is neither task effort nor a clock time.
+  // Consume it before generic duration parsing so arbitrary values (for example
+  // 50 minutes) remain exact and never disqualify the event.
+  eventReminderOffset() {
+    if (!rx(EVENT_WORDS).test(this.low) || rx(PREPARE_WORDS).test(this.low)) return null;
+    const cue = '(?:напомни(?:те)?(?:\\s+мне)?|напомнить(?:\\s+мне)?|пни(?:\\s+меня)?|пингани|remind\\s+me(?:\\s+to)?|reminder)';
+    const unit = '(минут\\w*|мин\\.?|minutes?|mins?|час(?:а|ов)?|hours?|hrs?)';
+    const patterns = [
+      `(?<!\\w)${cue}\\s+(?:за\\s+)?(${NUM})\\s*${unit}(?:\\s+(?:до\\s+начала|заранее|before(?:\\s+(?:the\\s+)?start)?))?(?!\\w)`,
+      `(?<!\\w)(?:за\\s+)?(${NUM})\\s*${unit}\\s+(?:до\\s+начала|заранее|before(?:\\s+(?:the\\s+)?start)?)(?!\\w)`,
+      `(?<!\\w)${cue}\\s+(?:за\\s+)?(час|полчаса|полтора\\s+часа)(?:\\s+(?:до\\s+начала|заранее|before(?:\\s+(?:the\\s+)?start)?))?(?!\\w)`,
+    ];
+    for (const pattern of patterns) {
+      for (const x of this.scan(pattern)) {
+        const token = x.m[1];
+        let minutes;
+        if (token === 'час') minutes = 60;
+        else if (token === 'полчаса') minutes = 30;
+        else if (token === 'полтора часа') minutes = 90;
+        else {
+          const amount = num(token);
+          if (amount == null) continue;
+          const unitText = x.m[2];
+          minutes = Math.round(amount * (/^(?:час|hour|hr)/u.test(unitText) ? 60 : 1));
+        }
+        if (minutes < 0 || minutes > 1440) continue;
+        this.take(x.start, x.end);
+        return minutes;
+      }
+    }
+    return null;
+  }
+
   deadlineWords() {
     return rx('(?<!\\w)(?:сдать|сдача|сдаю|дедлайн\\w*|срок\\w*|отправить\\s+до|due|deadline|submit|hand\\s+in|turn\\s+in)(?!\\w)').test(this.low);
   }
@@ -543,7 +582,7 @@ function eventTimes(parser, moments, remindSpans, hasDeadlineWords, effort) {
   const ranged = moments.find((m) => momentGet(m, 'range')) || null;
   let moment = ranged;
   if (!moment) {
-    if (remindSpans.length || hasDeadlineWords || !rx(EVENT_WORDS).test(parser.low) || rx(PREPARE_WORDS).test(parser.low)) return null;
+    if (hasDeadlineWords || !rx(EVENT_WORDS).test(parser.low) || rx(PREPARE_WORDS).test(parser.low)) return null;
     moment = moments.find((m) => momentGet(m, 'time') && !momentGet(m, 'instant') && [null, 'start'].includes(momentCue(m))) || null;
     if (!moment) return null;
   }
@@ -670,6 +709,10 @@ function titleOf(parser, category) {
   title = title.replace(/\s+([,.;:!?])/gu, '$1').replace(/([,;:])(?:\s*[,;:])+/gu, '$1');
   title = stripChars(title, ' ,.;:!?—-–');
   if (category === 'EXAM') title = examTitle(title);
+  if (category === 'MEETING') title = title.replace(/(?<![\p{L}\p{N}_])((?:с|со)\s+)([а-яё][а-яё-]+)$/iu,
+    (_all, lead, participant) => (MEETING_COMMON_PARTICIPANTS.has(participant.toLocaleLowerCase('ru'))
+      ? lead + participant
+      : lead + participant[0].toLocaleUpperCase('ru') + participant.slice(1)));
   if (title) title = title[0].toUpperCase() + title.slice(1);
   return title.slice(0, 300);
 }
@@ -724,13 +767,20 @@ export function captureKind(parsed, raw) {
 export function parseTask(text, now = new Date()) {
   const lines = String(text || '').trim().split(/\r?\n/u).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return { title: '', unresolved: ['title'] };
-  let head = lines[0].split(/\s+/u).join(' ');
+  const semanticLines = [lines[0]];
+  const descriptionLines = [];
+  for (const line of lines.slice(1)) {
+    if (/(?<!\w)(?:напомни|напомнить|напоминание|пни|пингани|remind|reminder|будильник|alarm)(?!\w)/iu.test(line)) semanticLines.push(line);
+    else descriptionLines.push(line);
+  }
+  let head = semanticLines.map((line) => line.split(/\s+/u).join(' ')).join(' ');
   head = head.replace(/^(?:задача|задачу|task|todo|to-do)\s*:\s*/iu, '');
-  const description = lines.slice(1).join('\n') || null;
+  const description = descriptionLines.join('\n') || null;
   const parser = new Parser(head, now);
 
   const importance = parser.importance();
   const absent = parser.noDeadline();
+  const eventLead = parser.eventReminderOffset();
   const remindSpans = parser.reminderCue();
   parser.stripDeadlineLabels();
   parser.startWords();
@@ -763,6 +813,7 @@ export function parseTask(text, now = new Date()) {
       starts_at: iso(startsAt),
       ends_at: iso(endsAt),
       duration_minutes: Math.floor((endsAt - startsAt) / 60000),
+      remind_before_minutes: eventLead,
       unresolved: eventTitle ? [] : ['title'],
       cutoff_time_assumed: false,
     };

@@ -20,7 +20,7 @@ import { parseCommand } from './commands.js';
 import { renderCommands, knownItems, isCommand } from './command-preview.js';
 import { createReminder, deliveryChips, hasAlarm } from './reminders.js';
 import { durationPicker, readDuration, writeDuration, focusDurationOther, DURATION_PRESETS } from './duration.js';
-import { eventFieldsHtml, readEventFields, bindEventFields, eventWhen, conflictHtml, createEvent, DEFAULT_LEAD, LEADS } from './events.js';
+import { eventFieldsHtml, readEventFields, bindEventFields, eventWhen, conflictHtml, createEvent, DEFAULT_LEAD, leadPicker, readLead } from './events.js';
 
 export const CATEGORIES = ['HOMEWORK', 'EXAM', 'LESSON', 'WORK', 'ADMIN', 'ERRAND', 'PERSONAL_APPOINTMENT', 'MEETING', 'GENERAL'];
 export const IMPORTANCE = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'];
@@ -323,8 +323,78 @@ export function mergeReminderDraft(previous, incoming, floor = null) {
 
 const KINDS = ['TASK', 'EVENT', 'REMINDER', 'NOTE'];
 
+const blankTaskDraft = () => ({ title: '', importance: 'NORMAL', category: 'GENERAL',
+  estimated_total_effort_minutes: null, actual_cutoff: { state: 'UNKNOWN' }, splittable: false });
+
+const CORE_BY_KIND = {
+  EVENT: ['starts_at', 'ends_at', 'duration_minutes', 'remind_before_minutes'],
+  TASK: ['actual_cutoff', 'actionable_from', 'target_at', 'remind_at'],
+  REMINDER: ['remind_at', 'delivery'],
+  NOTE: [],
+};
+
+const sameSemanticValue = (a, b, key) => {
+  if (['starts_at', 'ends_at', 'actionable_from', 'target_at', 'remind_at'].includes(key)) {
+    const first = Date.parse(a), second = Date.parse(b);
+    if (Number.isFinite(first) && Number.isFinite(second)) return first === second;
+  }
+  if (key === 'actual_cutoff' && a?.state === 'KNOWN' && b?.state === 'KNOWN') {
+    return sameSemanticValue(a.at, b.at, 'remind_at');
+  }
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+};
+
+// The one owner for local/model reconciliation. A candidate is
+// { kind, payload, provenance }. Conflicting kind or time roles are never object-
+// spread together; the local explicit reading remains visible and the conflict is
+// surfaced. Model title/category enrichment is accepted only inside one kind.
+export function reconcileCaptureCandidates(local, model, { userKind = null } = {}) {
+  if (!local && !model) return { kind: userKind || 'TASK', payload: {}, provenance: {}, conflicts: [] };
+  const conflicts = [];
+  let selected = local || model;
+  if (local && model && local.kind !== model.kind) {
+    conflicts.push({ field: 'kind', local: local.kind, model: model.kind });
+    selected = local; // uncertainty is safer than a cross-kind mixture
+  } else if (model) selected = model;
+  const kind = userKind || selected.kind;
+  const payload = { ...(local?.kind === kind ? local.payload : {}) };
+  const provenance = Object.fromEntries(Object.keys(payload).map((key) => [key, 'LOCAL_EXPLICIT']));
+  if (model?.kind === kind) {
+    for (const [key, value] of Object.entries(model.payload || {})) {
+      if (value === undefined) continue;
+      const localHas = Object.prototype.hasOwnProperty.call(payload, key) && payload[key] != null
+        && !(key === 'actual_cutoff' && payload[key].state === 'UNKNOWN');
+      const critical = (CORE_BY_KIND[kind] || []).includes(key);
+      if (critical && localHas && !sameSemanticValue(payload[key], value, key)) {
+        conflicts.push({ field: key, local: payload[key], model: value });
+        continue;
+      }
+      if (key === 'category' && localHas && payload[key] !== 'GENERAL' && payload[key] !== value) {
+        conflicts.push({ field: key, local: payload[key], model: value });
+        continue;
+      }
+      payload[key] = value;
+      provenance[key] = 'MODEL_EXPLICIT';
+    }
+  }
+  return { kind, payload, provenance, conflicts };
+}
+
+function localCandidate(parsed, raw) {
+  const kind = parsed.kind || captureKind(parsed, raw);
+  const payload = { ...parsed };
+  delete payload.kind; delete payload.unresolved; delete payload.cutoff_time_assumed;
+  return { kind, payload, provenance: 'LOCAL_EXPLICIT', unresolved: parsed.unresolved || [] };
+}
+
+function modelCandidate(action) {
+  const kind = { CREATE_TASK: 'TASK', CREATE_EVENT: 'EVENT', CREATE_REMINDER: 'REMINDER' }[action?.command];
+  return kind ? { kind, payload: { ...(action.payload || {}) }, provenance: 'MODEL_EXPLICIT',
+    unresolved: action.unresolved_fields || [] } : null;
+}
+
 export function openCapture({ text = '', listen: listenNow = false, sourceNoteId = null, initialKind = null } = {}) {
-  let draft = { title: '', importance: 'NORMAL', category: 'GENERAL', estimated_total_effort_minutes: null, actual_cutoff: { state: 'UNKNOWN' }, splittable: false };
+  let draft = blankTaskDraft();
   let unresolved = [];
   const answered = new Set();
   let assistant = null; // { batch_id, action_id } when the model's proposal is on the card
@@ -338,6 +408,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
   let reminderDraft = null;   // { title, remind_at, delivery, wake_check, raise_volume, note }
   let reminderFloor = null;   // explicit alarm/wake semantics from the local parser
   const eventEdited = new Set(); // event fields the user set by hand
+  let localSemantic = null;
+  let modelSemantic = null;
+  let fieldProvenance = {};
+  let semanticConflicts = [];
   let dictation = null;
 
   const dialog = openSheet({
@@ -346,7 +420,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     body: `<div class="capture">
       <div class="kind-switch" data-kind-switch>${chipGroup('capture-kind', KINDS.map((k) => [k, t(`capture.kind.${k}`)]), kind)}</div>
       <div class="capture-input">
-        <textarea id="capture-text" rows="2" maxlength="4000" enterkeyhint="done" placeholder="${esc(t('capture.placeholder'))}">${esc(text)}</textarea>
+        <textarea id="capture-text" rows="3" maxlength="4000" enterkeyhint="enter" placeholder="${esc(t('capture.placeholder'))}">${esc(text)}</textarea>
         ${voiceSupported() ? `<button type="button" class="icon-button mic" data-mic aria-pressed="false" aria-label="${esc(t('capture.voice'))}">${icon('mic')}</button>` : ''}
       </div>
       <div class="voice-panel" data-voice hidden>
@@ -381,6 +455,12 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
   const taskDetails = details.querySelector('[data-task-details]');
   const eventDetails = details.querySelector('[data-event-details]');
   bindFields(taskDetails);
+  const growInput = () => {
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, 192)}px`;
+    input.style.overflowY = input.scrollHeight > 192 ? 'auto' : 'hidden';
+  };
+  growInput();
 
   const showStatus = (message) => { status.hidden = !message; status.textContent = message || ''; };
   const engineEl = dialog.querySelector('[data-engine]');
@@ -398,6 +478,27 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       draft[key] = fields[key];
     }
     if (source === 'local' && !String(input.value).trim()) draft.title = '';
+  }
+
+  function resetParsedState() {
+    const previousTask = draft;
+    draft = blankTaskDraft();
+    for (const key of answered) if (key in previousTask) draft[key] = previousTask[key];
+    if (eventDraft) {
+      const previousEvent = eventDraft;
+      eventDraft = eventEdited.size ? { attendance_policy: 'REQUIRED', remind_before_minutes: DEFAULT_LEAD } : null;
+      for (const key of eventEdited) if (key in previousEvent) eventDraft[key] = previousEvent[key];
+    }
+    if (reminderDraft) {
+      const old = reminderDraft;
+      const keep = old.whenChosen || old.deliveryChosen || old.wakeChosen;
+      reminderDraft = keep ? {
+        ...(old.whenChosen ? { remind_at: old.remind_at, whenChosen: true } : {}),
+        ...(old.deliveryChosen ? { delivery: old.delivery, deliveryChosen: true } : {}),
+        ...(old.wakeChosen ? { wake_check: old.wake_check, wakeChosen: true } : {}),
+        title: '',
+      } : null;
+    }
   }
 
   // A parse (local or the model's) that found a fixed-time event.
@@ -428,14 +529,22 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     set('start', localInputValue(eventDraft.starts_at));
     set('end', localInputValue(eventDraft.ends_at));
     set('category', eventDraft.category || 'GENERAL');
-    setChip(eventDetails, 'e-lead', eventDraft.remind_before_minutes == null ? '' : String(eventDraft.remind_before_minutes));
+    const lead = eventDraft.remind_before_minutes == null ? '' : String(eventDraft.remind_before_minutes);
+    const preset = eventDetails.querySelector(`[data-chip-group="e-lead"] [data-value="${lead}"]`);
+    setChip(eventDetails, 'e-lead', preset ? lead : 'other');
+    const customLead = eventDetails.querySelector('[data-e-lead-custom]');
+    if (customLead && !preset) customLead.value = lead;
+    customLead?.closest('.event-lead-custom')?.classList.toggle('hidden', Boolean(preset));
   }
 
   function fromEventDetails() {
     let fields;
     try { fields = readEventFields(eventDetails); } catch { return; }
     for (const [key, value] of Object.entries(fields)) {
-      if (JSON.stringify(value ?? null) !== JSON.stringify(eventDraft?.[key] ?? null)) eventEdited.add(key);
+      if (JSON.stringify(value ?? null) !== JSON.stringify(eventDraft?.[key] ?? null)) {
+        eventEdited.add(key);
+        fieldProvenance[key] = 'USER_EDIT';
+      }
     }
     eventDraft = { ...eventDraft, ...fields };
     render();
@@ -449,10 +558,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       <div class="capture-facts">
         <button type="button" class="fact" data-fact="event-time"><span class="fact-icon tone-accent">${icon('calendar')}</span>
           <span class="fact-copy"><small>${esc(t('card.when'))}</small><strong data-event-when>${esc(eventWhen(eventDraft))}</strong></span></button>
-        <div class="fact static"><span class="fact-icon tone-muted">${icon('flag')}</span>
-          <span class="fact-copy"><small>${esc(t('card.deadline'))}</small><strong>${esc(t('event.noDeadline'))}</strong></span></div>
       </div>
-      <div class="field"><span>${icon('bell')} ${esc(t('event.remind'))}</span>${chipGroup('card-lead', LEADS.map(([v, k]) => [v, t(k)]), lead)}</div>
+      <div class="field"><span>${icon('bell')} ${esc(t('event.remind'))}</span>${leadPicker('card-lead', lead, 'data-card-lead-custom')}</div>
       ${conflictHtml(eventDraft)}
       ${eventDraft.remind_before_minutes != null ? reachWarning() : ''}
       <button type="button" class="link" data-switch-kind="TASK">${esc(t('capture.asTask'))}</button>
@@ -545,6 +652,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
   function switchKind(next) {
     kindChosen = true;
     kind = next;
+    dialog.dataset.kindProvenance = 'USER_EDIT';
     if (kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
     if (kind === 'REMINDER' && !reminderDraft) {
       reminderDraft = { title: draft.title, remind_at: reminderTimeOf(draft), delivery: 'PUSH', wake_check: false, raise_volume: true };
@@ -563,6 +671,36 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     merge({ title: parsed.title, remind_at: parsed.remind_at, actual_cutoff: { state: 'ABSENT' } }, 'reminder');
   }
 
+  function applySemantic(result, source, selectedUnresolved = []) {
+    const userProvenance = Object.fromEntries(Object.entries(fieldProvenance).filter(([, value]) => value === 'USER_EDIT'));
+    fieldProvenance = { ...result.provenance, ...userProvenance };
+    semanticConflicts = result.conflicts;
+    dialog.dataset.fieldProvenance = JSON.stringify(fieldProvenance);
+    if (!kindChosen) kind = result.kind;
+    unresolved = selectedUnresolved;
+    if (result.kind === 'EVENT') {
+      unresolved = [];
+      adoptEvent(result.payload);
+    } else if (result.kind === 'REMINDER') {
+      unresolved = [];
+      adoptReminder(result.payload, source);
+    } else if (result.kind === 'TASK') {
+      merge(result.payload, source);
+    }
+    // A manual kind selection is provenance too. Convert only after the selected
+    // semantic draft has been rebuilt, so stale fields from the previous text cannot leak.
+    if (kindChosen && kind === 'EVENT' && !eventDraft) eventDraft = eventFromTask(draft);
+    if (kindChosen && kind === 'REMINDER' && !reminderDraft) {
+      reminderDraft = { title: draft.title, remind_at: reminderTimeOf(draft), delivery: 'PUSH', wake_check: false, raise_volume: true };
+    }
+    if (kindChosen && kind === 'REMINDER' && result.kind === 'TASK' && reminderDraft) {
+      reminderDraft = mergeReminderDraft(reminderDraft, { title: draft.title,
+        remind_at: reminderTimeOf(draft) }, reminderFloor);
+    }
+    if (semanticConflicts.length) showStatus(t('capture.semanticConflict'));
+    render();
+  }
+
   function showLocalCommand(action) {
     commands = { source: 'local', actions: [action] };
     renderCommands(dialog.querySelector('[data-commands]'), commands, { onDone: () => dialog.close('applied') });
@@ -579,27 +717,17 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     const command = parseCommand(raw, now(), knownItems());
     if (command) { showLocalCommand(command); return; }
     const parsed = parseTask(raw, now());
+    resetParsedState();
+    showStatus('');
     reminderFloor = null;
-    unresolved = parsed.unresolved || [];
-    if (parsed.kind === 'EVENT') {
-      unresolved = [];
-      adoptEvent(parsed);
-    } else if (parsed.kind === 'REMINDER') {
-      unresolved = [];
-      adoptReminder(parsed, 'local');
-    } else {
-      if (!kindChosen) kind = captureKind(parsed, raw);
-      merge(parsed, 'local');
-      if (eventDraft && !eventEdited.has('title')) eventDraft = { ...eventDraft, title: parsed.title };
-      if (reminderDraft) {
-        // Chosen as a reminder (possibly before this parse finished): the written time is
-        // when to remind — unless the person already set the time themselves.
-        const when = kind === 'REMINDER' ? reminderTimeOf(parsed) : parsed.remind_at;
-        reminderDraft = { ...reminderDraft, title: parsed.title, ...(when && !reminderDraft.whenChosen ? { remind_at: when } : {}) };
-      }
+    if (parsed.kind === 'REMINDER' && hasAlarm(parsed.delivery)) {
+      reminderFloor = { delivery: parsed.delivery, wake_check: parsed.wake_check === true };
     }
+    localSemantic = localCandidate(parsed, raw);
+    modelSemantic = null;
+    const reconciled = reconcileCaptureCandidates(localSemantic, null);
+    applySemantic(reconciled, 'local', localSemantic.unresolved);
     showEngine('local');
-    render();
   }
 
   async function enrich() {
@@ -636,36 +764,20 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       render();
       return;
     }
-    const reminder = actions.length === 1 && actions[0].command === 'CREATE_REMINDER' ? actions[0] : null;
-    if (reminder) {
-      assistant = { batch_id: result.batch_id, action_id: reminder.id };
-      unresolved = [];
-      adoptReminder(reminder.payload);
-      render();
-      return;
-    }
     // The words asked for an alarm: a task or event reading of them is a downgrade
     // (an older server may still send one), so the local alarm card stays.
-    if (reminderFloor && !kindChosen) return;
-    const create = actions.length === 1 && actions[0].command === 'CREATE_TASK' ? actions[0] : null;
-    const event = actions.length === 1 && actions[0].command === 'CREATE_EVENT' && actions[0].payload?.starts_at && actions[0].payload?.ends_at ? actions[0] : null;
-    if (event) {
-      // The model's reading goes through the same card and the same event.create
-      // validation as the local parse; it only improves title and times.
-      assistant = { batch_id: result.batch_id, action_id: event.id };
-      unresolved = [];
-      adoptEvent(event.payload);
-      render();
-    } else if (create) {
-      if (!kindChosen) kind = 'TASK';
-      assistant = { batch_id: result.batch_id, action_id: create.id };
-      unresolved = create.unresolved_fields || [];
-      merge(create.payload, 'assistant');
-      render();
-    }
+    if (reminderFloor && !kindChosen && actions[0]?.command !== 'CREATE_REMINDER') return;
+    const create = actions.length === 1 ? actions[0] : null;
+    modelSemantic = modelCandidate(create);
+    if (!modelSemantic || !localSemantic) return;
+    const reconciled = reconcileCaptureCandidates(localSemantic, modelSemantic);
+    const kindConflict = reconciled.conflicts.some((item) => item.field === 'kind');
+    assistant = kindConflict ? null : { batch_id: result.batch_id, action_id: create.id };
+    applySemantic(reconciled, 'assistant', kindConflict ? localSemantic.unresolved : modelSemantic.unresolved);
   }
 
   input.addEventListener('input', () => {
+    growInput();
     clearTimeout(parseTimer);
     clearTimeout(serverTimer);
     serverSeq += 1;
@@ -673,7 +785,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     serverTimer = setTimeout(enrich, 1100);
   });
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       if (!createButton.disabled) createButton.click();
     }
@@ -682,22 +794,39 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
   preview.addEventListener('change', (e) => {
     if (!e.target.matches('[data-card-remind]') || !reminderDraft) return;
     reminderDraft = { ...reminderDraft, remind_at: isoFromLocalInput(e.target.value), whenChosen: true };
+    fieldProvenance.remind_at = 'USER_EDIT';
     render();
+  });
+
+  preview.addEventListener('input', (e) => {
+    if (!e.target.matches('[data-card-lead-custom]') || !eventDraft) return;
+    try {
+      eventDraft.remind_before_minutes = readLead(preview, 'card-lead', '[data-card-lead-custom]');
+      eventEdited.add('remind_before_minutes');
+      fieldProvenance.remind_before_minutes = 'USER_EDIT';
+      writeEventFields();
+    } catch { /* keep editing until the value is valid */ }
   });
 
   preview.addEventListener('chipchange', (e) => {
     if (e.detail.name === 'card-delivery' && reminderDraft) {
       reminderDraft = { ...reminderDraft, delivery: e.detail.value, deliveryChosen: true };
+      fieldProvenance.delivery = 'USER_EDIT';
       render();
       return;
     }
     if (e.detail.name === 'card-wake' && reminderDraft) {
       reminderDraft = { ...reminderDraft, wake_check: e.detail.value === 'true', wakeChosen: true };
+      fieldProvenance.wake_check = 'USER_EDIT';
       return;
     }
     if (e.detail.name !== 'card-lead' || !eventDraft) return;
-    eventDraft.remind_before_minutes = e.detail.value === '' ? null : Number(e.detail.value);
+    preview.querySelector('[data-card-lead-custom]')?.closest('.event-lead-custom')?.classList.toggle('hidden', e.detail.value !== 'other');
+    eventDraft.remind_before_minutes = e.detail.value === '' ? null
+      : e.detail.value === 'other' ? Number(preview.querySelector('[data-card-lead-custom]')?.value || 50)
+        : Number(e.detail.value);
     eventEdited.add('remind_before_minutes');
+    fieldProvenance.remind_before_minutes = 'USER_EDIT';
     writeEventFields();
   });
 
@@ -729,7 +858,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     let fields;
     try { fields = readFields(taskDetails); } catch { return; }
     for (const key of FIELDS) {
-      if (JSON.stringify(fields[key] ?? null) !== JSON.stringify(draft[key] ?? null)) answered.add(key);
+      if (JSON.stringify(fields[key] ?? null) !== JSON.stringify(draft[key] ?? null)) {
+        answered.add(key);
+        fieldProvenance[key] = 'USER_EDIT';
+      }
     }
     Object.assign(draft, fields);
     render();
@@ -811,7 +943,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       return;
     }
     if (kind === 'EVENT' && eventDraft) {
-      if (details.open) fromEventDetails();
+      try {
+        eventDraft.remind_before_minutes = readLead(preview, 'card-lead', '[data-card-lead-custom]');
+        if (details.open) { readEventFields(eventDetails); fromEventDetails(); }
+      } catch (err) { toast(err.message, { error: true }); return; }
       const fields = { ...eventDraft, title: String(eventDraft.title || '').trim() };
       if (assistant) fields.assistant_batch_id = assistant.batch_id;
       if (!fields.title) { toast(t('form.titleRequired'), { error: true }); return; }

@@ -88,19 +88,41 @@ export function sectionHead(title, action = '') {
 
 // ---- toast ------------------------------------------------------------------------
 
+const activeToasts = new Map();
+const toastTimers = new WeakMap();
+const toastActionIds = new WeakMap();
+let nextToastActionId = 0;
+
 // `duration` (ms): an Undo offer stays up long enough to use (10 s).
 export function toast(message, { error = false, action = null, duration = null } = {}) {
   const region = $('#toast-region');
+  // Independent Undo offers can share wording but refer to different operations.
+  if (action?.run && !toastActionIds.has(action.run)) toastActionIds.set(action.run, ++nextToastActionId);
+  const key = `${error ? 'error' : 'status'}\u0000${String(message)}\u0000${action?.label || ''}\u0000${action?.run ? toastActionIds.get(action.run) : ''}`;
+  const existing = activeToasts.get(key);
+  if (existing?.isConnected) {
+    existing.classList.remove('leaving');
+    const timers = toastTimers.get(existing) || [];
+    timers.forEach(clearTimeout);
+    const visible = duration ?? (action ? 6000 : 3800);
+    const leaving = setTimeout(() => existing.classList.add('leaving'), visible);
+    const removing = setTimeout(() => { activeToasts.delete(key); existing.remove(); }, visible + 400);
+    toastTimers.set(existing, [leaving, removing]);
+    return existing;
+  }
   const el = document.createElement('div');
   el.className = `toast${error ? ' error' : ''}`;
   el.setAttribute('role', error ? 'alert' : 'status');
   el.innerHTML = `<span>${esc(message)}</span>${action ? `<button class="toast-action">${esc(action.label)}</button>` : ''}`;
-  if (action) el.querySelector('button').addEventListener('click', () => { action.run(); el.remove(); });
+  if (action) el.querySelector('button').addEventListener('click', () => { action.run(); activeToasts.delete(key); el.remove(); });
   region.append(el);
+  activeToasts.set(key, el);
   if (error) haptic('MEDIUM');
   const visible = duration ?? (action ? 6000 : 3800);
-  setTimeout(() => el.classList.add('leaving'), visible);
-  setTimeout(() => el.remove(), visible + 400);
+  const leaving = setTimeout(() => el.classList.add('leaving'), visible);
+  const removing = setTimeout(() => { activeToasts.delete(key); el.remove(); }, visible + 400);
+  toastTimers.set(el, [leaving, removing]);
+  return el;
 }
 
 export function errorMessage(err) {

@@ -8,6 +8,7 @@ from pathlib import Path
 from student_execution_os.agent.assistant import SQLiteAssistantService
 from student_execution_os.agent.model import AuthenticatedPrincipal
 from student_execution_os.domain.clock import FrozenClock
+from student_execution_os.domain.errors import ValidationError
 from student_execution_os.domain.model import ActorCategory
 from student_execution_os.persistence import SQLiteCanonicalRepository, extras
 from student_execution_os.reminders.standalone import SQLiteReminderRepository
@@ -141,6 +142,56 @@ class RelatedRegressionTests(unittest.TestCase):
                                 "idempotency_key": "event-lead"})["results"][0]
         self.assertEqual(result["entity"]["remind_before_minutes"], 30)
         self.assertEqual(extras.event_lead(self.repo, "a", result["entity_id"]), 30)
+
+    def test_assistant_event_is_a_complete_validated_semantic_object(self):
+        service = self.assistant(Provider("CREATE_EVENT", {
+            "title": "Созвон с Ариадной", "starts_at": "2026-09-27T15:00:00+00:00",
+            "ends_at": "2026-09-27T15:30:00+00:00", "remind_before_minutes": 50,
+        }))
+        preview = service.interpret("созвон с ариадной в 18:00 завтра на пол часа.\nНапомни за 50 минут до начала")
+        payload = preview["actions"][0]["payload"]
+        self.assertEqual((payload["title"], payload["duration_minutes"], payload["remind_before_minutes"]),
+                         ("Созвон с Ариадной", 30, 50))
+
+        invalid = self.assistant(Provider("CREATE_EVENT", {
+            "title": "Созвон", "starts_at": "2026-09-27T15:00:00+00:00",
+            "ends_at": "2026-09-27T15:30:00+00:00", "duration_minutes": 60,
+        }))
+        with self.assertRaisesRegex(ValidationError, "duration_minutes"):
+            invalid.interpret("созвон завтра в 18:00 на полчаса")
+        fractional = self.assistant(Provider("CREATE_EVENT", {
+            "title": "Созвон", "starts_at": "2026-09-27T15:00:00+00:00",
+            "ends_at": "2026-09-27T15:30:30+00:00", "duration_minutes": 30,
+        }))
+        with self.assertRaisesRegex(ValidationError, "duration_minutes"):
+            fractional.interpret("созвон завтра в 18:00 на полчаса")
+
+    def test_assistant_event_time_edit_rederives_duration_and_invalid_model_falls_back(self):
+        service = self.assistant(Provider("CREATE_EVENT", {
+            "title": "Созвон", "starts_at": "2026-09-27T15:00:00+00:00",
+            "ends_at": "2026-09-27T15:30:00+00:00", "duration_minutes": 30,
+        }))
+        preview = service.interpret("созвон завтра в 18:00 на полчаса")
+        action = preview["actions"][0]
+        applied = service.apply({
+            "batch_id": preview["batch_id"], "action_ids": [action["id"]],
+            "edits": {action["id"]: {"ends_at": "2026-09-27T16:00:00+00:00"}},
+            "idempotency_key": "event-time-edit",
+        })["results"][0]
+        self.assertEqual(applied["entity"]["duration_minutes"], 60)
+
+        fallback = self.assistant(Provider("CREATE_EVENT", {
+            "title": "Broken", "starts_at": "2026-09-27T15:00:00+00:00",
+            "ends_at": "2026-09-27T15:30:00+00:00", "duration_minutes": 90,
+        })).interpret(
+            "созвон с ариадной в 18:00 завтра на пол часа.\nНапомни за 50 минут до начала",
+            degrade_invalid=True,
+        )
+        payload = fallback["actions"][0]["payload"]
+        self.assertTrue(fallback["fallback"])
+        self.assertEqual(fallback["fallback_reason"], "INVALID_PROPOSAL")
+        self.assertEqual((payload["title"], payload["duration_minutes"], payload["remind_before_minutes"]),
+                         ("Созвон с Ариадной", 30, 50))
 
     def test_stale_start_is_semantically_superseded(self):
         self.create_task("task-stale-start", 30)

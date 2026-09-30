@@ -11,6 +11,7 @@ import { syncSection, syncActions, loadConnectors } from '../sync-panel.js';
 import { appUpdateService, UpdateChannel, UpdateState } from '../update-service.js';
 import { academicScheduleSection, academicScheduleActions, loadAcademicSchedule } from '../academic-schedule.js';
 import { connectedAppsSection, connectedAppsActions, loadConnectedApps } from '../connected-apps.js';
+import { openTutorial } from '../onboarding.js';
 
 async function loadUpdates() {
   if (!isNative()) return null;
@@ -291,6 +292,14 @@ export default {
       </section>
 
       <section class="section">
+        <div class="section-head"><h2>${esc(t('settings.help'))}</h2></div>
+        <div class="card">
+          <p class="muted">${esc(t('settings.tutorialHelp'))}</p>
+          <button class="button wide" data-action="tutorial-open">${icon('spark')}${esc(t('settings.tutorialOpen'))}</button>
+        </div>
+      </section>
+
+      <section class="section">
         <div class="section-head"><h2>${esc(t('settings.data'))}</h2></div>
         <div class="card">
           <p class="muted">${esc(t('settings.exportHelp'))}</p>
@@ -371,6 +380,7 @@ export default {
     },
     'account-export': (el) => exportAccount(el),
     feedback: (_el, ctx) => feedbackSheet(ctx.data.diag),
+    'tutorial-open': () => openTutorial({ force: true }),
     'save-sleep': (el, ctx) => saveSleep(el, ctx),
     'update-check': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.checkForUpdates({ manual: true }); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
     'update-download': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.download(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
