@@ -288,9 +288,23 @@ public class SeosUpdatePlugin extends Plugin {
         return value;
     }
     private static long requiredLong(PluginCall call, String name) throws UpdateFailure {
-        Long value = call.getLong(name);
-        if (value == null || value <= 0) throw new UpdateFailure("METADATA_INVALID", name + " is invalid");
-        return value;
+        try {
+            return positiveLong(call.getData().opt(name), name);
+        } catch (IllegalArgumentException invalid) {
+            throw new UpdateFailure("METADATA_INVALID", invalid.getMessage());
+        }
+    }
+    static long positiveLong(Object raw, String name) {
+        if (raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long) {
+            long value = ((Number) raw).longValue();
+            if (value > 0) return value;
+        } else if (raw instanceof Float || raw instanceof Double) {
+            double value = ((Number) raw).doubleValue();
+            if (Double.isFinite(value) && value > 0 && value == Math.rint(value) && value <= Long.MAX_VALUE) {
+                return (long) value;
+            }
+        }
+        throw new IllegalArgumentException(name + " is invalid");
     }
     private static long requiredSize(PluginCall call) throws UpdateFailure {
         long value = requiredLong(call, "sizeBytes");
