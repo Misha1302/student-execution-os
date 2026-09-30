@@ -43,6 +43,32 @@ def summarize(result: dict) -> dict:
 
 
 class NaturalCaptureParserTests(unittest.TestCase):
+    def test_event_duration_and_arbitrary_reminder_offset_are_distinct_roles(self):
+        result = parse_task(
+            "созвон с ариадной в 18:00 завтра на пол часа.\nНапомни за 50 минут до начала",
+            now=datetime(2026, 9, 29, 12, 0, tzinfo=ZONE),
+            timezone_name="Europe/Moscow",
+        )
+        self.assertEqual(result["kind"], "EVENT")
+        self.assertEqual(result["title"], "Созвон с Ариадной")
+        self.assertEqual((_local(result["starts_at"]), _local(result["ends_at"])),
+                         ("2026-09-30 18:00", "2026-09-30 18:30"))
+        self.assertEqual((result["duration_minutes"], result["remind_before_minutes"]), (30, 50))
+        self.assertNotIn("actual_cutoff", result)
+
+    def test_event_titles_do_not_keep_temporal_or_reminder_fragments(self):
+        cases = {
+            "Встреча с Димой завтра в 18:00 на час, напомни за 15 минут": "Встреча с Димой",
+            "Приём у врача завтра в 10:00 на полчаса, напомни за 50 минут до начала": "Приём у врача",
+            "Лекция по матану завтра в 12:00 на 90 минут, напомни за 30 минут": "Лекция по матану",
+            "Семинар по алгебре завтра в 14:00 на час": "Семинар по алгебре",
+            "Позвонить маме завтра до 18:00, займёт 15 минут": "Позвонить маме",
+            "Сдать лабу в пятницу до 17:00, займёт два часа": "Сдать лабу",
+        }
+        for text, title in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(parse_task(text, now=NOW, timezone_name="Europe/Moscow")["title"], title)
+
     def test_fixture_phrases(self):
         for case in FIXTURE["cases"]:
             with self.subTest(text=case["text"]):

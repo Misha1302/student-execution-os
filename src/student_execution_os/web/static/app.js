@@ -18,6 +18,7 @@ import more, { MORE_ITEMS } from './js/views/more.js';
 import calendar from './js/views/calendar.js';
 import { eventSheet } from './js/events.js';
 import notifications from './js/views/notifications.js';
+import { openTutorial } from './js/onboarding.js';
 import evidence from './js/views/evidence.js';
 import places from './js/views/places.js';
 import projects from './js/views/projects.js';
@@ -549,7 +550,7 @@ async function boot() {
     syncPreferences();
     flushSync().catch(() => {});
     // A brand-new account starts with its first task.
-    if (event.detail?.firstRun) setTimeout(() => openCapture(), 300);
+    if (event.detail?.firstRun) setTimeout(() => openTutorial({ onDone: () => openCapture() }), 300);
   });
   hideSplash();
   // UI and offline data are usable before any updater network request begins.

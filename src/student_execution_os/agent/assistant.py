@@ -96,7 +96,8 @@ class DeterministicAssistantParser:
             return [{"command": AgentCommand.CREATE_REMINDER.value, "payload": _reminder_payload(parsed), "confidence": 0.85,
                      "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]
         if parsed.get("kind") == "EVENT":
-            payload = {key: parsed[key] for key in ("title", "description", "starts_at", "ends_at", "category", "importance")
+            payload = {key: parsed[key] for key in ("title", "description", "starts_at", "ends_at", "duration_minutes",
+                                                         "remind_before_minutes", "category", "importance")
                        if parsed.get(key) is not None}
             return [{"command": AgentCommand.CREATE_EVENT.value, "payload": payload, "confidence": 0.85,
                      "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]
@@ -136,7 +137,7 @@ _NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
 _TARGET = {"obligation_id", "reminder_id", "target_text"}
 _PAYLOAD_KEYS = {
     AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS,
-    AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "category", "importance",
+    AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "duration_minutes", "category", "importance",
                                       "attendance_policy", "location_effect", "arrival_requirement_minutes",
                                       "remind_before_minutes"},
     AgentCommand.CREATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume", "obligation_id"},
@@ -247,6 +248,13 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             raise ValidationError("assistant event times must be ISO-8601 instants") from exc
         if starts is None or ends is None or starts.utcoffset() is None or ends.utcoffset() is None or ends <= starts:
             raise ValidationError("assistant event needs offset-aware starts_at < ends_at")
+        duration = int((ends - starts).total_seconds() // 60)
+        supplied = payload.get("duration_minutes")
+        if supplied is not None and (isinstance(supplied, bool) or not isinstance(supplied, int) or supplied != duration):
+            raise ValidationError("assistant event duration_minutes must equal ends_at - starts_at")
+        # The reviewed proposal is a full semantic object even when the provider
+        # expressed duration only through its interval.
+        payload["duration_minutes"] = duration
     if command == AgentCommand.CREATE_REMINDER.value:
         _validate_reminder_fields(payload, canonical.clock.now(), creating=True)
     if command == AgentCommand.UPDATE_REMINDER.value:
@@ -625,6 +633,12 @@ class SQLiteAssistantService:
             payload.pop("target_text", None)
             if "reminder_id" in edit:
                 payload.pop("obligation_id", None)
+        if (action["command"] == AgentCommand.CREATE_EVENT.value
+                and ({"starts_at", "ends_at"} & edit.keys())
+                and "duration_minutes" not in edit):
+            # A reviewed time edit changes the interval. Re-derive the semantic
+            # duration instead of letting the provider's old derived value veto it.
+            payload.pop("duration_minutes", None)
         raw["payload"] = payload
         raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit
                                     and not (picked and field in {"target", "obligation_id", "reminder_id", "expected_version"})]
@@ -672,6 +686,7 @@ class SQLiteAssistantService:
         if command is AgentCommand.CREATE_EVENT:
             # One event.create owner for manual, offline and Assistant creation, so a
             # requested reminder lead (remind_before_minutes) is stored the same way.
+            fields.pop("duration_minutes", None)  # derived semantic field, not an event.create input
             return "event.create", f"event-{uuid4()}", fields
         if command is AgentCommand.CREATE_REMINDER:
             return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
