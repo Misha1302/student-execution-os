@@ -26,7 +26,7 @@ from .providers import ProviderUnavailable
 
 
 COMMANDS = {command.value for command in AgentCommand}
-_CREATES = {AgentCommand.CREATE_TASK.value, AgentCommand.CREATE_EVENT.value, AgentCommand.CREATE_REMINDER.value}
+_CREATES = {AgentCommand.CREATE_TASK.value, AgentCommand.CREATE_EVENT.value, AgentCommand.CREATE_REMINDER.value, AgentCommand.CREATE_NOTE.value}
 # Commands that close or put away something the user has: always confirmed by the user.
 DESTRUCTIVE = {AgentCommand.COMPLETE_OBLIGATION.value, AgentCommand.CANCEL_OBLIGATION.value,
                AgentCommand.ARCHIVE_OBLIGATION.value}
@@ -92,6 +92,7 @@ class DeterministicAssistantParser:
             raise ValidationError("input is not supported by the deterministic RU/EN parser")
         unresolved = [field for field in parsed.pop("unresolved") if field != "title"]
         parsed.pop("cutoff_time_assumed", None)
+        parsed.pop("inferred_fields", None)
         if parsed.get("kind") == "REMINDER":
             return [{"command": AgentCommand.CREATE_REMINDER.value, "payload": _reminder_payload(parsed), "confidence": 0.85,
                      "unresolved_fields": [], "expected_version": None, "requires_confirmation": False}]
@@ -136,6 +137,7 @@ _CREATE_TASK_FIELDS = {
 _NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
 _TARGET = {"obligation_id", "reminder_id", "target_text"}
 _PAYLOAD_KEYS = {
+    AgentCommand.CREATE_NOTE.value: {"content"},
     AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS,
     AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "duration_minutes", "category", "importance",
                                       "attendance_policy", "location_effect", "arrival_requirement_minutes",
@@ -155,6 +157,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
 }
 _REQUIRED = {
+    AgentCommand.CREATE_NOTE.value: ("content",),
     AgentCommand.CREATE_TASK.value: ("title",),
     AgentCommand.CREATE_EVENT.value: ("title", "starts_at", "ends_at"),
     AgentCommand.CREATE_REMINDER.value: ("title", "remind_at"),
@@ -223,6 +226,10 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         title = payload["title"]
         if not isinstance(title, str) or not title.strip() or len(title) > 300:
             raise ValidationError("assistant proposal title must be 1-300 characters")
+    if command == AgentCommand.CREATE_NOTE.value and "content" in payload:
+        content = payload["content"]
+        if not isinstance(content, str) or not content.strip() or len(content) > 100_000:
+            raise ValidationError("assistant note content must be nonempty text up to 100000 characters")
     if payload.get("description") is not None and (not isinstance(payload["description"], str) or len(payload["description"]) > 5000):
         raise ValidationError("assistant proposal description must be text up to 5000 characters")
     if command == AgentCommand.CREATE_TASK.value:
@@ -685,6 +692,8 @@ class SQLiteAssistantService:
         target = target_of(self.canonical, self.principal.account_id, data)
         kind, entity = (target[0], target[1]) if target else ("", "")
         fields = {key: value for key, value in data.items() if key not in _TARGET}
+        if command is AgentCommand.CREATE_NOTE:
+            return "note.create", f"note-{uuid4()}", {**fields, "source_kind": "CAPTURE"}
         if command is AgentCommand.CREATE_EVENT:
             # One event.create owner for manual, offline and Assistant creation, so a
             # requested reminder lead (remind_before_minutes) is stored the same way.

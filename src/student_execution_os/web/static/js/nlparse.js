@@ -382,7 +382,7 @@ class Parser {
   times() {
     const prep = '(?:(к|до|в|во|около|после|с|со|не\\s+позже|не\\s+позднее|не\\s+раньше|at|by|before|until|after|from|around)\\s+)?';
     const suffix = '(?:\\s*(утра|дня|вечера|ночи|am|pm|a\\.m\\.|p\\.m\\.))?';
-    for (const x of this.scan(`(?<![\\w.:])${prep}(\\d{1,2})[:.](\\d{2})(?![\\w.:])${suffix}`)) {
+    for (const x of this.scan(`(?<![\\w.:])${prep}(\\d{1,2})[:.](\\d{2})(?![\\w:]|\\.\\d)${suffix}`)) {
       const h = Number(x.m[2]); const mi = Number(x.m[3]);
       if (h < 24 && mi < 60) this.timePiece(x, hourOf(h, x.m[4], true), mi, x.m[1]);
     }
@@ -510,6 +510,7 @@ class Parser {
       `(?<!\\w)(?:за\\s+)?(${NUM})\\s*${unit}\\s+(?:до\\s+начала|заранее|before(?:\\s+(?:the\\s+)?start)?)(?!\\w)`,
       `(?<!\\w)${cue}\\s+(?:за\\s+)?(час|полчаса|полтора\\s+часа)(?:\\s+(?:до\\s+начала|заранее|before(?:\\s+(?:the\\s+)?start)?))?(?!\\w)`,
     ];
+    let latestPosition = -1, latestMinutes = null;
     for (const pattern of patterns) {
       for (const x of this.scan(pattern)) {
         const token = x.m[1];
@@ -525,10 +526,14 @@ class Parser {
         }
         if (minutes < 0 || minutes > 1440) continue;
         this.take(x.start, x.end);
-        return minutes;
+        if (x.start > latestPosition) { latestPosition = x.start; latestMinutes = minutes; }
       }
     }
-    return null;
+    for (const hit of this.scan('(?<!\\w)(?:без\\s+напоминания|no\\s+reminder|without\\s+(?:a\\s+)?reminder)(?!\\w)')) {
+      this.take(hit.start, hit.end);
+      if (hit.start > latestPosition) { latestPosition = hit.start; latestMinutes = null; }
+    }
+    return latestMinutes;
   }
 
   deadlineWords() {
@@ -764,16 +769,61 @@ export function captureKind(parsed, raw) {
 }
 
 // parseTask(text, now = new Date()) → task.create-shaped proposal.
+function temporalPropositions(text, now) {
+  const parser = new Parser(text, now);
+  parser.relative();
+  parser.periodEnds();
+  parser.dates();
+  parser.intervals();
+  parser.times();
+  return parser;
+}
+
+export function correctedText(text, now = new Date(), correctedKinds = null) {
+  const turns = String(text).split(rx('(?<!\\w)(?:нет(?=\\s*[,،]|\\s+не\\b|\\s+в\\b)\\s*[,،]?\\s*|no\\b\\s*[,،]\\s*|actually\\b\\s+(?:make\\s+it\\s+)?)', 'i'));
+  let current = turns[0];
+  for (let turn of turns.slice(1)) {
+    turn = turn.replace(/^[ ,.—–]+|[ ,.—–]+$/gu, '');
+    turn = turn.replace(/^(?:не|not)\s+.*?\s*,?\s+(?:а|but)\s+/iu, '').replace(/\s+instead\b/iu, '');
+    const previous = temporalPropositions(current, now);
+    const bareClock = /^([1-7]):(\d{2})$/u.exec(turn);
+    const oldClock = previous.pieces.find((piece) => piece.kind === 'time')?.value;
+    if (bareClock && oldClock?.[0] >= 12) turn = `${Number(bareClock[1]) + 12}:${bareClock[2]}`;
+    const replacement = temporalPropositions(turn, now);
+    const kinds = new Set(replacement.pieces.map((piece) => piece.kind));
+    for (const kind of kinds) correctedKinds?.add(kind);
+    if (!kinds.size) { current += ` ${turn}`; continue; }
+    const changes = [], additions = [];
+    for (const piece of replacement.pieces.sort((first, second) => first.start - second.start)) {
+      const old = previous.pieces.find((previousPiece) => previousPiece.kind === piece.kind);
+      const value = turn.slice(piece.start, piece.end);
+      if (old) changes.push({ start: old.start, end: old.end, value });
+      else additions.push(value);
+    }
+    for (const change of changes.sort((first, second) => second.start - first.start)) current = current.slice(0, change.start) + change.value + current.slice(change.end);
+    const remainder = turn.split('').filter((char, index) => !replacement.taken[index]).join('').replace(/^[ ,.—–]+|[ ,.—–]+$/gu, '');
+    current = `${additions.join(' ')} ${current.replace(/^[ ,.—–]+|[ ,.—–]+$/gu, '')} ${remainder}`;
+  }
+  return current;
+}
+
+function semanticLine(text, now) {
+  const parser = temporalPropositions(text, now);
+  return parser.pieces.length || parser.effort() != null
+    || rx('(?<!\\w)(?:нет|no|actually|напомни|напомнить|напоминание|пни|пингани|remind|reminder|будильник|alarm)(?!\\w)', 'i').test(text);
+}
+
 export function parseTask(text, now = new Date()) {
   const lines = String(text || '').trim().split(/\r?\n/u).map((l) => l.trim()).filter(Boolean);
   if (!lines.length) return { title: '', unresolved: ['title'] };
   const semanticLines = [lines[0]];
   const descriptionLines = [];
   for (const line of lines.slice(1)) {
-    if (/(?<!\w)(?:напомни|напомнить|напоминание|пни|пингани|remind|reminder|будильник|alarm)(?!\w)/iu.test(line)) semanticLines.push(line);
+    if (semanticLine(line, now)) semanticLines.push(line);
     else descriptionLines.push(line);
   }
   let head = semanticLines.map((line) => line.split(/\s+/u).join(' ')).join(' ');
+  head = correctedText(head, now);
   head = head.replace(/^(?:задача|задачу|task|todo|to-do)\s*:\s*/iu, '');
   const description = descriptionLines.join('\n') || null;
   const parser = new Parser(head, now);
@@ -800,6 +850,7 @@ export function parseTask(text, now = new Date()) {
   const fields = {};
   const moments = group(parser.pieces, parser.low);
   const hasDeadlineWords = parser.deadlineWords();
+  const startsWork = rx('(?<!\\w)(?:начать|начну|заняться|starting|start)(?!\\w)').test(parser.low);
   const event = eventTimes(parser, moments, remindSpans, hasDeadlineWords, effort);
   if (event) {
     const [startsAt, endsAt] = event;
@@ -813,6 +864,7 @@ export function parseTask(text, now = new Date()) {
       starts_at: iso(startsAt),
       ends_at: iso(endsAt),
       duration_minutes: Math.floor((endsAt - startsAt) / 60000),
+      inferred_fields: effort == null && !moments.some((moment) => momentGet(moment, 'range')) ? ['ends_at', 'duration_minutes'] : [],
       remind_before_minutes: eventLead,
       unresolved: eventTitle ? [] : ['title'],
       cutoff_time_assumed: false,
@@ -824,6 +876,7 @@ export function parseTask(text, now = new Date()) {
     const start = momentStart(moment);
     if (role == null && remindSpans.length && remindSpans.some(([, end]) => end <= start && start - end <= 3)) role = 'remind';
     if (role == null && remindSpans.length && !('remind_at' in fields) && !hasDeadlineWords) role = 'remind';
+    if (role == null && startsWork && !hasDeadlineWords) role = 'start';
     if (role == null && (hasDeadlineWords || category === 'EXAM') && !('actual_cutoff' in fields)) role = 'deadline';
     if (role == null && !('actual_cutoff' in fields) && moment.pieces.every((p) => p.kind === 'date' && p.dateOnlyRelative)) role = 'deadline';
     role = role || 'when';

@@ -35,8 +35,11 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
+{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
 Never claim an action was executed; every action is only a proposal the user reviews.
+Later explicit corrections replace earlier propositions, preserving unrelated facts.
+CREATE_NOTE payload: {content}: an idea, reference or unstructured note, not scheduled work.
+Preserve meaningful newlines in notes. Example: "Идея для курсовой: расписание как граф".
 CREATE_TASK payload (omit what the user did not say; no other keys are accepted):
   title: short clean title in the user's language ("Сдать лабораторную по физике"): no dates,
          times, durations or filler words; fix obvious speech-recognition slips
