@@ -932,6 +932,12 @@ class BrowserUiTest(unittest.TestCase):
         self._assert_no_horizontal_scroll(page, 390)
         self._screenshot(page, "capture-event-50m-mobile-light.png")
 
+        card.locator('[data-card-lead-custom]').fill('1441')
+        sheet.locator('[data-create]').click()
+        self.assertTrue(sheet.is_visible())
+        self.assertEqual([op for op in self._queued(page) if op['type'] == 'event.create'], [])
+        card.locator('[data-card-lead-custom]').fill('50')
+
         sheet.locator("[data-create]").click()
         self._wait_sync(page)
         operation = self.posts[-1][1]["operations"][0]

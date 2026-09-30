@@ -26,7 +26,8 @@ export function leadPicker(name, value, customAttribute = 'data-lead-custom') {
 export function readLead(root, name, customSelector = '[data-lead-custom]') {
   const selected = chipValue(root, name);
   if (selected === '') return null;
-  const value = selected === 'other' ? Number(root.querySelector(customSelector)?.value) : Number(selected);
+  const raw = selected === 'other' ? root.querySelector(customSelector)?.value : selected;
+  const value = raw == null || String(raw).trim() === '' ? NaN : Number(raw);
   if (!Number.isInteger(value) || value < 0 || value > 1440) throw new Error(t('event.leadInvalid'));
   return value;
 }

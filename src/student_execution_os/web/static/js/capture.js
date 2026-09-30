@@ -804,6 +804,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       eventDraft.remind_before_minutes = readLead(preview, 'card-lead', '[data-card-lead-custom]');
       eventEdited.add('remind_before_minutes');
       fieldProvenance.remind_before_minutes = 'USER_EDIT';
+      writeEventFields();
     } catch { /* keep editing until the value is valid */ }
   });
 
@@ -942,7 +943,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       return;
     }
     if (kind === 'EVENT' && eventDraft) {
-      if (details.open) fromEventDetails();
+      try {
+        eventDraft.remind_before_minutes = readLead(preview, 'card-lead', '[data-card-lead-custom]');
+        if (details.open) { readEventFields(eventDetails); fromEventDetails(); }
+      } catch (err) { toast(err.message, { error: true }); return; }
       const fields = { ...eventDraft, title: String(eventDraft.title || '').trim() };
       if (assistant) fields.assistant_batch_id = assistant.batch_id;
       if (!fields.title) { toast(t('form.titleRequired'), { error: true }); return; }
