@@ -1,4 +1,5 @@
 import { isNative, prefGet, prefSet, clearDeviceAlarms, clearExecutionNotification } from './native.js';
+import { clearCaptureDrafts } from './capture-session.js';
 
 // Session state. In the browser the page is served by the API host itself, so the
 // base URL is same-origin (''). The Android app keeps a user-chosen server URL.
@@ -41,6 +42,7 @@ export async function setServer(url) {
   session.server = next;
   await prefSet(KEYS.server, session.server || null);
   if (changed) {
+    clearCaptureDrafts(localStorage);
     session.token = null;
     session.user = null;
     await prefSet(KEYS.token, null);
@@ -57,6 +59,7 @@ export async function setAuth(token, user) {
   await prefSet(KEYS.token, token);
   await prefSet(KEYS.user, user ? JSON.stringify(user) : null);
   if (ownershipChanged) {
+    clearCaptureDrafts(localStorage);
     await clearDeviceAlarms();
     await clearExecutionNotification();
   }

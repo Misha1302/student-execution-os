@@ -453,6 +453,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .capture-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: var(--radius); background: var(--surface-2); }
 .capture-title { font-size: 20px; font-weight: 750; overflow-wrap: anywhere; }
 .capture-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.event-card .capture-facts { grid-template-columns: 1fr; }
 .fact { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px; border-radius: 12px; border: 0; background: var(--surface); text-align: left; }
 .fact-icon { flex: none; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; }
 .fact-icon .icon { width: 18px; height: 18px; }

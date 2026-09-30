@@ -107,6 +107,7 @@ export function startDictation({ onPartial = () => {}, onState = () => {} } = {}
     recognition.maxAlternatives = 1;
     let finals = '';
     let interim = '';
+    let cancelled = false;
     const result = new Promise((resolve, reject) => {
       recognition.onstart = () => onState('recording');
       recognition.onresult = (event) => {
@@ -121,12 +122,14 @@ export function startDictation({ onPartial = () => {}, onState = () => {} } = {}
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') reject(new NativeError('VOICE_DENIED'));
         else if (event.error !== 'no-speech' && event.error !== 'aborted') reject(new NativeError('VOICE_FAILED', event.error));
       };
-      recognition.onend = () => resolve(`${finals} ${interim}`.trim());
+      recognition.onend = () => resolve(cancelled ? '' : `${finals} ${interim}`.trim());
     });
     try { recognition.start(); } catch (err) { return { result: Promise.reject(new NativeError('VOICE_FAILED', String(err?.message || ''))), stop() {} }; }
-    return { result, stop: () => { onState('processing'); try { recognition.stop(); } catch { /* already stopped */ } } };
+    return { result, stop: () => { onState('processing'); try { recognition.stop(); } catch {} },
+      cancel: () => { cancelled = true; try { recognition.abort(); } catch {} } };
   }
   let latest = '';
+  let cancelled = false;
   let finish;
   const handles = [];
   const result = (async () => {
@@ -135,6 +138,7 @@ export function startDictation({ onPartial = () => {}, onState = () => {} } = {}
     let permission = await speech.checkPermissions().catch(() => null);
     if (permission?.speechRecognition !== 'granted') permission = await speech.requestPermissions().catch(() => null);
     if (permission?.speechRecognition !== 'granted') throw new NativeError('VOICE_DENIED');
+    if (cancelled) return '';
     const done = new Promise((resolve) => { finish = resolve; });
     handles.push(await speech.addListener?.('partialResults', (data) => {
       latest = String(data?.matches?.[0] || latest);
@@ -143,6 +147,7 @@ export function startDictation({ onPartial = () => {}, onState = () => {} } = {}
     handles.push(await speech.addListener?.('listeningState', (data) => {
       if (data?.status === 'stopped') finish?.();
     }));
+    if (cancelled) return '';
     onState('recording');
     try {
       const first = await speech.start({ language: lang, maxResults: 1, partialResults: true, popup: false });
@@ -152,11 +157,12 @@ export function startDictation({ onPartial = () => {}, onState = () => {} } = {}
       finish?.();
     }
     await done;
-    return latest.trim();
+    return cancelled ? '' : latest.trim();
   })().finally(() => handles.forEach((h) => h?.remove?.()));
   return {
     result,
     stop: () => { onState('processing'); speech.stop?.().catch?.(() => {}); setTimeout(() => finish?.(), 1500); },
+    cancel: () => { cancelled = true; speech.stop?.().catch?.(() => {}); finish?.(); },
   };
 }
 

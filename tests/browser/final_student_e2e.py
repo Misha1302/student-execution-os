@@ -25,7 +25,7 @@ from pathlib import Path
 
 import httpx
 import uvicorn
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.reminders import ReminderEngine
@@ -98,6 +98,7 @@ class FinalStudentJourneyTest(unittest.TestCase):
         sheet = page.locator("dialog.sheet[open]")
         sheet.locator("#capture-text").fill(text)
         if kind:
+            sheet.locator('[data-kind-switch] summary').click()
             sheet.locator(f'[data-chip-group="capture-kind"] [data-value="{kind}"]').click()
         sheet.locator("[data-create]").click()
         page.locator("dialog.sheet[open]").wait_for(state="detached")
@@ -219,7 +220,8 @@ class FinalStudentJourneyTest(unittest.TestCase):
         self.assertTrue(denied["result"]["isError"])
         page.goto(f"{self.origin}/#/tasks")
         self.ready(page, "tasks")
-        self.assertIn("Задача от агента", page.locator("#workspace").inner_text())
+        page.locator('#refresh-button').click()
+        expect(page.locator("#workspace")).to_contain_text("Задача от агента")
 
         # 8. The assistant answers; without a configured model it is the local parser, labelled.
         answer = self.http.post("/api/v1/assistant/interpret", headers=me, json={"text": "подготовить доклад к среде"}).json()

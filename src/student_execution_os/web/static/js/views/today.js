@@ -123,13 +123,15 @@ function nowCard(action, task, plan) {
       ${riskChip({ state: why.RISK || task?.risk?.state })}
     </div>
     <h3>${esc(action.what)}</h3>
-    <p class="muted">${esc(t('today.block', { d: fmtDuration(action.recommended_duration_minutes) }))}${action.relevant_at ? ` · ${esc(t('today.due', { when: fmtDateTime(action.relevant_at) }))}` : ''}</p>
+    <p class="muted">${esc(t('today.block', { d: fmtDuration(action.recommended_duration_minutes) }))}${task?.effort_estimate_source === 'SYSTEM_PROVISIONAL' ? ` · ${esc(t('task.provisional', { lo: fmtDuration(task.remaining_effort_low_minutes ?? 15), hi: fmtDuration(task.remaining_effort_high_minutes ?? 60) }))}` : ''}${action.relevant_at ? ` · ${esc(t('today.due', { when: fmtDateTime(action.relevant_at) }))}` : ''}</p>
     ${task ? `<div class="now-actions">
       <button class="button primary" data-action="start-task" data-id="${esc(task.id)}">${esc(t('today.start'))}</button>
-      <button class="button primary" data-action="progress" data-id="${esc(task.id)}" data-minutes="${esc(action.recommended_duration_minutes)}">${icon('check')}${esc(t('today.didBlock', { d: fmtDuration(action.recommended_duration_minutes) }))}</button>
       <button class="button ghost" data-action="complete-task" data-id="${esc(task.id)}">${esc(t('lifecycle.complete'))}</button>
+      <details><summary>${esc(t('capture.more'))}</summary>
+      <button class="button ghost" data-action="progress" data-id="${esc(task.id)}" data-minutes="${esc(action.recommended_duration_minutes)}">${icon('check')}${esc(t('today.didBlock', { d: fmtDuration(action.recommended_duration_minutes) }))}</button>
       <button class="button ghost" data-action="defer-task" data-id="${esc(task.id)}">${esc(t('today.notNow'))}</button>
       <button class="button ghost" data-action="reschedule-task" data-id="${esc(task.id)}">${esc(t('task.reschedule'))}</button>
+      </details>
     </div>` : ''}
   </article>`;
 }
@@ -163,20 +165,22 @@ function fallbackNowCard(item) {
   return `<article class="card now-card" data-action="open-task" data-id="${esc(task.id)}">
     <div class="now-head"><span class="eyebrow">${esc(t('today.suggested'))}</span>${riskChip(task.risk)}</div>
     <h3>${esc(task.title)}</h3>
-    <p class="muted">${esc(item.why)}${task.remaining_effort_minutes != null ? ` · ${esc(t('tasks.left', { d: fmtDuration(task.remaining_effort_minutes) }))}` : ''}</p>
+    <p class="muted">${esc(item.why)}${task.effort_estimate_source === 'SYSTEM_PROVISIONAL' ? ` · ${esc(t('task.provisional', { lo: fmtDuration(task.remaining_effort_low_minutes ?? 15), hi: fmtDuration(task.remaining_effort_high_minutes ?? 60) }))}` : task.remaining_effort_minutes != null ? ` · ${esc(t('tasks.left', { d: fmtDuration(task.remaining_effort_minutes) }))}` : ''}</p>
     <div class="now-actions">
       ${task.started_at ? `<button class="button primary" data-action="progress" data-id="${esc(task.id)}">${icon('check')}${esc(t('task.logProgress'))}</button>`
         : `<button class="button primary" data-action="start-task" data-id="${esc(task.id)}">${esc(t('today.start'))}</button>`}
       <button class="button ghost" data-action="complete-task" data-id="${esc(task.id)}">${esc(t('lifecycle.complete'))}</button>
+      <details><summary>${esc(t('capture.more'))}</summary>
       <button class="button ghost" data-action="defer-task" data-id="${esc(task.id)}">${esc(t('today.notNow'))}</button>
       <button class="button ghost" data-action="reschedule-task" data-id="${esc(task.id)}">${esc(t('task.reschedule'))}</button>
+      </details>
     </div>
   </article>`;
 }
 
 function openDailyIntent(data) {
   const current = data.daily_intent || {};
-  const selected = new Set(current.priority_task_ids || []);
+  const selected = new Set(current.priority_task_ids?.length ? current.priority_task_ids : (data.next_actions || []).slice(0, 3).map((action) => action.task_id));
   const tasks = (data.tasks || []).filter((task) => task.status === 'ACTIVE');
   const rows = tasks.map((task) => `<label class="row">
     <input type="checkbox" data-intent-task value="${esc(task.id)}" ${selected.has(task.id) ? 'checked' : ''}>
@@ -216,11 +220,7 @@ function dailyIntentCard(data, tasks) {
   const ids = intent?.priority_task_ids || [];
   const chosen = ids.map((id) => tasks.get(id)).filter(Boolean);
   if (!intent || intent.closed_at) {
-    return `<section class="section"><button class="card plain" data-action="intent-edit">
-      <span class="task-top"><span class="kind-icon kind-task">${icon('flag')}</span>
-        <strong class="task-title">${esc(t('intent.startTitle'))}</strong></span>
-      <p class="muted">${esc(t('intent.startHelp'))}</p>
-    </button></section>`;
+    return `<section class="section"><button class="link" data-action="intent-edit">${icon('flag')} ${esc(t('intent.edit'))}</button></section>`;
   }
   return `<section class="section"><article class="card">
     <div class="section-head"><div><span class="eyebrow">${esc(t('intent.eyebrow'))}</span>
@@ -322,14 +322,12 @@ export default {
     const travel = travelCard(data.travel);
     const bounds = boundaries(data);
 
-    const nothingYet = !(data.tasks || []).length && !(data.needs_refinement || []).length;
+    const nothingYet = !(data.tasks || []).length && !(data.needs_refinement || []).length && !events.length && !(data.reminders || []).length;
     const capture = `<button class="capture-cta" data-action="compose">
         <span class="capture-cta-copy"><strong>${esc(t('capture.title'))}</strong><small>${esc(t('capture.ctaHint'))}</small></span>
         <span class="capture-cta-icons">${icon('plus')}</span></button>`;
     return `
-      ${unhealthy.length ? `<button class="banner warn" data-nav="evidence">${icon('alert')}<div><strong>${esc(t('today.sourcesStale', { n: unhealthy.length }))}</strong><p>${esc(t('today.sourcesStaleHint'))}</p></div>${icon('chevron')}</button>` : ''}
-      ${nothingYet ? `<section class="section">${capture}<p class="help pad">${esc(t('today.firstHint'))}</p></section>` : heroStatus(plan, data.tasks || [])}
-      ${nothingYet ? '' : dailyIntentCard(data, tasks)}
+      ${nothingYet ? `<section class="section">${capture}<p class="help pad">${esc(t('today.firstHint'))}</p></section>` : ''}
 
       <section class="section ${nothingYet ? 'hidden' : ''}">
         ${sectionHead(t('today.now'))}
@@ -360,6 +358,14 @@ export default {
         ${sectionHead(t('today.soon'))}
         <div class="list">${upcoming.map((x) => soonRow(x, cur)).join('')}</div>
       </section>` : ''}
+
+      ${nothingYet ? '' : `<details class="section" data-planner-status><summary>${icon(statusIcon(plan.feasibility_status))} ${esc(statusCopy(plan.feasibility_status, plan.explanations, data.tasks || [], events).text)}</summary>${heroStatus(plan, data.tasks || [])}</details>`}
+      ${nothingYet ? '' : dailyIntentCard(data, tasks)}
+      ${unhealthy.length ? `<details class="section" data-source-status><summary>${esc(t('today.sourceStatus'))}</summary>${unhealthy.map((source) => {
+        const actionRequired = /AUTH|CREDENTIAL|PERMISSION|TOKEN_EXPIRED|HTTP_401|HTTP_403/iu.test(source.latest_failure_reason || '');
+        const last = source.last_successful_complete_sync_at;
+        return `<p>${esc(t(actionRequired ? 'today.sourceAction' : 'today.sourceTransient'))}${last ? ` ${esc(t('today.sourceLastKnown', { when: fmtDateTime(last) }))}` : ''}</p>${actionRequired ? `<button class="button small" data-nav="settings">${esc(t('status.fix'))}</button>` : ''}`;
+      }).join('')}</details>` : ''}
 
       ${data.needs_refinement?.length ? `<section class="section">
         ${sectionHead(t('today.needsRefinement'))}
