@@ -1,6 +1,6 @@
 {
   "name": "student-execution-os-mobile",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Android shell (Capacitor) for the Student Execution OS web client.",
   "scripts": {

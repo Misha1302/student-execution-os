@@ -66,8 +66,15 @@ voice → task card → Create**.
   deadline, effort, importance, category, work window, reminder and chunking — offline and
   without an LLM. A configured LLM refines the card; its proposal is validated field by
   field and applied through the same mapping as `task.create`, so nothing is dropped.
-- Missing values become questions on the card ("Сколько примерно займёт?" · 30 мин · 1 час ·
-  2 часа · Не знаю); "don't know" keeps the draft/unknown-deadline lifecycle.
+- Capture shows a compact interpretation with optional fact editors. Quick tasks without
+  an estimate use a clearly provisional 15–60 minute range (30 minute planning nominal),
+  not a fabricated user estimate. Explicit unknown values remain supported by the API.
+- Conversational corrections and voice follow-ups update the same semantic draft; manual
+  edits remain authoritative. Material time disagreements ask about concrete meanings,
+  not parser implementations. Accidental closing/reload restores account-scoped drafts
+  for up to seven days; successful creation or explicit discard clears them.
+- First-run help opens a real guided Capture. Escape does not complete onboarding;
+  Skip or creating the first item does. Today leads with the next action.
 - Tasks can be fully edited and rescheduled; `remind_at` is an explicit reminder request.
   Snooze (from the app or a notification) schedules the next reminder at that moment.
 - The Android app renders reminder pushes itself (data-only FCM for devices declaring
