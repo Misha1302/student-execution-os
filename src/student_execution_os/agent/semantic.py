@@ -96,3 +96,44 @@ def resolve_temporal_transform(
         raise ValidationError("assistant temporal fallback has an invalid precision") from None
     resolved = datetime.combine(_next_day(local_current.date()), preferred, zone)
     return ResolvedTemporalChange(resolved, precision, "GUARD_TRIGGERED_FALLBACK")
+
+
+class RelativeAnchor(StrEnum):
+    START = "START"
+    END = "END"
+
+
+@dataclass(frozen=True)
+class RelativeToAction:
+    """«после неё», «за 20 минут до встречи»: a time defined by an earlier action's result.
+
+    The model names the earlier action (its client_ref) instead of computing a
+    timestamp, so the server can derive the time from that action's resolved
+    interval — and re-derive it when the user corrects the earlier action.
+    """
+
+    action: str
+    anchor: RelativeAnchor
+    offset_minutes: int
+
+    def moment(self, starts_at: datetime, ends_at: datetime) -> datetime:
+        base = starts_at if self.anchor is RelativeAnchor.START else ends_at
+        return base + timedelta(minutes=self.offset_minutes)
+
+    def as_payload(self, action: str | None = None) -> dict[str, Any]:
+        return {"action": action or self.action, "anchor": self.anchor.value, "offset_minutes": self.offset_minutes}
+
+
+def parse_relative_to(raw: object) -> RelativeToAction:
+    value = _keys(raw, {"action", "anchor", "offset_minutes"}, "relative_to")
+    action = value.get("action")
+    if not isinstance(action, str) or not 0 < len(action) <= 64:
+        raise ValidationError("assistant relative_to.action must name an earlier action")
+    try:
+        anchor = RelativeAnchor(value.get("anchor", RelativeAnchor.END.value))
+    except ValueError:
+        raise ValidationError("assistant relative_to.anchor must be START or END") from None
+    offset = value.get("offset_minutes", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or not -1440 <= offset <= 1440:
+        raise ValidationError("assistant relative_to.offset_minutes must be a whole number within a day")
+    return RelativeToAction(action, anchor, offset)

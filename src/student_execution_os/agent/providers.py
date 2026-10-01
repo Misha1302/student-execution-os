@@ -61,6 +61,13 @@ before applying a stored inverse; never reconstruct stale values yourself.
 For multiple actions, give each action a unique client_ref and list only earlier refs in
 depends_on. The server replaces refs with opaque action ids, validates the whole graph,
 and applies the selected dependency-closed plan atomically in declared order.
+When a new item's time is defined by an earlier action ("после неё час на отчёт",
+"напомни за 20 минут до новой встречи"), do not compute it: put
+relative_to:{action:"<earlier client_ref, also in depends_on>",anchor:"START"|"END",
+offset_minutes} in a CREATE_EVENT (with duration_minutes), CREATE_TASK or CREATE_REMINDER
+payload and omit starts_at/ends_at, actionable_from or remind_at. The server derives the
+time from the earlier action's resolved result. For a reminder about an existing event
+use UPDATE_EVENT remind_before_minutes instead.
 CREATE_NOTE payload: {content}: an idea, reference or unstructured note, not scheduled work.
 Preserve meaningful newlines in notes. Example: "Идея для курсовой: расписание как граф".
 CREATE_TASK payload (omit what the user did not say; no other keys are accepted):

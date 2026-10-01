@@ -28,7 +28,7 @@ from .nlparse import parse_task
 from .providers import ProviderUnavailable
 from .read import SQLiteAssistantReadService
 from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
-from .semantic import TemporalPrecision, resolve_temporal_transform
+from .semantic import RelativeToAction, TemporalPrecision, parse_relative_to, resolve_temporal_transform
 
 
 COMMANDS = {command.value for command in AgentCommand}
@@ -148,13 +148,21 @@ _CREATE_TASK_FIELDS = {
 }
 _NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
 _TARGET = {"obligation_id", "reminder_id", "target_text"}
+# A time the server derives from an earlier action of the same plan (never a sync field).
+_RELATIVE = "relative_to"
+_RELATIVE_FIELDS = {
+    AgentCommand.CREATE_EVENT.value: ("starts_at", "ends_at"),
+    AgentCommand.CREATE_TASK.value: ("actionable_from",),
+    AgentCommand.CREATE_REMINDER.value: ("remind_at",),
+}
 _PAYLOAD_KEYS = {
     AgentCommand.CREATE_NOTE.value: {"content"},
-    AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS,
+    AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS | {_RELATIVE},
     AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "duration_minutes", "category", "importance",
                                       "attendance_policy", "location_effect", "arrival_requirement_minutes",
-                                      "remind_before_minutes"},
-    AgentCommand.CREATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume", "obligation_id"},
+                                      "remind_before_minutes", _RELATIVE},
+    AgentCommand.CREATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume", "obligation_id",
+                                         _RELATIVE},
     AgentCommand.REFINE_TASK.value: {"obligation_id", "estimated_total_effort_minutes", "activate"},
     AgentCommand.LOG_PROGRESS.value: {"minutes", "count"} | _TARGET,
     AgentCommand.COMPLETE_OBLIGATION.value: set(_TARGET),
@@ -339,6 +347,8 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             raise ValidationError("assistant time constraint reason must be text up to 5000 characters")
     if payload.get("target_text") is not None and (not isinstance(payload["target_text"], str) or len(payload["target_text"]) > 300):
         raise ValidationError("assistant target_text must be short text")
+    if _RELATIVE in payload:
+        parse_relative_to(payload[_RELATIVE])  # resolved against the plan by SQLiteAssistantService
     expected = raw["expected_version"]
     if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
         raise ValidationError("assistant expected_version must be an integer")
@@ -780,8 +790,11 @@ class SQLiteAssistantService:
         raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
         raw_actions, preserved = self._preserve_previous_user_edits(raw_actions, context)
         action_ids, dependencies = self._action_dependencies(raw_actions)
-        actions = []
+        actions: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_actions):
+            derived: tuple[str, ...] = ()
+            if isinstance(raw, dict) and isinstance(raw.get("payload"), dict) and _RELATIVE in raw["payload"]:
+                raw, derived = self._relative_from_model(raw, action_ids, dependencies[index], actions)
             clean = validate_proposal(raw, self.canonical, self.principal.account_id,
                                       timezone_name=str(context.get("timezone") or "UTC"))
             field_provenance = clean.pop("field_provenance")
@@ -801,6 +814,9 @@ class SQLiteAssistantService:
                 # destructive command merely by emitting a false flag.
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
             })
+            if derived:
+                actions[-1]["provenance"]["fields"].update({field: "DERIVED" for field in derived})
+                actions[-1]["resolution"] = self._relative_resolution(actions[-1], actions)
             actions[-1]["provenance"]["input"] = (
                 "voice-transcript" if context.get("source") == "VOICE" else "user-authored-text"
             )
@@ -836,6 +852,137 @@ class SQLiteAssistantService:
                 resolved.append(action_ids[dependency_index])
             dependencies.append(resolved)
         return action_ids, dependencies
+
+    def _relative_from_model(
+        self, raw: dict[str, Any], action_ids: list[str], dependency_ids: list[str], earlier: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """Bind a model's ``relative_to`` (a client_ref) to the earlier action and derive the time.
+
+        The reference must be one of the action's own dependencies, so a dependent
+        time can never outlive (or be applied without) the action it is measured from.
+        """
+        command = raw.get("command")
+        if command not in _RELATIVE_FIELDS:
+            raise ValidationError(f"assistant {command} cannot take a time relative to another action")
+        relative = parse_relative_to(raw["payload"][_RELATIVE])
+        declared = raw.get("depends_on") or []
+        if relative.action not in declared:
+            raise ValidationError("assistant relative_to must reference an action listed in depends_on")
+        referenced_id = dependency_ids[declared.index(relative.action)]
+        referenced = next(action for action in earlier if action["id"] == referenced_id)
+        fields = _RELATIVE_FIELDS[command]
+        payload = {**raw["payload"], _RELATIVE: relative.as_payload(referenced_id)}
+        unresolved = list(raw.get("unresolved_fields") or [])
+        interval = self._action_interval(referenced)
+        if interval is None:
+            # The earlier action still needs the user (e.g. which meeting?); the
+            # dependent time is derived once that is answered, at apply.
+            for field in fields:
+                payload.pop(field, None)
+                if field not in unresolved:
+                    unresolved.append(field)
+        else:
+            payload.update(self._relative_values(str(command), payload, relative, interval))
+        provenance = raw.get("field_provenance")
+        provenance = {key: value for key, value in provenance.items() if key not in fields} \
+            if isinstance(provenance, dict) else provenance
+        return {**raw, "payload": payload, "unresolved_fields": unresolved, "field_provenance": provenance}, fields
+
+    @staticmethod
+    def _relative_values(command: str, payload: dict[str, Any], relative: RelativeToAction,
+                         interval: tuple[datetime, datetime]) -> dict[str, Any]:
+        moment = relative.moment(*interval)
+        if command == AgentCommand.CREATE_EVENT.value:
+            duration = payload.get("duration_minutes")
+            if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
+                duration = 60  # the same default as an event given only a start
+            return {"starts_at": _iso(moment), "ends_at": _iso(moment + timedelta(minutes=duration)),
+                    "duration_minutes": duration}
+        if command == AgentCommand.CREATE_TASK.value:
+            return {"actionable_from": _iso(moment)}
+        return {"remind_at": _iso(moment)}
+
+    def _action_interval(self, action: dict[str, Any]) -> tuple[datetime, datetime] | None:
+        """The interval an action will leave its item in, exactly as apply computes it.
+
+        None while the action's own target or time is still unresolved.
+        """
+        command, payload = action["command"], action["payload"]
+        if command == AgentCommand.CREATE_EVENT.value:
+            if payload.get("starts_at") and payload.get("ends_at"):
+                return _dt(str(payload["starts_at"])), _dt(str(payload["ends_at"]))
+            return None
+        if command == AgentCommand.CREATE_REMINDER.value:
+            return (_dt(str(payload["remind_at"])),) * 2 if payload.get("remind_at") else None
+        if command not in (AgentCommand.RESCHEDULE.value, AgentCommand.UPDATE_EVENT.value):
+            raise ValidationError("assistant relative_to must reference an action that sets a time")
+        target = target_of(self.canonical, self.principal.account_id, payload)
+        if target is None:
+            return None
+        kind, entity_id, _version = target
+        if kind == "EVENT":
+            event = self.canonical.get_event(self.principal.account_id, entity_id).interval
+            length = event.ends_at - event.starts_at
+            if command == AgentCommand.UPDATE_EVENT.value:
+                starts = _dt(str(payload["starts_at"])) if payload.get("starts_at") else event.starts_at
+                if payload.get("ends_at"):
+                    return starts, _dt(str(payload["ends_at"]))
+                return starts, (starts + length if payload.get("starts_at") else event.ends_at)
+            if not payload.get("when"):
+                return None
+            from student_execution_os.reminders import ReminderStore
+            zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
+            _operation, body = reschedule_change("EVENT", {"starts_at": _iso(event.starts_at)}, _dt(str(payload["when"])),
+                                                 bool(payload.get("keep_time")), zone)
+            starts = _dt(body["starts_at"])
+            return starts, starts + length
+        if kind == "REMINDER" and command == AgentCommand.RESCHEDULE.value and payload.get("when"):
+            current = _target_moment(self.canonical, self.principal.account_id, kind, entity_id)
+            from student_execution_os.reminders import ReminderStore
+            zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
+            _operation, body = reschedule_change("REMINDER", {"remind_at": _iso(current)}, _dt(str(payload["when"])),
+                                                 bool(payload.get("keep_time")), zone)
+            return (_dt(body["remind_at"]),) * 2
+        raise ValidationError("assistant relative_to must reference an event or reminder time")
+
+    @staticmethod
+    def _relative_resolution(action: dict[str, Any], earlier: list[dict[str, Any]]) -> dict[str, Any]:
+        relative = parse_relative_to(action["payload"][_RELATIVE])
+        referenced = next(item for item in earlier if item["id"] == relative.action)
+        first = _RELATIVE_FIELDS[action["command"]][0]
+        return {
+            "reason": "RELATIVE_TO_ACTION", **relative.as_payload(),
+            "when": action["payload"].get(first),
+            # «после неё» is only as exact as the time it is measured from.
+            "precision": (referenced.get("resolution") or {}).get("precision", TemporalPrecision.EXACT.value),
+        }
+
+    def _rebase_relative(self, action: dict[str, Any], earlier: list[dict[str, Any]]) -> dict[str, Any]:
+        """Re-derive a relative time from the earlier action as it will actually be applied.
+
+        A correction to the earlier action («нет, лучше на 10:30») moves the
+        dependent time with it; an explicit user edit of the dependent time itself
+        already removed ``relative_to`` in ``_edited``.
+        """
+        if action["payload"].get(_RELATIVE) is None:
+            return action
+        relative = parse_relative_to(action["payload"][_RELATIVE])
+        referenced = next((item for item in earlier if item["id"] == relative.action), None)
+        if referenced is None:
+            raise ValidationError("selected Assistant actions must include every dependency")
+        interval = self._action_interval(referenced)
+        if interval is None:
+            raise ValidationError("unresolved proposal fields must be refined before apply")
+        fields = _RELATIVE_FIELDS[action["command"]]
+        raw = {key: action[key] for key in _ACTION_REQUIRED}
+        raw["payload"] = {**action["payload"],
+                          **self._relative_values(action["command"], action["payload"], relative, interval)}
+        raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in fields]
+        clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+        clean.pop("field_provenance", None)
+        rebased = {**action, **clean}
+        rebased["resolution"] = self._relative_resolution(rebased, earlier)
+        return rebased
 
     @staticmethod
     def _preserve_previous_user_edits(
@@ -963,11 +1110,12 @@ class SQLiteAssistantService:
         selected_set = set(selected)
         if any(not set(by_id[action_id].get("depends_on") or []).issubset(selected_set) for action_id in selected):
             raise ValidationError("selected Assistant actions must include every dependency")
-        actions = [
-            self._edited(action, edits.get(action["id"]))
-            for action in json.loads(row["actions_json"])
-            if action["id"] in selected_set
-        ]
+        actions: list[dict[str, Any]] = []
+        for stored in json.loads(row["actions_json"]):
+            if stored["id"] in selected_set:
+                # Declared order: an earlier action is final (with the user's edits)
+                # before a time that depends on it is derived.
+                actions.append(self._rebase_relative(self._edited(stored, edits.get(stored["id"])), actions))
         if any(action["unresolved_fields"] for action in actions):
             raise ValidationError("unresolved proposal fields must be refined before apply")
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):
@@ -1036,8 +1184,19 @@ class SQLiteAssistantService:
         if "expected_version" in edit:
             raw["expected_version"] = edit.pop("expected_version")
         payload = {**action["payload"], **edit}
-        if payload.get("temporal_transform") is not None:
+        if "when" in edit and "temporal_transform" not in edit:
+            # «нет, лучше на 10:30»: the user's exact time replaces the model's
+            # (possibly approximate) relative transform instead of being recomputed away.
+            payload.pop("temporal_transform", None)
+        elif payload.get("temporal_transform") is not None:
             payload.pop("when", None)  # server-derived; recompute after the user's edit
+        derived = set(_RELATIVE_FIELDS.get(action["command"], ()))
+        if payload.get(_RELATIVE) is not None:
+            if derived & edit.keys():
+                payload.pop(_RELATIVE)  # an explicitly edited time is no longer "after it"
+            elif action["command"] == AgentCommand.CREATE_EVENT.value and payload.get("starts_at") \
+                    and isinstance(edit.get("duration_minutes"), int) and not isinstance(edit["duration_minutes"], bool):
+                payload["ends_at"] = _iso(_dt(str(payload["starts_at"])) + timedelta(minutes=edit["duration_minutes"]))
         picked = "obligation_id" in edit or "reminder_id" in edit
         if picked:
             # The user chose which item the command is about.
@@ -1059,7 +1218,7 @@ class SQLiteAssistantService:
         )
         clean.pop("field_provenance", None)
         provenance = dict(action.get("provenance") or {})
-        fields = dict(provenance.get("fields") or {})
+        fields = {field: source for field, source in (provenance.get("fields") or {}).items() if field in clean["payload"]}
         fields.update({field: "USER_EDIT" for field in edit if field != "expected_version"})
         provenance["fields"] = fields
         return {**action, **clean, "provenance": provenance,
@@ -1075,7 +1234,8 @@ class SQLiteAssistantService:
             from student_execution_os.sync.commands import Commands
             task_id = f"task-{uuid4()}"
             outcome = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
-                               now=self.canonical.clock.now()).task_create(task_id, dict(data))
+                               now=self.canonical.clock.now()).task_create(
+                task_id, {key: value for key, value in data.items() if key != _RELATIVE})
             return {"action_id": action["id"], "entity_id": task_id, "version": outcome.entity["version"],
                     "status": outcome.entity["status"], "entity": outcome.entity}
         if command is AgentCommand.REFINE_TASK:
@@ -1104,7 +1264,7 @@ class SQLiteAssistantService:
         """The sync operation (type, entity id, payload) an action stands for."""
         target = target_of(self.canonical, self.principal.account_id, data)
         kind, entity = (target[0], target[1]) if target else ("", "")
-        fields = {key: value for key, value in data.items() if key not in _TARGET}
+        fields = {key: value for key, value in data.items() if key not in _TARGET and key != _RELATIVE}
         if command is AgentCommand.CREATE_NOTE:
             return "note.create", f"note-{uuid4()}", {**fields, "source_kind": "CAPTURE"}
         if command is AgentCommand.CREATE_EVENT:
