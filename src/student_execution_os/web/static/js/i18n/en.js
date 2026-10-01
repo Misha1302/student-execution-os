@@ -1232,6 +1232,7 @@ export default {
   'capture.engine.why.INVALID_PROPOSAL': 'answer failed validation',
   'capture.engine.why.UPSTREAM': 'provider error',
   'capture.engine.why.NETWORK': 'provider unreachable',
+  'capture.engine.why.TIMEOUT': 'provider took too long',
   'capture.engine.why.UNREACHABLE': 'provider unreachable',
   'capture.engine.why.BLOCKED_URL': 'API address not allowed',
   'capture.engine.why.SERVER_BLOCKED': 'provider refuses this server',

@@ -615,10 +615,7 @@ class OpenAICompatibleProvider:
         # gpt-oss fails JSON mode at temperature 0 on some inputs every time. The output
         # is validated field by field anyway, so determinism is not relied upon there.
         self.last_usage = None
-        extra: dict[str, Any] = {"response_format": (
-            {"type": "json_schema", "json_schema": _TOP_LEVEL_SCHEMA}
-            if self.name == "openai" else {"type": "json_object"}
-        )}
+        extra: dict[str, Any] = {}
         if self.max_output_tokens is not None:
             extra["max_tokens"] = self.max_output_tokens
         messages = [
@@ -630,7 +627,20 @@ class OpenAICompatibleProvider:
                 "The previous proposal was rejected by deterministic validation with code "
                 f"{repair_feedback}. Return one complete replacement proposal; never alter authority or scope."
             )})
-        response = self._chat(messages, **extra)
+        json_mode = {"type": "json_object"}
+        if self.name != "openai":
+            response = self._chat(messages, response_format=json_mode, **extra)
+        else:
+            try:
+                response = self._chat(messages, response_format={"type": "json_schema", "json_schema": _TOP_LEVEL_SCHEMA},
+                                      **extra)
+            except ProviderUnavailable as exc:
+                # Not every OpenAI model accepts json_schema. A request-level FORMAT
+                # refusal gets exactly one downgrade to JSON mode, which the server
+                # validates the same way; anything else is a real failure.
+                if exc.reason != "FORMAT":
+                    raise
+                response = self._chat(messages, response_format=json_mode, **extra)
         self.last_usage = _openai_usage(response)
         content = _field(response, ("choices", 0, "message", "content"), self.name)
         if not isinstance(content, str):

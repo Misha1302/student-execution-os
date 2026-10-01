@@ -1232,6 +1232,7 @@ export default {
   'capture.engine.why.INVALID_PROPOSAL': 'ответ не прошёл проверку',
   'capture.engine.why.UPSTREAM': 'сбой у провайдера',
   'capture.engine.why.NETWORK': 'нет связи с провайдером',
+  'capture.engine.why.TIMEOUT': 'провайдер не ответил вовремя',
   'capture.engine.why.UNREACHABLE': 'нет связи с провайдером',
   'capture.engine.why.BLOCKED_URL': 'адрес API запрещён',
   'capture.engine.why.SERVER_BLOCKED': 'провайдер не пускает сервер',

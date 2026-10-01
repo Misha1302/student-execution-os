@@ -33,7 +33,7 @@ class ConnectionCheckTest(unittest.TestCase):
     def check(self, kind, reply, **build):
         provider = build_provider(kind, api_key="sk-secret-000011112222", model="m", **build)
         with patch("student_execution_os.agent.providers.httpx.post") as post:
-            if isinstance(reply, Exception):
+            if isinstance(reply, (Exception, list)):
                 post.side_effect = reply
             else:
                 post.return_value = reply
@@ -60,9 +60,28 @@ class ConnectionCheckTest(unittest.TestCase):
                 reason, post = self.check("openai", reply)
                 self.assertEqual(reason, expected.strip())
                 sent = post.call_args.kwargs["json"]
-                # The probe is shaped exactly like interpret(): system prompt + JSON mode.
-                self.assertEqual(sent["response_format"], {"type": "json_object"})
+                # The probe is shaped exactly like interpret(): system prompt + the
+                # structured-output schema (OpenAI) the real request uses.
+                self.assertEqual(sent["response_format"]["type"], "json_schema")
                 self.assertIn("CREATE_TASK", sent["messages"][0]["content"])
+
+    def test_compatible_providers_keep_json_mode(self):
+        with patch("student_execution_os.agent.providers.assert_public_base_url"):
+            reason, post = self.check("openai-compatible", response(200, openai_body(GOOD)),
+                                      base_url="https://api.example.com/v1")
+        self.assertEqual(reason, "OK")
+        self.assertEqual(post.call_args.kwargs["json"]["response_format"], {"type": "json_object"})
+
+    def test_model_without_json_schema_is_downgraded_once_to_json_mode(self):
+        refused = response(400, {"error": {"message": "Invalid parameter", "param": "response_format"}})
+        reason, post = self.check("openai", [refused, response(200, openai_body(GOOD))])
+        self.assertEqual(reason, "OK")
+        formats = [call.kwargs["json"]["response_format"]["type"] for call in post.call_args_list]
+        self.assertEqual(formats, ["json_schema", "json_object"])
+        # A model that refuses JSON mode too is a FORMAT failure, after exactly two requests.
+        reason, post = self.check("openai", [refused, refused])
+        self.assertEqual(reason, "FORMAT")
+        self.assertEqual(post.call_count, 2)
 
     def test_http_failures_are_told_apart(self):
         cases = [
@@ -75,7 +94,9 @@ class ConnectionCheckTest(unittest.TestCase):
             (response(503, None, json_ok=False), "UPSTREAM"),
             (response(301, None, json_ok=False), "ENDPOINT"),
             (httpx.ConnectError("boom"), "NETWORK"),
-            (httpx.ReadTimeout("slow"), "NETWORK"),
+            (httpx.ConnectTimeout("unreachable"), "NETWORK"),
+            # Connected but no answer in time is its own reason (retryable, not "offline").
+            (httpx.ReadTimeout("slow"), "TIMEOUT"),
         ]
         for reply, expected in cases:
             with self.subTest(expected=expected):
