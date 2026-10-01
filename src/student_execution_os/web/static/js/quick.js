@@ -10,7 +10,7 @@ import { t } from './i18n.js';
 import { actionSheet } from './ui.js';
 import { change, lifecycle, logProgress, taskPlace } from './actions.js';
 import { haptic } from './native.js';
-import { rescheduleSheet, editTaskSheet } from './capture.js';
+import { rescheduleSheet, editTaskSheet } from './task-sheets.js';
 import { eventSheet } from './events.js';
 import { reminderSheet, reminderAction, snoozeChoices, remindAboutSheet, isOpen } from './reminders.js';
 
