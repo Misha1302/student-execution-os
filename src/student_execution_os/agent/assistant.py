@@ -1183,9 +1183,14 @@ class SQLiteAssistantService:
         key = str(payload.get("idempotency_key", ""))
         if not key or len(key) > 200:
             raise ValidationError("idempotency_key is required")
+        target = payload.get("apply_idempotency_key")
+        if target is not None and (not isinstance(target, str) or not 0 < len(target) <= 200):
+            raise ValidationError("apply_idempotency_key must be the key of an Assistant apply")
         scope = f"{self.principal.account_id}\0{self.principal.principal_id}\0{key}"
         batch_id = f"undo-{hashlib.sha256(scope.encode()).hexdigest()[:32]}"
-        action = {"id": f"{batch_id}-0", "command": AgentCommand.UNDO_LAST.value, "payload": {}, "confidence": 1.0,
+        # Server-written (never model input): which apply the button belongs to.
+        action = {"id": f"{batch_id}-0", "command": AgentCommand.UNDO_LAST.value,
+                  "payload": {} if target is None else {"apply_idempotency_key": target}, "confidence": 1.0,
                   "unresolved_fields": [], "expected_version": None, "requires_confirmation": False, "depends_on": [],
                   "provenance": {"provider": "user-interface", "input": "undo-button", "fields": {}}}
         now = self.canonical.clock.now()
@@ -1272,7 +1277,7 @@ class SQLiteAssistantService:
                 estimated_total_effort_minutes=int(data["estimated_total_effort_minutes"]), activate=bool(data.get("activate", False)))
             return {"action_id": action["id"], "entity_id": entity, "version": task.obligation.version, "status": task.obligation.lifecycle_status.value}
         if command is AgentCommand.UNDO_LAST:
-            return {"action_id": action["id"], **self._undo_latest()}
+            return {"action_id": action["id"], **self._undo_latest(data.get("apply_idempotency_key"))}
         # Everything else runs through the same command handlers as the offline sync
         # queue, so an Assistant action and a button press mean exactly the same thing.
         from student_execution_os.sync.commands import APPLIED, NOOP, Commands
@@ -1434,7 +1439,7 @@ class SQLiteAssistantService:
         }.get(action["command"])
         return None if operation is None else {"operation": operation, "payload": {}}
 
-    def _undo_latest(self) -> dict[str, Any]:
+    def _undo_latest(self, expected_apply: object = None) -> dict[str, Any]:
         """Revert the most recent Assistant apply as a whole («отмени последнее», [Отменить]).
 
         Every reversible action of that apply is reverted in reverse order inside the
@@ -1451,6 +1456,9 @@ class SQLiteAssistantService:
         ).fetchone()
         if latest is None:
             raise ValidationError("there is no reversible Assistant action to undo")
+        if expected_apply is not None and latest["apply_idempotency_key"] != expected_apply:
+            # A stale [Отменить] must not undo a newer Assistant change instead.
+            raise VersionConflict("a newer Assistant change exists; undo that one first")
         rows = self.canonical.connection.execute(
             "SELECT * FROM assistant_action_history WHERE account_id=? AND principal_id=? "
             "AND apply_idempotency_key=? AND undone_at IS NULL ORDER BY sequence_index DESC, id DESC",

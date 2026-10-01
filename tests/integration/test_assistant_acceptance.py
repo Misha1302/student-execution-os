@@ -290,6 +290,21 @@ class MultiActionAcceptanceTest(AcceptanceBase):
         self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-01 18:00")  # rolled back as a unit
         self.assertEqual(self.lead(), 20)
 
+    def test_a_stale_undo_button_cannot_undo_a_newer_change(self):
+        from student_execution_os.domain.errors import VersionConflict
+
+        service = self.service(PlanProvider())
+        self.apply_plan(service)  # apply key "plan"
+        reminder = self.service(ConversationProvider())
+        later = reminder.interpret("И напомни за полчаса")
+        reminder.apply({"batch_id": later["batch_id"], "action_ids": [later["actions"][0]["id"]],
+                        "idempotency_key": "later"})
+        with self.assertRaises(VersionConflict):
+            service.undo({"idempotency_key": "old-toast", "apply_idempotency_key": "plan"})
+        self.assertEqual(self.lead(), 30)  # the newer change is untouched
+        service.undo({"idempotency_key": "new-toast", "apply_idempotency_key": "later"})
+        self.assertEqual(self.lead(), 20)
+
     def test_reference_outside_depends_on_is_rejected(self):
         with self.assertRaises(ValidationError):
             self.service(PlanProvider(bad_reference=True)).interpret("план")
