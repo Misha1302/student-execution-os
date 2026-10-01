@@ -23,6 +23,7 @@ from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
+from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
 from .semantic import TemporalPrecision, resolve_temporal_transform
 
 
@@ -128,7 +129,8 @@ def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
     return by_title[0] if len(by_title) == 1 else None
 
 
-_ACTION_KEYS = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
+_ACTION_REQUIRED = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
+_ACTION_KEYS = _ACTION_REQUIRED | {"field_provenance"}
 # Every field a CREATE_TASK proposal may carry maps onto the canonical task.create
 # command (sync/commands.py); anything else is rejected by validate_proposal.
 _CREATE_TASK_FIELDS = {
@@ -200,7 +202,7 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     so it can neither be previewed nor applied. Fields the model honestly marks as
     unresolved are allowed to be missing; apply refuses them until refined.
     """
-    if not isinstance(raw, dict) or set(raw) != _ACTION_KEYS:
+    if not isinstance(raw, dict) or not _ACTION_REQUIRED.issubset(raw) or set(raw) - _ACTION_KEYS:
         raise ValidationError("assistant provider returned an invalid typed action")
     command = raw["command"]
     payload = raw["payload"]
@@ -220,6 +222,12 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     unknown = set(payload) - _PAYLOAD_KEYS[command]
     if unknown:
         raise ValidationError(f"assistant {command} payload has unsupported fields: {', '.join(sorted(unknown))}")
+    field_provenance = raw.get("field_provenance") or {}
+    if not isinstance(field_provenance, dict) or set(field_provenance) - set(payload):
+        raise ValidationError("assistant field_provenance must name payload fields only")
+    if not all(value in {"MODEL_EXPLICIT", "MODEL_INFERRED"} for value in field_provenance.values()):
+        raise ValidationError("assistant field_provenance has an invalid value")
+    field_provenance = {field: field_provenance.get(field, "MODEL_INFERRED") for field in payload}
     for field in _REQUIRED.get(command, ()):
         if payload.get(field) in (None, "") and field not in unresolved:
             raise ValidationError(f"assistant {command} payload lacks {field}")
@@ -326,7 +334,7 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
                       "reason": resolved.reason, "timezone": zone}
     result = {"command": command, "payload": payload, "confidence": confidence,
             "unresolved_fields": list(unresolved), "expected_version": expected,
-            "requires_confirmation": raw["requires_confirmation"]}
+            "requires_confirmation": raw["requires_confirmation"], "field_provenance": field_provenance}
     if resolution is not None:
         result["resolution"] = resolution
     return result
@@ -439,10 +447,13 @@ def _validate_task_fields(payload: dict[str, Any], now: datetime) -> None:
 
 class SQLiteAssistantService:
     def __init__(self, canonical: SQLiteCanonicalRepository, principal: AuthenticatedPrincipal,
-                 provider: AssistantProvider | None = None) -> None:
+                 provider: AssistantProvider | None = None,
+                 reliability_policy: ReliabilityPolicy | None = None) -> None:
         self.canonical = canonical
         self.principal = principal
         self.provider = provider or DeterministicAssistantParser()
+        self.reliability_policy = reliability_policy or ReliabilityPolicy()
+        self.reliability_trace = ReliabilityTrace()
 
     def _context(self, client: dict[str, object]) -> dict[str, object]:
         """Server-owned context: the model only sees what the account already owns."""
@@ -531,6 +542,12 @@ class SQLiteAssistantService:
                 "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
                 # A rate-limited provider's Retry-After, so a client can say when to retry.
                 "retry_after_seconds": getattr(self.provider_failure, "retry_after", None),
+                "reliability": {
+                    "attempts": self.reliability_trace.attempts,
+                    "retries": self.reliability_trace.retries,
+                    "repair_attempted": self.reliability_trace.repair_attempted,
+                    "repair_succeeded": self.reliability_trace.repair_succeeded,
+                },
                 "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 
@@ -543,7 +560,32 @@ class SQLiteAssistantService:
     def _propose(self, provider: AssistantProvider, text: str,
                  context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
         """Ask one provider and validate every action it proposes (nothing is stored)."""
-        interpretation = provider.interpret(text, context)
+        try:
+            interpretation = self.reliability_policy.run(
+                lambda: provider.interpret(text, context), trace=self.reliability_trace,
+            )
+            return self._validate_interpretation(provider, interpretation, text, context)
+        except (ProviderUnavailable, ValidationError) as exc:
+            repair = getattr(provider, "repair", None)
+            repairable = (
+                isinstance(exc, ProviderUnavailable) and exc.reason == "FORMAT"
+            ) or (isinstance(exc, ValidationError) and not isinstance(exc, ProviderUnavailable))
+            if not repairable or not callable(repair):
+                raise
+            self.reliability_trace.repair_attempted = True
+            feedback = sanitized_validation_feedback(exc)
+            try:
+                interpretation = self.reliability_policy.run(
+                    lambda: repair(text, context, feedback), trace=self.reliability_trace,
+                )
+                result = self._validate_interpretation(provider, interpretation, text, context)
+            except (ProviderUnavailable, ValidationError):
+                raise exc
+            self.reliability_trace.repair_succeeded = True
+            return result
+
+    def _validate_interpretation(self, provider: AssistantProvider, interpretation: object, text: str,
+                                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
         if isinstance(interpretation, dict):
             raw_actions = interpretation.get("actions")
             assistant_message = str(interpretation.get("message") or "")[:2000]
@@ -559,9 +601,18 @@ class SQLiteAssistantService:
         for raw in raw_actions:
             clean = validate_proposal(raw, self.canonical, self.principal.account_id,
                                       timezone_name=str(context.get("timezone") or "UTC"))
+            field_provenance = clean.pop("field_provenance")
+            local = isinstance(provider, DeterministicAssistantParser)
             actions.append({
                 "id": str(uuid4()), **clean,
-                "provenance": {"provider": provider.name, "input": "user-authored-text"},
+                "provenance": {
+                    "provider": provider.name,
+                    "input": "user-authored-text",
+                    "fields": {
+                        field: "LOCAL_INFERRED" if local else value
+                        for field, value in field_provenance.items()
+                    },
+                },
                 # Trust boundaries are server-owned. A provider cannot downgrade a
                 # destructive command merely by emitting a false flag.
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
@@ -675,7 +726,7 @@ class SQLiteAssistantService:
         if not edit:
             return action
         edit = dict(edit)
-        raw = {key: action[key] for key in _ACTION_KEYS}
+        raw = {key: action[key] for key in _ACTION_REQUIRED}
         if "expected_version" in edit:
             raw["expected_version"] = edit.pop("expected_version")
         payload = {**action["payload"], **edit}
@@ -700,7 +751,13 @@ class SQLiteAssistantService:
             raw, self.canonical, self.principal.account_id,
             timezone_name=str((action.get("resolution") or {}).get("timezone") or "") or None,
         )
-        return {**action, **clean, "requires_confirmation": action["requires_confirmation"]}
+        clean.pop("field_provenance", None)
+        provenance = dict(action.get("provenance") or {})
+        fields = dict(provenance.get("fields") or {})
+        fields.update({field: "USER_EDIT" for field in edit if field != "expected_version"})
+        provenance["fields"] = fields
+        return {**action, **clean, "provenance": provenance,
+                "requires_confirmation": action["requires_confirmation"]}
 
     def _execute(self, action: dict[str, object]) -> dict[str, object]:
         command = AgentCommand(action["command"])

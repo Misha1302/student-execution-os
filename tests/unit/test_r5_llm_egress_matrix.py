@@ -156,13 +156,13 @@ class ProviderMatrixTests(unittest.TestCase):
         self.assertEqual((hostile.reason, hostile.retry_after), ("RATE_LIMITED", None))
 
     def test_network_failures(self):
-        for error in (httpx.ConnectTimeout("connect timed out to api.groq.com/openai"),
-                      httpx.ReadTimeout("read timed out"),
-                      httpx.ConnectError("[Errno -2] Name or service not known"),
-                      httpx.RemoteProtocolError(f"peer closed {GROQ} Bearer {KEY}")):
+        for error, reason in ((httpx.ConnectTimeout("connect timed out to api.groq.com/openai"), "NETWORK"),
+                              (httpx.ReadTimeout("read timed out"), "TIMEOUT"),
+                              (httpx.ConnectError("[Errno -2] Name or service not known"), "NETWORK"),
+                              (httpx.RemoteProtocolError(f"peer closed {GROQ} Bearer {KEY}"), "NETWORK")):
             with self.subTest(error=type(error).__name__):
                 failure = self.failure(lambda r, e=error: e)
-                self.assertEqual((failure.reason, failure.http_status, failure.route), ("NETWORK", None, "DIRECT"))
+                self.assertEqual((failure.reason, failure.http_status, failure.route), (reason, None, "DIRECT"))
                 self.assertIsNone(failure.__cause__)
 
     def test_malformed_and_incomplete_provider_output(self):

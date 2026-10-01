@@ -255,14 +255,14 @@ class MeteredStarterProvider:
         self.name = provider.name
         self.model = provider.model
 
-    def interpret(self, text: str, context: dict[str, object]):
+    def _invoke(self, call, text: str, context: dict[str, object]):
         tokens = self._usage.policy.reservation_tokens(text, context)
         try:
             reservation = self._usage.reserve(self._account_id, tokens)
         except StarterQuotaExceeded:
             raise ProviderUnavailable("STARTER quota is exhausted", "STARTER_QUOTA") from None
         try:
-            result = self._provider.interpret(text, context)
+            result = call()
         except ProviderUnavailable as failure:
             usage = getattr(self._provider, "last_usage", None)
             self._usage.reconcile(reservation, _NO_USAGE if _definitely_not_generated(failure) else usage)
@@ -272,3 +272,12 @@ class MeteredStarterProvider:
             raise
         self._usage.reconcile(reservation, getattr(self._provider, "last_usage", None))
         return result
+
+    def interpret(self, text: str, context: dict[str, object]):
+        return self._invoke(lambda: self._provider.interpret(text, context), text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str):
+        repair = getattr(self._provider, "repair", None)
+        if not callable(repair):
+            raise ProviderUnavailable("assistant provider cannot repair structured output", "FORMAT")
+        return self._invoke(lambda: repair(text, context, feedback), text, context)

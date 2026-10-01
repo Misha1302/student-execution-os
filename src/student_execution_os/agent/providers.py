@@ -35,7 +35,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
+{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}]}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 CREATE_NOTE payload: {content}: an idea, reference or unstructured note, not scheduled work.
@@ -93,6 +93,44 @@ context.now in context.timezone and output instants with that zone's offset. "к
 (actionable_from/target_at). If effort or deadline of a new task is not stated, leave it
 out and list "estimated_total_effort_minutes" / "actual_cutoff" in unresolved_fields.
 Do not invent identifiers, versions, dates, or locations."""
+
+_TOP_LEVEL_SCHEMA = {
+    "name": "botay_assistant_proposal",
+    "strict": False,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["message", "actions"],
+        "properties": {
+            "message": {"type": "string"},
+            "actions": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"],
+                    "properties": {
+                        "command": {"type": "string", "enum": [command for command in (
+                            "CREATE_TASK", "CREATE_EVENT", "CREATE_REMINDER", "CREATE_NOTE", "UPDATE_TASK",
+                            "UPDATE_EVENT", "UPDATE_REMINDER", "RESCHEDULE", "SNOOZE", "LOG_PROGRESS",
+                            "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
+                        )]},
+                        "payload": {"type": "object", "additionalProperties": True},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "unresolved_fields": {"type": "array", "items": {"type": "string"}},
+                        "expected_version": {"type": ["integer", "null"]},
+                        "requires_confirmation": {"type": "boolean"},
+                        "field_provenance": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string", "enum": ["MODEL_EXPLICIT", "MODEL_INFERRED"]},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 
 
 class ProviderUnavailable(ValidationError):
@@ -500,9 +538,11 @@ def _send(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         else:
             response = httpx.post(url, headers=headers, json=body, timeout=timeout,
                                   follow_redirects=False, trust_env=False)
-    except httpx.TimeoutException:
-        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "NETWORK",
+    except httpx.ConnectTimeout:
+        raise ProviderUnavailable(f"assistant provider {name} could not be reached in time", "NETWORK",
                                   route=route) from None
+    except httpx.TimeoutException:
+        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "TIMEOUT", route=route) from None
     except (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL, UnicodeError):
         # Refused by httpx before anything was sent: a bug here, not the network.
         raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST",
@@ -543,18 +583,27 @@ class OpenAICompatibleProvider:
         finally:
             self.last_route = observed.get("route")
 
-    def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
+    def _complete(self, text: str, context: dict[str, object], *, repair_feedback: str | None = None) -> dict[str, Any]:
         # No temperature: OpenAI reasoning models reject a non-default one, and Groq's
         # gpt-oss fails JSON mode at temperature 0 on some inputs every time. The output
         # is validated field by field anyway, so determinism is not relied upon there.
         self.last_usage = None
-        extra: dict[str, Any] = {"response_format": {"type": "json_object"}}
+        extra: dict[str, Any] = {"response_format": (
+            {"type": "json_schema", "json_schema": _TOP_LEVEL_SCHEMA}
+            if self.name == "openai" else {"type": "json_object"}
+        )}
         if self.max_output_tokens is not None:
             extra["max_tokens"] = self.max_output_tokens
-        response = self._chat([
+        messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _user_message(text, context)},
-        ], **extra)
+        ]
+        if repair_feedback:
+            messages.append({"role": "system", "content": (
+                "The previous proposal was rejected by deterministic validation with code "
+                f"{repair_feedback}. Return one complete replacement proposal; never alter authority or scope."
+            )})
+        response = self._chat(messages, **extra)
         self.last_usage = _openai_usage(response)
         content = _field(response, ("choices", 0, "message", "content"), self.name)
         if not isinstance(content, str):
@@ -567,6 +616,9 @@ class OpenAICompatibleProvider:
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         return self._complete(text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str) -> dict[str, Any]:
+        return self._complete(text, context, repair_feedback=feedback)
 
 
 @dataclass
@@ -593,10 +645,14 @@ class AnthropicProvider:
         finally:
             self.last_route = observed.get("route")
 
-    def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
+    def _complete(self, text: str, context: dict[str, object], *, repair_feedback: str | None = None) -> dict[str, Any]:
         self.last_usage = None
+        system = SYSTEM_PROMPT
+        if repair_feedback:
+            system += ("\nThe previous proposal was rejected by deterministic validation with code "
+                       f"{repair_feedback}. Return one complete replacement proposal; never alter authority or scope.")
         response = self._messages({
-            "max_tokens": self.max_output_tokens, "temperature": 0, "system": SYSTEM_PROMPT,
+            "max_tokens": self.max_output_tokens, "temperature": 0, "system": system,
             "messages": [{"role": "user", "content": _user_message(text, context)}],
         })
         self.last_usage = _anthropic_usage(response)
@@ -612,6 +668,9 @@ class AnthropicProvider:
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         return self._complete(text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str) -> dict[str, Any]:
+        return self._complete(text, context, repair_feedback=feedback)
 
 
 PROVIDERS = {
@@ -699,9 +758,11 @@ class PlatformProviderPool:
         self.last_usage: dict[str, int] | None = None
         self.last_route: str | None = None
         self.last_credential: str | None = None  # "primary" or "standby" (diagnostics)
+        self._last_index = 0
 
     def _attempt(self, index: int, text: str, context: dict[str, object]):
         provider = self._providers[index]
+        self._last_index = index
         self.last_credential = "primary" if index == 0 else "standby"
         try:
             return provider.interpret(text, context)
@@ -717,6 +778,17 @@ class PlatformProviderPool:
             if len(self._providers) == 1 or primary.reason not in self._ALTERNATE_REASONS:
                 raise
         return self._attempt(1, text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str):
+        provider = self._providers[self._last_index]
+        repair = getattr(provider, "repair", None)
+        if not callable(repair):
+            raise ProviderUnavailable("assistant provider cannot repair structured output", "FORMAT")
+        try:
+            return repair(text, context, feedback)
+        finally:
+            self.last_usage = provider.last_usage
+            self.last_route = getattr(provider, "last_route", None)
 
 
 def _platform_keys_from_environment() -> list[str]:
