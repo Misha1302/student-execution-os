@@ -168,7 +168,7 @@
       "locale": "ru",
       "turns": [{
         "text": "Завтра ничего до 12 и оставь вечером хотя бы час свободным",
-        "expected": {"output_subset": {"intent": "PLANNER_CONSTRAINT"}}
+        "expected": {"kind": "ACTION", "command": "CREATE_TIME_CONSTRAINT", "payload_subset": {"type": "UNAVAILABLE"}}
       }]
     },
     {

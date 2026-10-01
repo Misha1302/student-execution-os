@@ -35,7 +35,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
+{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
@@ -50,6 +50,11 @@ knowledge and never invent planner reasons. Allowed read_query shapes are:
   {kind:"PLAN_EXPLANATION",obligation_id}.
 The server executes these typed read queries against authorized canonical state. Do not
 write SQL or include an identifier that is absent from context.
+Planner-control language becomes canonical constraints, never plan blocks:
+  CREATE_TIME_CONSTRAINT {type:"UNAVAILABLE"|"FIXED_PERSONAL_BLOCK",starts_at,ends_at,reason?}.
+Use it for explicit protected/unavailable windows such as "завтра ничего до 12" or
+"оставь этот час свободным". Do not use it for vague preferences that need a new
+domain concept, and never claim that a derived plan block was edited.
 CREATE_NOTE payload: {content}: an idea, reference or unstructured note, not scheduled work.
 Preserve meaningful newlines in notes. Example: "Идея для курсовой: расписание как граф".
 CREATE_TASK payload (omit what the user did not say; no other keys are accepted):
@@ -128,6 +133,7 @@ _TOP_LEVEL_SCHEMA = {
                             "CREATE_TASK", "CREATE_EVENT", "CREATE_REMINDER", "CREATE_NOTE", "UPDATE_TASK",
                             "UPDATE_EVENT", "UPDATE_REMINDER", "RESCHEDULE", "SNOOZE", "LOG_PROGRESS",
                             "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
+                            "CREATE_TIME_CONSTRAINT",
                         )]},
                         "payload": {"type": "object", "additionalProperties": True},
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},

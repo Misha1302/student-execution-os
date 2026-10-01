@@ -17,6 +17,7 @@ from student_execution_os.domain.model import (
     Importance,
     LifecycleStatus,
     ObligationCategory,
+    UserTimeConstraintType,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
 from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
@@ -166,6 +167,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.UPDATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume"} | _TARGET,
     AgentCommand.RESCHEDULE.value: {"when", "keep_time", "temporal_transform"} | _TARGET,
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
+    AgentCommand.CREATE_TIME_CONSTRAINT.value: {"type", "starts_at", "ends_at", "reason"},
 }
 _REQUIRED = {
     AgentCommand.CREATE_NOTE.value: ("content",),
@@ -174,6 +176,7 @@ _REQUIRED = {
     AgentCommand.CREATE_REMINDER.value: ("title", "remind_at"),
     AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
     AgentCommand.SNOOZE.value: ("until",),
+    AgentCommand.CREATE_TIME_CONSTRAINT.value: ("type", "starts_at", "ends_at"),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -319,6 +322,20 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             raise ValidationError("assistant LOG_PROGRESS needs minutes or count")
         if payload.get("count") is not None:
             _positive_minutes(payload["count"], "count")
+    if command == AgentCommand.CREATE_TIME_CONSTRAINT.value:
+        try:
+            constraint_type = UserTimeConstraintType(payload.get("type"))
+        except ValueError:
+            raise ValidationError("assistant time constraint has an invalid type") from None
+        if constraint_type is UserTimeConstraintType.PINNED_WORK:
+            raise ValidationError("assistant cannot create pinned work without an explicit task target")
+        starts = _instant(payload.get("starts_at"), "starts_at")
+        ends = _instant(payload.get("ends_at"), "ends_at")
+        if ends <= starts or ends - starts > timedelta(days=14):
+            raise ValidationError("assistant time constraint must be positive and at most 14 days")
+        if payload.get("reason") is not None and (
+                not isinstance(payload["reason"], str) or len(payload["reason"]) > 5000):
+            raise ValidationError("assistant time constraint reason must be text up to 5000 characters")
     if payload.get("target_text") is not None and (not isinstance(payload["target_text"], str) or len(payload["target_text"]) > 300):
         raise ValidationError("assistant target_text must be short text")
     expected = raw["expected_version"]
@@ -1031,6 +1048,8 @@ class SQLiteAssistantService:
             return "event.create", f"event-{uuid4()}", fields
         if command is AgentCommand.CREATE_REMINDER:
             return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
+        if command is AgentCommand.CREATE_TIME_CONSTRAINT:
+            return "constraint.create", f"constraint-{uuid4()}", fields
         if command is AgentCommand.UPDATE_TASK:
             return "task.update", entity, fields
         if command is AgentCommand.UPDATE_EVENT:
