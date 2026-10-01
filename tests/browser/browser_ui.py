@@ -41,21 +41,21 @@ class BrowserUiTest(unittest.TestCase):
         self.db = str(Path(self.tmp.name) / "ui.sqlite")
         seed_ui_database(self.db)
         service = UiService(self.db, account_id=ACCOUNT, principal_id="browser-user", now=lambda: NOW)
-        today = service.today()
+        today = service.planning.today()
         self.health = {"status": "ok", "service": "student-execution-os", "auth_mode": "bound", "registration_open": False}
         self.responses = {
             "/api/v1/today": today,
             "/api/v1/plan/current": today["plan"],
-            "/api/v1/tasks": service.tasks(),
-            "/api/v1/events": service.events(),
-            "/api/v1/calendar": service.calendar(),
-            "/api/v1/notifications": service.notifications(),
-            "/api/v1/evidence": service.evidence(),
-            "/api/v1/places": service.places(),
-            "/api/v1/outlook?range=week": service.outlook("week", None),
-            "/api/v1/outlook?range=month": service.outlook("month", None),
-            "/api/v1/settings/diagnostics": service.diagnostics(),
-            "/api/v1/account/deletion-policy": service.account_deletion_policy(),
+            "/api/v1/tasks": service.tasks.tasks(),
+            "/api/v1/events": service.events.events(),
+            "/api/v1/calendar": service.events.calendar(),
+            "/api/v1/notifications": service.notifications.notifications(),
+            "/api/v1/evidence": service.account.evidence(),
+            "/api/v1/places": service.events.places(),
+            "/api/v1/outlook?range=week": service.planning.outlook("week", None),
+            "/api/v1/outlook?range=month": service.planning.outlook("month", None),
+            "/api/v1/settings/diagnostics": service.account.diagnostics(),
+            "/api/v1/account/deletion-policy": service.account.account_deletion_policy(),
             "/api/v1/ask/capabilities": {
                 "live_llm_provider": False,
                 "explanations": True,

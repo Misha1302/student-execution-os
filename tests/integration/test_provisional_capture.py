@@ -27,7 +27,7 @@ class ProvisionalCaptureTest(unittest.TestCase):
                     self.assertEqual(repository.get_task('account', task_id).effort_estimate_source, 'SYSTEM_PROVISIONAL')
                     self.assertEqual((outcome.entity["estimated_total_effort_low_minutes"], outcome.entity["estimated_total_effort_high_minutes"]), (15, 60))
                     self.assertEqual(commands.tasks.task_create(task_id, {"title": title}).status, "NOOP")
-                today = UiService(database, account_id="account", principal_id="user", now=lambda: now).today()
+                today = UiService(database, account_id="account", principal_id="user", now=lambda: now).planning.today()
                 self.assertEqual(today["needs_refinement"], [])
                 self.assertTrue(today["next_actions"])
                 commands.tasks.task_update("task-quick-0000", {"estimated_total_effort_minutes": 20})

@@ -51,7 +51,7 @@ class CapabilityGateway:
 
     def today(self) -> dict[str, Any]:
         self.grant.require("today:read")
-        today = self.service.today()
+        today = self.service.planning.today()
         # Today is a composite; parts owned by other scopes are withheld, not leaked.
         if "notes:read" not in self.grant.scopes:
             today["inbox_notes"] = []
@@ -60,27 +60,27 @@ class CapabilityGateway:
 
     def tasks(self) -> list[dict[str, Any]]:
         self.grant.require("tasks:read")
-        return self.service.tasks()
+        return self.service.tasks.tasks()
 
     def calendar(self, range_name: str = "week", anchor: str | None = None) -> dict[str, Any]:
         self.grant.require("calendar:read")
-        return self.service.outlook(range_name, anchor)
+        return self.service.planning.outlook(range_name, anchor)
 
     def events(self) -> list[dict[str, Any]]:
         self.grant.require("calendar:read")
-        return self.service.events()
+        return self.service.events.events()
 
     def notes(self, query: str = "", include_archived: bool = False) -> list[dict[str, Any]]:
         self.grant.require("notes:read")
-        return self.service.notes(str(query or "")[:200], bool(include_archived))
+        return self.service.notes.notes(str(query or "")[:200], bool(include_archived))
 
     def note(self, note_id: str) -> dict[str, Any]:
         self.grant.require("notes:read")
-        return self.service.note(str(note_id))
+        return self.service.notes.note(str(note_id))
 
     def reminders(self) -> list[dict[str, Any]]:
         self.grant.require("reminders:read")
-        return self.service.reminders()
+        return self.service.notifications.reminders()
 
     # ---- mutations ---------------------------------------------------------------
 
@@ -94,7 +94,7 @@ class CapabilityGateway:
             if not isinstance(op, dict):
                 raise ValidationError("each operation must be an object")
             self.grant.require_operation(str(op.get("type") or ""))
-        return self.service.sync({"operations": operations}, actor=ActorCategory.USER_VIA_LLM)
+        return self.service.operations.sync({"operations": operations}, actor=ActorCategory.USER_VIA_LLM)
 
     def create(self, op_type: str, op_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Convenience create: the entity id is derived from op_id, so a retry is the same entity."""
