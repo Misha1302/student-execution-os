@@ -21,6 +21,17 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
         self.assertIn('if test "$POLICY_SEQUENCE" -le "$current_sequence"; then', release)
 
+    def test_release_dispatch_is_bound_to_exact_source_sha(self):
+        release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("source_sha:", release)
+        self.assertIn("dispatch_id:", release)
+        self.assertIn("run-name: android-release ${{ inputs.version }} · ${{ inputs.dispatch_id }}", release)
+        self.assertIn("EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}", release)
+        self.assertIn('test "$GITHUB_SHA" != "$EXPECTED_SOURCE_SHA"', release)
+        self.assertIn("apk-release:\n\tpython tools/android_release.py", makefile)
+        self.assertNotIn("gh workflow run", makefile.split("apk-release:", 1)[1])
+
     def test_documented_client_template_points_to_signed_metadata_branch(self):
         docs = (ROOT / "docs/updates.md").read_text(encoding="utf-8")
         mobile = (ROOT / "mobile/README.md").read_text(encoding="utf-8")

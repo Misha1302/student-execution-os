@@ -56,30 +56,4 @@ apk: mobile-sync
 	@echo "APK: mobile/android/app/build/outputs/apk/debug/app-debug.apk"
 
 apk-release:
-	@command -v gh >/dev/null 2>&1 || { \
-		echo "ERROR: GitHub CLI (gh) is required"; \
-		exit 1; \
-	}
-	@gh auth status >/dev/null 2>&1 || { \
-		echo "ERROR: GitHub CLI is not authenticated; run: gh auth login"; \
-		exit 1; \
-	}
-	@test "$$(git branch --show-current)" = "main" || { \
-		echo "ERROR: production release must be dispatched from main"; \
-		exit 1; \
-	}
-	@test -z "$$(git status --porcelain)" || { \
-		echo "ERROR: working tree is not clean:"; \
-		git status --short; \
-		exit 1; \
-	}
-	@git fetch --quiet origin main
-	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" || { \
-		echo "ERROR: local HEAD is not origin/main"; \
-		echo "local:  $$(git rev-parse HEAD)"; \
-		echo "remote: $$(git rev-parse origin/main)"; \
-		echo "Commit/push/pull before releasing."; \
-		exit 1; \
-	}
-	@echo "Dispatching production Android release for $$(git rev-parse --short HEAD)"
-	@gh workflow run android-release.yml --ref main
+	python tools/android_release.py
