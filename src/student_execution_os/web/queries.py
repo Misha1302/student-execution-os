@@ -61,6 +61,7 @@ from student_execution_os.planning.outlook import (
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
 from student_execution_os.travel import SQLiteTravelRepository
 from student_execution_os.sync.commands import Commands, SyncService
+from student_execution_os.sync.serialize import routine_occurrence_payload, routine_payload
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
 from student_execution_os.reflection import SQLiteReflectionStore
 
@@ -1109,7 +1110,7 @@ class UiService:
                     if task.target_at is not None and task.target_at < now - timedelta(days=7):
                         continue
                     occurrences.append({
-                        **Commands._routine_occurrence_out(occurrence),
+                        **routine_occurrence_payload(occurrence),
                         "title": task.obligation.title,
                         "target_at": _jsonify(task.target_at),
                         "effort_minutes": task.estimated_total_effort_minutes,
@@ -1119,7 +1120,7 @@ class UiService:
                     })
                 occurrences.sort(key=lambda item: (item["target_at"] or "", item["original_recurrence_id"]))
                 templates.append({
-                    **Commands._routine_out(template),
+                    **routine_payload(template),
                     "occurrences": occurrences,
                 })
             return {"now": _jsonify(now), "routines": templates}

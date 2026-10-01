@@ -1267,7 +1267,7 @@ class SQLiteAssistantService:
             from student_execution_os.sync.commands import Commands
             task_id = f"task-{uuid4()}"
             outcome = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
-                               now=self.canonical.clock.now()).task_create(
+                               now=self.canonical.clock.now()).tasks.task_create(
                 task_id, {key: value for key, value in data.items() if key != _RELATIVE})
             return {"action_id": action["id"], "entity_id": task_id, "operation": "task.create", "outcome": outcome.status,
                     "version": outcome.entity["version"], "status": outcome.entity["status"], "entity": outcome.entity}
@@ -1328,12 +1328,7 @@ class SQLiteAssistantService:
         if command is AgentCommand.RESCHEDULE:
             from student_execution_os.reminders import ReminderStore
             zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
-            if kind == "REMINDER":
-                current = commands._reminders().get(self.principal.account_id, entity)
-            elif kind == "EVENT":
-                current = commands._event_out(entity).entity
-            else:
-                current = commands._task_out(entity).entity
+            current = commands.current_entity(kind, entity)
             op_type, body = reschedule_change(kind, current, _dt(str(fields["when"])), bool(fields.get("keep_time")), zone)
             return op_type, entity, body
         raise ValidationError(f"unsupported assistant command {command.value}")
