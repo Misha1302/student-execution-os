@@ -1,4 +1,5 @@
 import { api, ApiError, session } from './api.js';
+import { offlineOperationStore } from './device-storage.js';
 
 // Durable operation queue — the write half of offline-first.
 //
@@ -19,7 +20,6 @@ import { api, ApiError, session } from './api.js';
 // briefly so cached read models older than the ack still show it), CONFLICT /
 // REJECTED (the server refused; shown in the sync sheet until dismissed).
 
-const PREFIX = 'seos.ops.';
 const BATCH = 100;
 const BACKOFF_MS = [2000, 5000, 15000, 30000, 60000];
 const ACK_KEEP_MS = 24 * 3600 * 1000;
@@ -44,13 +44,8 @@ function scope() {
   return `${session.server || 'same-origin'}|${session.user?.account_id || session.authMode || 'bound'}`;
 }
 
-function key() { return PREFIX + scope(); }
-
 export function readQueue() {
-  try {
-    const items = JSON.parse(localStorage.getItem(key()) || '[]');
-    return Array.isArray(items) ? items : [];
-  } catch { return []; }
+  return offlineOperationStore.read(scope());
 }
 
 function emit(name, detail) {
@@ -60,7 +55,7 @@ function emit(name, detail) {
 function write(items) {
   const cutoff = Date.now() - ACK_KEEP_MS;
   const kept = items.filter((x) => x.state !== 'ACKED' || Number(x.acked_at || 0) > cutoff);
-  localStorage.setItem(key(), JSON.stringify(kept));
+  offlineOperationStore.write(scope(), kept);
   emit('seos-sync-state', syncState());
 }
 
@@ -70,7 +65,7 @@ function id(prefix) {
 }
 
 export function lastSyncedAt() {
-  try { return Number(localStorage.getItem(`seos.lastSync.${scope()}`)) || null; } catch { return null; }
+  return offlineOperationStore.lastSyncedAt(scope());
 }
 
 export function syncState() {
@@ -137,7 +132,7 @@ async function flushOnce() {
     throw error;
   }
   attempt = 0;
-  try { localStorage.setItem(`seos.lastSync.${scope()}`, String(Date.now())); } catch { /* storage full */ }
+  try { offlineOperationStore.setLastSyncedAt(scope(), Date.now()); } catch { /* storage full */ }
   const byId = new Map((response.results || []).map((result) => [result.op_id, result]));
   const ackedAt = Date.now();
   // Re-read: the user may have queued more while the request was in flight.

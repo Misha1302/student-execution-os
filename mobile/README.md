@@ -116,3 +116,17 @@ queue locally; pending operations survive reload, replay with stable operation i
 reconnect, and remain visible when the server reports a conflict. Changing servers is
 probe-first and clears the previous server's auth identity before the new login, so caches,
 tokens and pending operations are never reused across server scopes.
+
+Device storage goes through three roles in `web/static/js/device-storage.js`:
+
+| Role | Used by | Current backing (browser and Android) |
+| --- | --- | --- |
+| `OfflineOperationStore` | `sync.js` | WebView `localStorage`, `seos.ops.<server>\|<account>` |
+| `ReadModelCache` | `store.js` | WebView `localStorage`, `seos.cache.<path>` (scope-checked on read) |
+| `CredentialStore` | `api.js` | Capacitor Preferences on Android, `localStorage` in the browser |
+
+The keys are unchanged from earlier releases, so updating the app needs no data migration.
+Capacitor Preferences is app-private SharedPreferences, **not** an Android Keystore-backed
+secret store, and the queue is not yet in a native database. Moving the queue to native
+SQLite and the bearer token to keystore-backed storage is planned follow-up work; such a
+change must import the existing keys, verify the copy, and only then remove the old entries.

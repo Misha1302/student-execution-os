@@ -1,6 +1,7 @@
 import { api, session } from './api.js';
 import { readQueue } from './sync.js';
 import { project } from './overlay.js';
+import { readModelCache } from './device-storage.js';
 
 // Read-model cache. Server responses are kept in memory for fast tab switches and
 // mirrored to localStorage so a cold start without network can still show the last
@@ -9,7 +10,6 @@ import { project } from './overlay.js';
 // the user just did offline is visible everywhere immediately.
 
 const memory = new Map();
-const PREFIX = 'seos.cache.';
 // At a cold start the last saved state is shown at once and refreshed right after,
 // instead of a skeleton for as long as a bad network takes to fail.
 let cacheFirst = false;
@@ -20,14 +20,11 @@ function scope() {
 }
 
 function persist(path, entry) {
-  try { localStorage.setItem(PREFIX + path, JSON.stringify(entry)); } catch { /* quota/private mode */ }
+  try { readModelCache.write(path, entry); } catch { /* quota/private mode */ }
 }
 
 function restore(path) {
-  try {
-    const raw = JSON.parse(localStorage.getItem(PREFIX + path) || 'null');
-    return raw && raw.scope === scope() ? raw : null;
-  } catch { return null; }
+  return readModelCache.read(path, scope());
 }
 
 function view(path, entry, stale) {
@@ -67,9 +64,7 @@ export function invalidate() { memory.clear(); }
 
 export function clearAll() {
   memory.clear();
-  try {
-    Object.keys(localStorage).filter((k) => k.startsWith(PREFIX)).forEach((k) => localStorage.removeItem(k));
-  } catch { /* ignore */ }
+  try { readModelCache.clear(); } catch { /* ignore */ }
 }
 
 // The last loaded response for `path` with queued changes applied (no network).

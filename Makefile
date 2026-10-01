@@ -15,6 +15,7 @@ static:
 	TZ=Europe/Moscow node tests/js/capture_semantic_cases.mjs
 	node tests/js/capture_session_cases.mjs
 	node tests/js/upcoming_cases.mjs
+	node tests/js/device_storage_cases.mjs
 	TZ=UTC node tests/js/series_overlay_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
 

@@ -1,4 +1,5 @@
-import { isNative, prefGet, prefSet, clearDeviceAlarms, clearExecutionNotification } from './native.js';
+import { isNative, clearDeviceAlarms, clearExecutionNotification } from './native.js';
+import { credentialStore } from './device-storage.js';
 import { clearCaptureDrafts } from './capture-session.js';
 
 // Session state. In the browser the page is served by the API host itself, so the
@@ -28,9 +29,9 @@ export function defaultServer() {
 }
 
 export async function restoreSession() {
-  session.server = isNative() ? normalizeServer(await prefGet(KEYS.server)) : '';
-  session.token = await prefGet(KEYS.token);
-  try { session.user = JSON.parse((await prefGet(KEYS.user)) || 'null'); } catch { session.user = null; }
+  session.server = isNative() ? normalizeServer(await credentialStore.get(KEYS.server)) : '';
+  session.token = await credentialStore.get(KEYS.token);
+  try { session.user = JSON.parse((await credentialStore.get(KEYS.user)) || 'null'); } catch { session.user = null; }
 }
 
 // Device alarms belong to one account on one server. The stored credentials change
@@ -40,13 +41,13 @@ export async function setServer(url) {
   const next = normalizeServer(url);
   const changed = Boolean(session.server && session.server !== next);
   session.server = next;
-  await prefSet(KEYS.server, session.server || null);
+  await credentialStore.set(KEYS.server, session.server || null);
   if (changed) {
     clearCaptureDrafts(localStorage);
     session.token = null;
     session.user = null;
-    await prefSet(KEYS.token, null);
-    await prefSet(KEYS.user, null);
+    await credentialStore.set(KEYS.token, null);
+    await credentialStore.set(KEYS.user, null);
     await clearDeviceAlarms();
     await clearExecutionNotification();
   }
@@ -56,8 +57,8 @@ export async function setAuth(token, user) {
   const ownershipChanged = Boolean(session.token && (!token || session.user?.account_id !== user?.account_id));
   session.token = token;
   session.user = user;
-  await prefSet(KEYS.token, token);
-  await prefSet(KEYS.user, user ? JSON.stringify(user) : null);
+  await credentialStore.set(KEYS.token, token);
+  await credentialStore.set(KEYS.user, user ? JSON.stringify(user) : null);
   if (ownershipChanged) {
     clearCaptureDrafts(localStorage);
     await clearDeviceAlarms();
