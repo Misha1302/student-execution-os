@@ -1,6 +1,6 @@
 FROM debian:13-slim
 
-ARG TOR_VERSION=0.4.9.12-0+deb13u2
+ARG TOR_VERSION=0.4.9.13-0+deb13u1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
