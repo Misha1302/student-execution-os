@@ -90,6 +90,8 @@ class DeterministicAssistantParser:
                 command["payload"] = {"obligation_id": command["payload"].pop("target_text"), **command["payload"]}
                 command["unresolved_fields"].append("expected_version")
             return [command]
+        if context.get("assistant_session"):
+            raise ValidationError("conversational follow-up needs the language model")
         # Everyday phrasing ("в пятницу к шести сдать лабу, часа два, важно").
         parsed = parse_task(str(text), now=now or datetime.now(timezone.utc), timezone_name=str(context.get("timezone") or "UTC"))
         if not parsed.get("title"):
@@ -491,7 +493,46 @@ class SQLiteAssistantService:
         }
         if isinstance(client.get("locale"), str):
             context["locale"] = client["locale"][:16]
+        if client.get("source") in {"TEXT", "VOICE"}:
+            context["source"] = client["source"]
+        previous_batch_id = client.get("previous_batch_id")
+        if previous_batch_id is not None:
+            context["assistant_session"] = self._previous_session(
+                str(previous_batch_id), client.get("previous_edits"),
+            )
         return context
+
+    def _previous_session(self, batch_id: str, edits: object) -> dict[str, object]:
+        row = self.canonical.connection.execute(
+            "SELECT actions_json,expires_at FROM assistant_batches "
+            "WHERE account_id=? AND principal_id=? AND id=?",
+            (self.principal.account_id, self.principal.principal_id, batch_id),
+        ).fetchone()
+        if row is None:
+            raise AuthorizationDenied("previous assistant batch is not scoped to this principal")
+        if _dt(row["expires_at"]) <= self.canonical.clock.now():
+            raise AuthorizationDenied("previous assistant batch expired")
+        actions = json.loads(row["actions_json"])
+        if not isinstance(actions, list) or len(actions) > 10:
+            raise ValidationError("previous assistant batch is invalid")
+        by_id = {action.get("id"): action for action in actions if isinstance(action, dict)}
+        if edits is None:
+            edits = {}
+        if not isinstance(edits, dict) or not set(edits).issubset(by_id) \
+                or not all(isinstance(value, dict) for value in edits.values()):
+            raise ValidationError("previous_edits must map previous action ids to field objects")
+        refined = [self._edited(action, edits.get(action.get("id"))) for action in actions]
+        return {
+            "previous_batch_id": batch_id,
+            "previous_actions": [
+                {
+                    key: action[key]
+                    for key in ("command", "payload", "expected_version", "unresolved_fields", "provenance", "resolution")
+                    if key in action
+                }
+                for action in refined
+            ],
+        }
 
     def interpret(self, text: str, context: dict[str, object] | None = None, *,
                   degrade_invalid: bool = False) -> dict[str, object]:
@@ -680,8 +721,9 @@ class SQLiteAssistantService:
         if len(raw_actions) > 10:
             raise ValidationError("assistant proposed too many actions")
         raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
+        raw_actions, preserved = self._preserve_previous_user_edits(raw_actions, context)
         actions = []
-        for raw in raw_actions:
+        for index, raw in enumerate(raw_actions):
             clean = validate_proposal(raw, self.canonical, self.principal.account_id,
                                       timezone_name=str(context.get("timezone") or "UTC"))
             field_provenance = clean.pop("field_provenance")
@@ -700,7 +742,61 @@ class SQLiteAssistantService:
                 # destructive command merely by emitting a false flag.
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
             })
+            actions[-1]["provenance"]["input"] = (
+                "voice-transcript" if context.get("source") == "VOICE" else "user-authored-text"
+            )
+            actions[-1]["provenance"]["fields"].update(
+                {field: "USER_EDIT" for field in preserved.get(index, set())}
+            )
         return provider.name, assistant_message, actions
+
+    @staticmethod
+    def _preserve_previous_user_edits(
+        raw_actions: list[object], context: dict[str, object],
+    ) -> tuple[list[object], dict[int, set[str]]]:
+        session = context.get("assistant_session")
+        previous = session.get("previous_actions") if isinstance(session, dict) else None
+        if not isinstance(previous, list):
+            return raw_actions, {}
+        preserved: dict[int, set[str]] = {}
+        for index, raw in enumerate(raw_actions):
+            if not isinstance(raw, dict) or not isinstance(raw.get("payload"), dict):
+                continue
+            candidates = []
+            for prior in previous:
+                if not isinstance(prior, dict) or not isinstance(prior.get("payload"), dict):
+                    continue
+                prior_payload = prior["payload"]
+                same_target = any(
+                    raw["payload"].get(field) is not None
+                    and raw["payload"].get(field) == prior_payload.get(field)
+                    for field in ("obligation_id", "reminder_id")
+                )
+                same_single_create = (
+                    len(raw_actions) == len(previous) == 1
+                    and str(raw.get("command", "")).startswith("CREATE_")
+                    and raw.get("command") == prior.get("command")
+                )
+                if same_target or same_single_create:
+                    candidates.append(prior)
+            if len(candidates) != 1:
+                continue
+            prior = candidates[0]
+            fields = (prior.get("provenance") or {}).get("fields")
+            if not isinstance(fields, dict):
+                continue
+            incoming_provenance = raw.get("field_provenance")
+            if not isinstance(incoming_provenance, dict):
+                incoming_provenance = {}
+                raw["field_provenance"] = incoming_provenance
+            for field, source in fields.items():
+                if source != "USER_EDIT" or incoming_provenance.get(field) == "MODEL_EXPLICIT":
+                    continue
+                if field in prior["payload"]:
+                    raw["payload"][field] = prior["payload"][field]
+                    incoming_provenance[field] = "MODEL_INFERRED"
+                    preserved.setdefault(index, set()).add(field)
+        return raw_actions, preserved
 
     @staticmethod
     def _reconcile_explicit_intent(text: str, context: dict[str, object],
