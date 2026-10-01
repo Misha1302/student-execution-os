@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from tests.asgi_client import TestClient
 
 from student_execution_os.reliability import SQLiteDataLifecycle
 from student_execution_os.web.app import create_app
-from student_execution_os.web.auth import AuthConfig, hash_password, verify_password
+from student_execution_os.web.auth import AuthConfig, SQLiteAttemptLimiter, hash_password, verify_password
 
 
 class Clock:
@@ -183,6 +184,63 @@ class AuthApiTest(unittest.TestCase):
         limited = self.client.post("/api/v1/auth/login", json={"login": "alice", "password": "correct horse"})
         self.assertEqual(limited.status_code, 429)
         self.assertTrue(limited.json()["error"]["retryable"])
+
+    def test_login_rate_limit_survives_process_restart(self):
+        self._register("persistent")
+        for _ in range(8):
+            self.client.post("/api/v1/auth/login", json={"login": "persistent", "password": "wrong-pass"})
+        self.client.__exit__(None, None, None)
+        self.client = self._client(AuthConfig(password_scrypt_n=2**10))
+        self.client.__enter__()
+        limited = self.client.post(
+            "/api/v1/auth/login", json={"login": "persistent", "password": "correct horse"},
+        )
+        self.assertEqual(limited.status_code, 429)
+
+    def test_login_rate_limit_expires_and_other_login_is_independent(self):
+        self._register("limited")
+        self._register("independent")
+        for _ in range(8):
+            self.client.post("/api/v1/auth/login", json={"login": "limited", "password": "wrong-pass"})
+        other = self.client.post(
+            "/api/v1/auth/login", json={"login": "independent", "password": "correct horse"},
+        )
+        self.assertEqual(other.status_code, 200)
+        self.clock.value += timedelta(seconds=601)
+        recovered = self.client.post(
+            "/api/v1/auth/login", json={"login": "limited", "password": "correct horse"},
+        )
+        self.assertEqual(recovered.status_code, 200)
+
+    def test_auth_limit_cleanup_bounds_rows_and_stores_only_hashes(self):
+        limiter = SQLiteAttemptLimiter(
+            self.db, scope="IP", limit=30, window_seconds=600, now=self.clock,
+        )
+        for index in range(100):
+            limiter.hit(f"198.51.100.{index}")
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM auth_rate_limits").fetchone()[0], 100)
+            stored = conn.execute("SELECT key_hash FROM auth_rate_limits LIMIT 1").fetchone()[0]
+            self.assertEqual(len(stored), 64)
+            self.assertNotIn("198.51.100", stored)
+        self.clock.value += timedelta(seconds=601)
+        limiter.hit("203.0.113.1")
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM auth_rate_limits").fetchone()[0], 1)
+
+    def test_concurrent_auth_limit_hits_are_not_lost(self):
+        limiter = SQLiteAttemptLimiter(
+            self.db, scope="LOGIN", limit=30, window_seconds=600, now=self.clock,
+        )
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: limiter.hit("concurrent"), range(20)))
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT attempt_count FROM auth_rate_limits WHERE scope='LOGIN'"
+                ).fetchone()[0],
+                20,
+            )
 
     def test_cors_preflight_for_capacitor_origin(self):
         response = self.client.options(
