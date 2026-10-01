@@ -165,7 +165,7 @@ def create_app(
         )
 
     app = FastAPI(
-        title="Student Execution OS",
+        title="botay! API",
         version="1",
         docs_url="/api/docs",
         redoc_url=None,

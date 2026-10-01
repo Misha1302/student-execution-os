@@ -1,14 +1,29 @@
-# Student Execution OS — Current Handoff
+# botay! — Current Handoff
 
 > Re-read the current repository and exact commit before using this checkpoint.
 
 ## Current architecture
 
-- Schema: v21 (v13: explicit `remind_at` reminder requests, device capabilities, retention
-  indexes; v14: per-account encrypted LLM credentials and the platform-managed entitlement seam;
-  v15: delete tombstones, event reminder leads, counted progress — ADR 0018; v16: standalone
-  reminders and wake alarms, device health, AI test failure states — ADR 0019).
-  v21 adds opt-in STARTER entitlements and atomic account/global LLM usage reservations.
+- Schema: v29 (`persistence/sqlite.py::SCHEMA_VERSION`); what each version added is in
+  [docs/SCHEMA_HISTORY.md](../SCHEMA_HISTORY.md). v28 persists login/IP abuse limits; v29
+  stores Assistant action history (inverse + committed version) for safe undo.
+- Write ownership: `sync/commands.py::SyncService` owns the operation envelope, op_id replay,
+  request hashing, the savepoint and result persistence; `Commands` routes each operation type
+  to exactly one domain handler in `sync/handlers/` (explicit registration, fail-closed).
+- Read ownership: `web/queries.py::UiService` composes the application owners in
+  `web/services/`; routes call an explicit owner (`service.planning.today()` …).
+- Assistant: `agent/assistant.py` validates typed proposals, resolves temporal transforms and
+  `relative_to` anchors deterministically, applies plans atomically in declared order, and
+  undoes the last apply against stored versions; the client side of a turn is
+  `web/static/js/assistant-turn.js` + `command-preview.js`.
+- Device storage: `web/static/js/device-storage.js` (`OfflineOperationStore`,
+  `ReadModelCache`, `CredentialStore`); backing stores are unchanged (see mobile/README.md).
+- Earlier schema notes, kept for context: v13 explicit `remind_at` reminder requests, device
+  capabilities, retention indexes; v14 per-account encrypted LLM credentials and the
+  platform-managed entitlement seam; v15 delete tombstones, event reminder leads, counted
+  progress — ADR 0018; v16 standalone reminders and wake alarms, device health, AI test failure
+  states — ADR 0019; v21 opt-in STARTER entitlements and atomic account/global LLM usage
+  reservations.
 - v16 (ADR 0019): `reminders/standalone.py` + `reminder.*` sync ops; CRITICAL escalation ladder
   in `reminders/policy.py`; `/notifications/health`, `/notifications/test`; RU/EN command
   grammar `agent/commands.py` ⇄ `js/commands.js` (fixture `nl_command_cases.json`) and typed
