@@ -56,8 +56,9 @@ Use it for explicit protected/unavailable windows such as "завтра ниче
 "оставь этот час свободным". Do not use it for vague preferences that need a new
 domain concept, and never claim that a derived plan block was edited.
 UNDO_LAST payload is {}. Use it only for an explicit request to undo the most recent
-Assistant-originated reversible mutation. The server checks the current entity version
-before applying a stored inverse; never reconstruct stale values yourself.
+Assistant change; the server reverts every reversible action of that last apply (a created
+item is removed). It checks each item's current version before applying a stored inverse;
+never reconstruct stale values yourself.
 For multiple actions, give each action a unique client_ref and list only earlier refs in
 depends_on. The server replaces refs with opaque action ids, validates the whole graph,
 and applies the selected dependency-closed plan atomically in declared order.

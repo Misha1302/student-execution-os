@@ -1134,6 +1134,8 @@ class SQLiteAssistantService:
                 inverse = self._inverse(action)
                 action_result = self._execute(action)
                 results.append(action_result)
+                if inverse is None:
+                    inverse = self._creation_inverse(action, action_result)
                 if inverse is not None and action_result.get("outcome") == "APPLIED" \
                         and isinstance(action_result.get("version"), int):
                     conn.execute(
@@ -1170,6 +1172,32 @@ class SQLiteAssistantService:
                 },
             )
         return result
+
+    def undo(self, payload: dict[str, object]) -> dict[str, object]:
+        """The [Отменить] button: UNDO_LAST without asking a model to read «отмени».
+
+        It is stored as a one-action batch and goes through ``apply``, so the same
+        idempotency record, history bookkeeping and version checks apply; the batch id
+        is derived from the key, so a retried request replays instead of undoing twice.
+        """
+        key = str(payload.get("idempotency_key", ""))
+        if not key or len(key) > 200:
+            raise ValidationError("idempotency_key is required")
+        scope = f"{self.principal.account_id}\0{self.principal.principal_id}\0{key}"
+        batch_id = f"undo-{hashlib.sha256(scope.encode()).hexdigest()[:32]}"
+        action = {"id": f"{batch_id}-0", "command": AgentCommand.UNDO_LAST.value, "payload": {}, "confidence": 1.0,
+                  "unresolved_fields": [], "expected_version": None, "requires_confirmation": False, "depends_on": [],
+                  "provenance": {"provider": "user-interface", "input": "undo-button", "fields": {}}}
+        now = self.canonical.clock.now()
+        with self.canonical._tx() as conn:
+            conn.execute(
+                "INSERT INTO assistant_batches(id,account_id,principal_id,input_hash,provider,redacted_input,actions_json,"
+                "created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                (batch_id, self.principal.account_id, self.principal.principal_id,
+                 hashlib.sha256(b"undo").hexdigest(), "user-interface", "", json.dumps([action], sort_keys=True),
+                 _iso(now), _iso(now + timedelta(minutes=30))),
+            )
+        return self.apply({"batch_id": batch_id, "action_ids": [action["id"]], "idempotency_key": key})
 
     def _edited(self, action: dict[str, Any], edit: dict[str, Any] | None) -> dict[str, Any]:
         """Apply the user's answers/corrections from the preview card, then re-validate.
@@ -1236,8 +1264,8 @@ class SQLiteAssistantService:
             outcome = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
                                now=self.canonical.clock.now()).task_create(
                 task_id, {key: value for key, value in data.items() if key != _RELATIVE})
-            return {"action_id": action["id"], "entity_id": task_id, "version": outcome.entity["version"],
-                    "status": outcome.entity["status"], "entity": outcome.entity}
+            return {"action_id": action["id"], "entity_id": task_id, "operation": "task.create", "outcome": outcome.status,
+                    "version": outcome.entity["version"], "status": outcome.entity["status"], "entity": outcome.entity}
         if command is AgentCommand.REFINE_TASK:
             entity = str(data["obligation_id"])
             task = self.canonical.update_task(**common, obligation_id=entity, expected_version=int(action["expected_version"]),
@@ -1384,49 +1412,77 @@ class SQLiteAssistantService:
             }}
         return None
 
-    def _undo_latest(self) -> dict[str, Any]:
+    # Where each inverse's entity keeps its optimistic version.
+    _VERSION_TABLES = {"reminder": ("reminders", "id"), "note": ("notes", "id"),
+                       "constraint": ("user_time_constraints", "id")}
+
+    def _current_version(self, operation: str, entity_id: str) -> int | None:
+        table, key = self._VERSION_TABLES.get(operation.split(".", 1)[0], ("obligations", "id"))
         row = self.canonical.connection.execute(
-            "SELECT * FROM assistant_action_history WHERE account_id=? AND principal_id=? "
+            f"SELECT version FROM {table} WHERE account_id=? AND {key}=?",  # fixed identifiers above
+            (self.principal.account_id, entity_id),
+        ).fetchone()
+        return None if row is None else int(row["version"])
+
+    @staticmethod
+    def _creation_inverse(action: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+        """Undoing a creation deletes exactly that item, and only while it is unchanged."""
+        operation = {
+            AgentCommand.CREATE_TASK.value: "task.delete", AgentCommand.CREATE_EVENT.value: "event.delete",
+            AgentCommand.CREATE_REMINDER.value: "reminder.delete", AgentCommand.CREATE_NOTE.value: "note.delete",
+            AgentCommand.CREATE_TIME_CONSTRAINT.value: "constraint.delete",
+        }.get(action["command"])
+        return None if operation is None else {"operation": operation, "payload": {}}
+
+    def _undo_latest(self) -> dict[str, Any]:
+        """Revert the most recent Assistant apply as a whole («отмени последнее», [Отменить]).
+
+        Every reversible action of that apply is reverted in reverse order inside the
+        caller's transaction. Each inverse runs only if its item is still at the
+        version the Assistant left it in; within the group, an earlier action on the
+        same item may build on the version this undo itself produced (they were one
+        transaction, so nothing else can sit between them). Any newer change anywhere
+        fails the whole undo instead of overwriting it.
+        """
+        latest = self.canonical.connection.execute(
+            "SELECT apply_idempotency_key FROM assistant_action_history WHERE account_id=? AND principal_id=? "
             "AND undone_at IS NULL ORDER BY id DESC LIMIT 1",
             (self.principal.account_id, self.principal.principal_id),
         ).fetchone()
-        if row is None:
+        if latest is None:
             raise ValidationError("there is no reversible Assistant action to undo")
-        inverse = json.loads(row["inverse_json"])
-        operation = str(inverse.get("operation") or "")
-        entity_id = str(row["entity_id"])
-        if operation.startswith("reminder."):
-            current = self.canonical.connection.execute(
-                "SELECT version FROM reminders WHERE account_id=? AND id=?",
-                (self.principal.account_id, entity_id),
-            ).fetchone()
-        else:
-            current = self.canonical.connection.execute(
-                "SELECT version FROM obligations WHERE account_id=? AND id=?",
-                (self.principal.account_id, entity_id),
-            ).fetchone()
-        if current is None or int(current["version"]) != int(row["committed_version"]):
-            raise VersionConflict("Assistant undo conflicts with a newer entity version")
+        rows = self.canonical.connection.execute(
+            "SELECT * FROM assistant_action_history WHERE account_id=? AND principal_id=? "
+            "AND apply_idempotency_key=? AND undone_at IS NULL ORDER BY sequence_index DESC, id DESC",
+            (self.principal.account_id, self.principal.principal_id, latest["apply_idempotency_key"]),
+        ).fetchall()
         from student_execution_os.sync.commands import APPLIED, NOOP, Commands
-        outcome = Commands(
-            self.canonical,
-            account_id=self.principal.account_id,
-            actor=ActorCategory.USER_VIA_LLM,
-            now=self.canonical.clock.now(),
-        ).run(operation, entity_id, dict(inverse.get("payload") or {}))
-        if outcome.status not in {APPLIED, NOOP}:
-            raise ValidationError(outcome.message or outcome.code or "Assistant undo was not applied")
-        self.canonical.connection.execute(
-            "UPDATE assistant_action_history SET undone_at=? WHERE id=? AND undone_at IS NULL",
-            (_iso(self.canonical.clock.now()), row["id"]),
-        )
-        result = {
-            "entity_id": entity_id,
-            "operation": operation,
-            "outcome": outcome.status,
-            "entity": outcome.entity,
-            "undid_action_id": row["action_id"],
-        }
-        if isinstance(outcome.entity, dict):
-            result.update(version=outcome.entity.get("version"), status=outcome.entity.get("status"))
-        return result
+        commands = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
+                            now=self.canonical.clock.now())
+        produced: dict[str, int] = {}
+        undone: list[dict[str, Any]] = []
+        for row in rows:
+            inverse = json.loads(row["inverse_json"])
+            operation = str(inverse.get("operation") or "")
+            entity_id = str(row["entity_id"])
+            expected = produced.get(entity_id, int(row["committed_version"]))
+            if self._current_version(operation, entity_id) != expected:
+                raise VersionConflict("Assistant undo conflicts with a newer entity version")
+            outcome = commands.run(operation, entity_id, dict(inverse.get("payload") or {}))
+            if outcome.status not in {APPLIED, NOOP}:
+                raise ValidationError(outcome.message or outcome.code or "Assistant undo was not applied")
+            self.canonical.connection.execute(
+                "UPDATE assistant_action_history SET undone_at=? WHERE id=? AND undone_at IS NULL",
+                (_iso(self.canonical.clock.now()), row["id"]),
+            )
+            after = self._current_version(operation, entity_id)
+            if after is not None:
+                produced[entity_id] = after
+            step = {"entity_id": entity_id, "operation": operation, "outcome": outcome.status,
+                    "entity": outcome.entity, "undid_action_id": row["action_id"]}
+            if isinstance(outcome.entity, dict):
+                step.update(version=outcome.entity.get("version"), status=outcome.entity.get("status"),
+                            deleted=bool(outcome.entity.get("deleted")))
+            undone.append(step)
+        # The latest action first, as before; the full list for a multi-action apply.
+        return {**undone[0], "undone": undone}

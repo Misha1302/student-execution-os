@@ -255,6 +255,41 @@ class MultiActionAcceptanceTest(AcceptanceBase):
                        "edits": {move["id"]: {"obligation_id": "ariadne", "expected_version": self.meeting().obligation.version}}})
         self.assertEqual(self.local(datetime.fromisoformat(self.created("Отчёт")["starts_at"])), "2026-10-01 19:00")
 
+    def apply_plan(self, service):
+        preview = service.interpret("план")
+        service.apply({"batch_id": preview["batch_id"], "action_ids": [a["id"] for a in preview["actions"]],
+                       "idempotency_key": "plan"})
+        return preview
+
+    def test_undo_button_reverts_the_whole_plan_including_the_created_item(self):
+        service = self.service(PlanProvider())
+        self.apply_plan(service)
+        self.assertIsNotNone(self.created("Отчёт"))
+        first = service.undo({"idempotency_key": "undo-1"})
+        steps = first["results"][0]["undone"]
+        self.assertEqual([step["operation"] for step in steps], ["event.delete", "event.update", "event.update"])
+        self.assertIsNone(self.created("Отчёт"))
+        self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-01 20:00")
+        self.assertIsNone(self.lead())
+        # A retried request (lost response) replays; it does not undo something else.
+        self.assertTrue(service.undo({"idempotency_key": "undo-1"})["replayed"])
+        with self.assertRaises(ValidationError):
+            service.undo({"idempotency_key": "undo-2"})  # nothing reversible is left
+
+    def test_undo_refuses_to_overwrite_a_later_change_and_reverts_nothing(self):
+        from student_execution_os.domain.errors import VersionConflict
+        from student_execution_os.sync.commands import Commands
+
+        service = self.service(PlanProvider())
+        self.apply_plan(service)
+        report = self.created("Отчёт")
+        Commands(self.repository, account_id="account", actor=ActorCategory.USER_UI, now=NOW).run(
+            "event.update", report["id"], {"title": "Отчёт по физике"})
+        with self.assertRaises(VersionConflict):
+            service.undo({"idempotency_key": "undo"})
+        self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-01 18:00")  # rolled back as a unit
+        self.assertEqual(self.lead(), 20)
+
     def test_reference_outside_depends_on_is_rejected(self):
         with self.assertRaises(ValidationError):
             self.service(PlanProvider(bad_reference=True)).interpret("план")

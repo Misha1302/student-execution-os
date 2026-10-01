@@ -112,6 +112,24 @@ class DailyProductApiTests(unittest.TestCase):
         diagnostics = self.client.get("/api/v1/settings/diagnostics").json()
         self.assertEqual(diagnostics["external_capabilities"]["fcm"], "UNCONFIGURED")
 
+    def test_assistant_undo_button_reverts_the_last_apply_once(self):
+        batch = self.client.post("/api/v1/assistant/interpret", json={"text": "task: Undo me 30 minutes"}).json()
+        applied = self.client.post("/api/v1/assistant/apply", json={
+            "batch_id": batch["batch_id"], "action_ids": [batch["actions"][0]["id"]],
+            "confirmed_action_ids": [], "idempotency_key": "assistant-undo-create",
+        })
+        self.assertEqual(applied.status_code, 200, applied.text)
+        task_id = applied.json()["results"][0]["entity_id"]
+        self.assertIn(task_id, [task["id"] for task in self.client.get("/api/v1/tasks").json()])
+        undone = self.client.post("/api/v1/assistant/undo", json={"idempotency_key": "undo-click-1"})
+        self.assertEqual(undone.status_code, 200, undone.text)
+        self.assertEqual(undone.json()["results"][0]["operation"], "task.delete")
+        self.assertNotIn(task_id, [task["id"] for task in self.client.get("/api/v1/tasks").json()])
+        replay = self.client.post("/api/v1/assistant/undo", json={"idempotency_key": "undo-click-1"})
+        self.assertTrue(replay.json()["replayed"])
+        nothing_left = self.client.post("/api/v1/assistant/undo", json={"idempotency_key": "undo-click-2"})
+        self.assertGreaterEqual(nothing_left.status_code, 400)
+
     def test_assistant_preview_apply_attachment_and_saved_view(self):
         preview = self.client.post("/api/v1/assistant/interpret", json={"text": "task: Read chapter 30 minutes"})
         self.assertEqual(preview.status_code, 200, preview.text)
