@@ -760,6 +760,12 @@ def build_parser() -> argparse.ArgumentParser:
         "llm-smoke",
         help="one real probe through the platform LLM credential and egress route (prints no secrets)",
     )
+    llm_eval = subparsers.add_parser(
+        "llm-eval",
+        help="opt-in live semantic corpus evaluation through the platform LLM",
+    )
+    llm_eval.add_argument("--corpus")
+    llm_eval.add_argument("--limit", type=int)
 
     account = subparsers.add_parser("account-init")
     account.add_argument("--database", required=True)
@@ -912,6 +918,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = platform_llm_smoke()
         print(json.dumps(report, sort_keys=True))
         return 0 if report["result"] == "OK" else 3 if report["result"] == "NOT_CONFIGURED" else 2
+
+    if args.command == "llm-eval":
+        from student_execution_os.agent.evaluation import evaluate_semantic_corpus, load_semantic_corpus
+        from student_execution_os.agent.providers import platform_provider_from_environment
+
+        provider = platform_provider_from_environment()
+        if provider is None:
+            print(json.dumps({"result": "NOT_CONFIGURED"}, sort_keys=True))
+            return 3
+        corpus = load_semantic_corpus(args.corpus) if args.corpus else load_semantic_corpus()
+        report = evaluate_semantic_corpus(provider, corpus, limit=args.limit)
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        total = sum(report["counts"].values())
+        return 0 if report["counts"].get("CORRECT", 0) == total else 2
 
     if args.command == "account-init":
         with SQLiteCanonicalRepository(args.database) as repo:

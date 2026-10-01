@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "ru-create-task-effort-deadline",
+      "capability": "creation",
+      "locale": "ru",
+      "turns": [{
+        "text": "К пятнице сдать лабораторную по физике, часа два, это важно",
+        "expected": {"kind": "ACTION", "command": "CREATE_TASK", "payload_subset": {"title": "Сдать лабораторную по физике", "estimated_total_effort_minutes": 120, "importance": "HIGH"}}
+      }]
+    },
+    {
+      "id": "ru-create-event-reminder",
+      "capability": "field_extraction",
+      "locale": "ru",
+      "turns": [{
+        "text": "Завтра в шесть созвон с Ариадной на полчаса, напомни за 50 минут",
+        "expected": {"kind": "ACTION", "command": "CREATE_EVENT", "payload_subset": {"title": "Созвон с Ариадной", "duration_minutes": 30, "remind_before_minutes": 50}}
+      }]
+    },
+    {
+      "id": "ru-create-reminder",
+      "capability": "creation",
+      "locale": "ru",
+      "turns": [{
+        "text": "Напомни через 50 минут выключить духовку",
+        "expected": {"kind": "ACTION", "command": "CREATE_REMINDER", "payload_subset": {"title": "Выключить духовку"}}
+      }]
+    },
+    {
+      "id": "ru-create-note",
+      "capability": "creation",
+      "locale": "ru",
+      "turns": [{
+        "text": "Идея для курсовой: расписание как граф",
+        "expected": {"kind": "ACTION", "command": "CREATE_NOTE", "payload_subset": {"content": "Идея для курсовой: расписание как граф"}}
+      }]
+    },
+    {
+      "id": "ru-update-title",
+      "capability": "update",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
+      "turns": [{
+        "text": "Переименуй встречу с Ариадной в созвон по проекту",
+        "expected": {"kind": "ACTION", "command": "UPDATE_EVENT", "target": {"obligation_id": "event-ariadne"}, "payload_subset": {"title": "Созвон по проекту"}}
+      }]
+    },
+    {
+      "id": "ru-relative-reschedule",
+      "capability": "relative_reschedule",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
+      "turns": [{
+        "text": "Перенеси встречу с Ариадной на три часа позже",
+        "expected": {"kind": "ACTION", "command": "RESCHEDULE", "target": {"obligation_id": "event-ariadne"}, "payload_subset": {"temporal_transform": {"kind": "RELATIVE_SHIFT", "delta_minutes": 180}}}
+      }]
+    },
+    {
+      "id": "ru-conditional-reschedule",
+      "capability": "conditional_reschedule",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T20:00:00+03:00"}]},
+      "turns": [{
+        "text": "Перенеси встречу с Ариадной на три часа позже. Но если позже 22:00, то завтра утром, часов на 10 примерно.",
+        "expected": {"kind": "ACTION", "command": "RESCHEDULE", "target": {"obligation_id": "event-ariadne"}, "payload_subset": {"temporal_transform": {"kind": "SHIFT_WITH_GUARD_AND_FALLBACK", "delta_minutes": 180, "guard": {"not_after_local_time": "22:00"}, "fallback": {"relative_day": "NEXT_MORNING", "preferred_local_time": "10:00", "precision": "APPROXIMATE"}}}}
+      }]
+    },
+    {
+      "id": "ru-approximate-event-time",
+      "capability": "approximate_time",
+      "locale": "ru",
+      "turns": [{
+        "text": "В субботу встреча с Димой часов в десять, примерно на два часа",
+        "expected": {"kind": "ACTION", "command": "CREATE_EVENT", "payload_subset": {"title": "Встреча с Димой", "duration_minutes": 120}}
+      }]
+    },
+    {
+      "id": "ru-start-is-not-deadline",
+      "capability": "field_extraction",
+      "locale": "ru",
+      "turns": [{
+        "text": "В субботу утром начать готовиться к экзамену, часа три",
+        "expected": {"kind": "ACTION", "command": "CREATE_TASK", "payload_subset": {"title": "Готовиться к экзамену", "estimated_total_effort_minutes": 180}}
+      }]
+    },
+    {
+      "id": "ru-target-ambiguity",
+      "capability": "target_ambiguity",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-a", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 1, "starts_at": "2026-10-02T18:00:00+03:00"}, {"id": "event-b", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 2, "starts_at": "2026-10-04T16:00:00+03:00"}]},
+      "turns": [{
+        "text": "Перенеси встречу с Ариадной на семь",
+        "expected": {"kind": "ACTION", "command": "RESCHEDULE", "payload_subset": {"target_text": "встреча с Ариадной"}}
+      }]
+    },
+    {
+      "id": "ru-multi-turn-correction",
+      "capability": "multi_turn",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
+      "turns": [
+        {"text": "Перенеси встречу с Ариадной на завтра", "expected": {"kind": "ACTION", "command": "RESCHEDULE", "target": {"obligation_id": "event-ariadne"}}},
+        {"text": "Нет, на час раньше", "expected": {"kind": "ACTION", "command": "RESCHEDULE", "target": {"obligation_id": "event-ariadne"}}},
+        {"text": "И напомни за полчаса", "expected": {"kind": "ACTION", "command": "UPDATE_EVENT", "target": {"obligation_id": "event-ariadne"}, "payload_subset": {"remind_before_minutes": 30}}}
+      ]
+    },
+    {
+      "id": "ru-pronoun-resolution",
+      "capability": "multi_turn",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
+      "turns": [
+        {"text": "Найди встречу с Ариадной", "expected": {"kind": "ACTION", "command": "UPDATE_EVENT", "target": {"obligation_id": "event-ariadne"}}},
+        {"text": "Перенеси её на пятницу", "expected": {"kind": "ACTION", "command": "RESCHEDULE", "target": {"obligation_id": "event-ariadne"}}}
+      ]
+    },
+    {
+      "id": "ru-voice-name-correction",
+      "capability": "voice_correction",
+      "locale": "ru",
+      "turns": [
+        {"text": "Завтра созвон с Арианой в шесть", "expected": {"kind": "ACTION", "command": "CREATE_EVENT", "payload_subset": {"title": "Созвон с Арианой"}}},
+        {"text": "Нет, с Ариадной", "expected": {"kind": "ACTION", "command": "CREATE_EVENT", "payload_subset": {"title": "Созвон с Ариадной"}}}
+      ]
+    },
+    {
+      "id": "en-voice-time-correction",
+      "capability": "voice_correction",
+      "locale": "en",
+      "turns": [
+        {"text": "Call Ariadne tomorrow at six", "expected": {"kind": "ACTION", "command": "CREATE_EVENT", "payload_subset": {"title": "Call Ariadne"}}},
+        {"text": "Actually make it seven thirty", "expected": {"kind": "ACTION", "command": "CREATE_EVENT", "payload_subset": {"title": "Call Ariadne"}}}
+      ]
+    },
+    {
+      "id": "ru-multi-action-dependent",
+      "capability": "multi_action",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
+      "turns": [{
+        "text": "Перенеси встречу на шесть, напомни о ней за двадцать минут, а после неё поставь час на отчёт",
+        "expected": {"output_subset": {"intent": "ACTION_PLAN"}}
+      }]
+    },
+    {
+      "id": "ru-read-evening",
+      "capability": "read_query",
+      "locale": "ru",
+      "turns": [{
+        "text": "Что у меня сегодня вечером?",
+        "expected": {"output_subset": {"intent": "READ", "query": {"kind": "AGENDA_WINDOW"}}}
+      }]
+    },
+    {
+      "id": "ru-read-why-scheduled",
+      "capability": "read_query",
+      "locale": "ru",
+      "turns": [{
+        "text": "Почему эта задача стоит сегодня?",
+        "expected": {"output_subset": {"intent": "READ", "query": {"kind": "PLAN_EXPLANATION"}}}
+      }]
+    },
+    {
+      "id": "ru-planner-constraint",
+      "capability": "planner_constraint",
+      "locale": "ru",
+      "turns": [{
+        "text": "Завтра ничего до 12 и оставь вечером хотя бы час свободным",
+        "expected": {"output_subset": {"intent": "PLANNER_CONSTRAINT"}}
+      }]
+    },
+    {
+      "id": "ru-destructive-cancel",
+      "capability": "destructive_action",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
+      "turns": [{
+        "text": "Отмени встречу с Ариадной",
+        "expected": {"kind": "ACTION", "command": "CANCEL_OBLIGATION", "target": {"obligation_id": "event-ariadne"}}
+      }]
+    },
+    {
+      "id": "ru-undo-last",
+      "capability": "undo",
+      "locale": "ru",
+      "turns": [{
+        "text": "Отмени последнее изменение",
+        "expected": {"output_subset": {"intent": "UNDO_LAST_ASSISTANT_ACTION"}}
+      }]
+    },
+    {
+      "id": "ru-unsupported-financial",
+      "capability": "unsupported_intent",
+      "locale": "ru",
+      "turns": [{
+        "text": "Переведи деньги преподавателю",
+        "expected": {"output_subset": {"intent": "UNSUPPORTED"}}
+      }]
+    }
+  ]
+}
