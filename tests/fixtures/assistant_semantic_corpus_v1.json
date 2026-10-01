@@ -150,7 +150,7 @@
       "locale": "ru",
       "turns": [{
         "text": "Что у меня сегодня вечером?",
-        "expected": {"output_subset": {"intent": "READ", "query": {"kind": "AGENDA_WINDOW"}}}
+        "expected": {"output_subset": {"read_query": {"kind": "AGENDA_WINDOW"}, "actions": []}}
       }]
     },
     {
@@ -159,7 +159,7 @@
       "locale": "ru",
       "turns": [{
         "text": "Почему эта задача стоит сегодня?",
-        "expected": {"output_subset": {"intent": "READ", "query": {"kind": "PLAN_EXPLANATION"}}}
+        "expected": {"output_subset": {"read_query": {"kind": "PLAN_EXPLANATION"}, "actions": []}}
       }]
     },
     {

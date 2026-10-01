@@ -25,6 +25,7 @@ from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
+from .read import SQLiteAssistantReadService
 from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
 from .semantic import TemporalPrecision, resolve_temporal_transform
 
@@ -90,6 +91,9 @@ class DeterministicAssistantParser:
                 command["payload"] = {"obligation_id": command["payload"].pop("target_text"), **command["payload"]}
                 command["unresolved_fields"].append("expected_version")
             return [command]
+        first_word = clean.casefold().split(" ", 1)[0].rstrip("?,")
+        if first_word in {"что", "когда", "сколько", "какие", "почему", "what", "when", "why", "which"}:
+            raise ValidationError("read question needs a typed assistant read query")
         if context.get("assistant_session"):
             raise ValidationError("conversational follow-up needs the language model")
         # Everyday phrasing ("в пятницу к шести сдать лабу, часа два, важно").
@@ -538,6 +542,7 @@ class SQLiteAssistantService:
                   degrade_invalid: bool = False) -> dict[str, object]:
         started = perf_counter()
         self.reliability_trace = ReliabilityTrace()
+        self.provider_failure = None
         try:
             result = self._interpret(text, context, degrade_invalid=degrade_invalid)
         except (ProviderUnavailable, ValidationError) as exc:
@@ -561,22 +566,43 @@ class SQLiteAssistantService:
         if len(str(text)) > 4000:
             raise ValidationError("assistant input is longer than 4000 characters")
         server_context = self._context(context if isinstance(context, dict) else {})
-        self.provider_failure: ProviderUnavailable | None = None
         local = isinstance(self.provider, DeterministicAssistantParser)
         try:
-            provider_name, message, actions = self._propose(self.provider, text, server_context)
+            provider_name, message, actions, read_result = self._propose(self.provider, text, server_context)
         except ProviderUnavailable as exc:
             # Provider outage (or a rejected key) degrades to the local parser instead
             # of failing the user; the reason code tells the client why.
             self.provider_failure = exc
-            provider_name, message, actions = self._local(text, server_context)
+            provider_name, message, actions, read_result = self._local(text, server_context)
         except ValidationError as exc:
             if local or not degrade_invalid:
                 raise
             self.provider_failure = ProviderUnavailable(str(exc), "INVALID_PROPOSAL")
-            provider_name, message, actions = self._local(text, server_context)
+            provider_name, message, actions, read_result = self._local(text, server_context)
         fallback = self.provider_failure is not None
         now = self.canonical.clock.now()
+        if read_result is not None:
+            return {
+                "batch_id": None,
+                "provider": provider_name,
+                "fallback": fallback,
+                "engine": "LOCAL" if local or fallback else "AI",
+                "model": None if local or fallback else getattr(self.provider, "model", None),
+                "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
+                "retry_after_seconds": getattr(self.provider_failure, "retry_after", None),
+                "reliability": {
+                    "attempts": self.reliability_trace.attempts,
+                    "retries": self.reliability_trace.retries,
+                    "repair_attempted": self.reliability_trace.repair_attempted,
+                    "repair_succeeded": self.reliability_trace.repair_succeeded,
+                },
+                "message": message,
+                "actions": [],
+                "read": read_result,
+                "created_at": _iso(now),
+                "expires_at": None,
+                "mutated_canonical_state": False,
+            }
         batch_id = str(uuid4())
         redacted = re.sub(r"\b[\w.+-]+@[\w.-]+\b", "[email]", text)[:2000]
         digest = hashlib.sha256(text.encode()).hexdigest()
@@ -616,7 +642,8 @@ class SQLiteAssistantService:
         metrics = SQLiteOperationalMetrics(self.canonical)
         provider = getattr(self.provider, "name", "unknown")
         reason = (
-            error.reason if isinstance(error, ProviderUnavailable)
+            self.provider_failure.reason if error is not None and self.provider_failure is not None
+            else error.reason if isinstance(error, ProviderUnavailable)
             else sanitized_validation_feedback(error) if error is not None
             else result.get("fallback_reason") if result is not None
             else None
@@ -674,14 +701,14 @@ class SQLiteAssistantService:
                     dimensions={"provider": provider},
                 )
 
-    def _local(self, text: str, context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+    def _local(self, text: str, context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         try:
             return self._propose(DeterministicAssistantParser(), text, context)
         except ValidationError:
             raise ValidationError("the language model is unavailable and the local parser did not understand the input") from None
 
     def _propose(self, provider: AssistantProvider, text: str,
-                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         """Ask one provider and validate every action it proposes (nothing is stored)."""
         try:
             interpretation = self.reliability_policy.run(
@@ -709,17 +736,26 @@ class SQLiteAssistantService:
             return result
 
     def _validate_interpretation(self, provider: AssistantProvider, interpretation: object, text: str,
-                                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+                                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         if isinstance(interpretation, dict):
             raw_actions = interpretation.get("actions")
+            raw_read = interpretation.get("read_query")
             assistant_message = str(interpretation.get("message") or "")[:2000]
         else:
             raw_actions = interpretation
+            raw_read = None
             assistant_message = "I prepared a structured preview. Review it before applying."
         if not isinstance(raw_actions, list):
             raise ValidationError("assistant provider returned an invalid actions list")
         if len(raw_actions) > 10:
             raise ValidationError("assistant proposed too many actions")
+        if raw_read is not None:
+            if raw_actions:
+                raise ValidationError("assistant response cannot mix read query and mutations")
+            read_result = SQLiteAssistantReadService(
+                self.canonical, self.principal.account_id,
+            ).execute(raw_read)
+            return provider.name, assistant_message, [], read_result
         raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
         raw_actions, preserved = self._preserve_previous_user_edits(raw_actions, context)
         actions = []
@@ -748,7 +784,7 @@ class SQLiteAssistantService:
             actions[-1]["provenance"]["fields"].update(
                 {field: "USER_EDIT" for field in preserved.get(index, set())}
             )
-        return provider.name, assistant_message, actions
+        return provider.name, assistant_message, actions, None
 
     @staticmethod
     def _preserve_previous_user_edits(

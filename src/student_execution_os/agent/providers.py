@@ -35,13 +35,21 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}]}
+{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
 semantic turn. Resolve pronouns and corrections against it; do not create a new item
 unless the latest user text explicitly asks for one. Fields marked USER_EDIT remain
 unchanged unless the latest text explicitly corrects that same field.
+For a factual question return actions=[] and one read_query. Never answer from general
+knowledge and never invent planner reasons. Allowed read_query shapes are:
+  {kind:"AGENDA_WINDOW",starts_at,ends_at}; {kind:"FREE_TIME",starts_at,ends_at};
+  {kind:"ITEM_LOOKUP",obligation_id|reminder_id}; {kind:"DUE_BEFORE",before};
+  {kind:"URGENT_TASKS"}; {kind:"WHAT_NOW"};
+  {kind:"PLAN_EXPLANATION",obligation_id}.
+The server executes these typed read queries against authorized canonical state. Do not
+write SQL or include an identifier that is absent from context.
 CREATE_NOTE payload: {content}: an idea, reference or unstructured note, not scheduled work.
 Preserve meaningful newlines in notes. Example: "Идея для курсовой: расписание как граф".
 CREATE_TASK payload (omit what the user did not say; no other keys are accepted):
@@ -107,6 +115,7 @@ _TOP_LEVEL_SCHEMA = {
         "required": ["message", "actions"],
         "properties": {
             "message": {"type": "string"},
+            "read_query": {"type": ["object", "null"], "additionalProperties": True},
             "actions": {
                 "type": "array",
                 "maxItems": 10,
