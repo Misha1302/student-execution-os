@@ -17,6 +17,7 @@ class ReliabilityTrace:
     retries: int = 0
     repair_attempted: bool = False
     repair_succeeded: bool = False
+    repair_reason: str | None = None
 
 
 @dataclass(frozen=True)

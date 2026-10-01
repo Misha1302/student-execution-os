@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,6 +19,7 @@ from student_execution_os.domain.model import (
     ObligationCategory,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
+from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
@@ -493,6 +495,18 @@ class SQLiteAssistantService:
 
     def interpret(self, text: str, context: dict[str, object] | None = None, *,
                   degrade_invalid: bool = False) -> dict[str, object]:
+        started = perf_counter()
+        self.reliability_trace = ReliabilityTrace()
+        try:
+            result = self._interpret(text, context, degrade_invalid=degrade_invalid)
+        except (ProviderUnavailable, ValidationError) as exc:
+            self._record_interpret_metrics(started, error=exc)
+            raise
+        self._record_interpret_metrics(started, result=result)
+        return result
+
+    def _interpret(self, text: str, context: dict[str, object] | None = None, *,
+                   degrade_invalid: bool = False) -> dict[str, object]:
         """Interpret ``text`` into a stored, expiring preview batch.
 
         A provider outage (or a refused key, an unsupported model, a non-JSON answer)
@@ -551,6 +565,74 @@ class SQLiteAssistantService:
                 "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 
+    def _record_interpret_metrics(
+        self,
+        started: float,
+        *,
+        result: dict[str, object] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        metrics = SQLiteOperationalMetrics(self.canonical)
+        provider = getattr(self.provider, "name", "unknown")
+        reason = (
+            error.reason if isinstance(error, ProviderUnavailable)
+            else sanitized_validation_feedback(error) if error is not None
+            else result.get("fallback_reason") if result is not None
+            else None
+        )
+        engine = str(result.get("engine")) if result is not None else "NONE"
+        dimensions = {"engine": engine, "provider": provider, "reason": reason or "NONE"}
+        metrics.record(
+            "assistant_interpretation_count",
+            account_id=self.principal.account_id,
+            dimensions={**dimensions, "result": "ERROR" if error is not None else "OK"},
+        )
+        metrics.record(
+            "assistant_interpretation_latency_ms",
+            (perf_counter() - started) * 1000,
+            account_id=self.principal.account_id,
+            dimensions=dimensions,
+        )
+        if reason and reason != "NONE":
+            metrics.record(
+                "assistant_provider_failure_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "reason": reason},
+            )
+        if result is not None and result.get("fallback"):
+            metrics.record(
+                "assistant_local_fallback_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "reason": reason or "UNKNOWN"},
+            )
+        structured_reason = self.reliability_trace.repair_reason or (
+            reason if reason in {"FORMAT", "INVALID_PROPOSAL", "JSON_SCHEMA", "ACTION_SCHEMA"} else None
+        )
+        if structured_reason:
+            metrics.record(
+                "assistant_structured_output_failure_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "reason": structured_reason},
+            )
+        if self.reliability_trace.repair_attempted:
+            metrics.record(
+                "assistant_repair_attempt_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "succeeded": self.reliability_trace.repair_succeeded},
+            )
+        if result is not None:
+            ambiguous = sum(
+                1 for action in result.get("actions", [])
+                if isinstance(action, dict) and _target_unresolved(action.get("unresolved_fields") or [])
+            )
+            if ambiguous:
+                metrics.record(
+                    "assistant_target_ambiguity_count",
+                    ambiguous,
+                    account_id=self.principal.account_id,
+                    dimensions={"provider": provider},
+                )
+
     def _local(self, text: str, context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
         try:
             return self._propose(DeterministicAssistantParser(), text, context)
@@ -574,6 +656,7 @@ class SQLiteAssistantService:
                 raise
             self.reliability_trace.repair_attempted = True
             feedback = sanitized_validation_feedback(exc)
+            self.reliability_trace.repair_reason = feedback
             try:
                 interpretation = self.reliability_policy.run(
                     lambda: repair(text, context, feedback), trace=self.reliability_trace,
@@ -714,6 +797,16 @@ class SQLiteAssistantService:
                 "INSERT INTO assistant_apply_records(account_id,principal_id,idempotency_key,request_hash,result_json,created_at) VALUES (?,?,?,?,?,?)",
                 (self.principal.account_id, self.principal.principal_id, key, request_hash,
                  json.dumps(result, sort_keys=True), _iso(self.canonical.clock.now())),
+            )
+        if edits:
+            SQLiteOperationalMetrics(self.canonical).record(
+                "assistant_user_correction_count",
+                account_id=self.principal.account_id,
+                dimensions={
+                    "provider": str(row["provider"]),
+                    "action_count": len(edits),
+                    "field_count": sum(len(value) for value in edits.values()),
+                },
             )
         return result
 

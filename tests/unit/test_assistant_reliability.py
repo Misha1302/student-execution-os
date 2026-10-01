@@ -94,11 +94,49 @@ class AssistantReliabilityTest(unittest.TestCase):
                 result = SQLiteAssistantService(
                     repository, AuthenticatedPrincipal("account", "user", "client"), provider=provider,
                 ).interpret("Essay")
+                metric_names = {
+                    row["metric_name"]
+                    for row in repository.connection.execute(
+                        "SELECT metric_name FROM operational_metrics WHERE account_id='account'"
+                    )
+                }
         self.assertEqual(provider.feedback, "UNKNOWN_FIELD")
         self.assertEqual(result["reliability"], {
             "attempts": 2, "retries": 0, "repair_attempted": True, "repair_succeeded": True,
         })
         self.assertEqual(result["actions"][0]["provenance"]["fields"]["title"], "MODEL_EXPLICIT")
+        self.assertIn("assistant_interpretation_count", metric_names)
+        self.assertIn("assistant_interpretation_latency_ms", metric_names)
+        self.assertIn("assistant_repair_attempt_count", metric_names)
+        self.assertIn("assistant_structured_output_failure_count", metric_names)
+
+    def test_provider_failure_and_local_fallback_have_payload_free_metrics(self):
+        class Provider:
+            name = "network-fixture"
+            model = "fixture"
+
+            def interpret(self, text, context):
+                raise ProviderUnavailable("private upstream detail", "NETWORK")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with SQLiteCanonicalRepository(
+                str(Path(directory) / "fallback.sqlite"),
+                clock=FrozenClock(datetime(2026, 10, 2, tzinfo=timezone.utc)),
+            ) as repository:
+                repository.initialize()
+                repository.create_account("account")
+                result = SQLiteAssistantService(
+                    repository, AuthenticatedPrincipal("account", "user", "client"), provider=Provider(),
+                    reliability_policy=ReliabilityPolicy(base_delay_seconds=0),
+                ).interpret("Задача: Секретный отчёт, 15 min")
+                rows = repository.connection.execute(
+                    "SELECT metric_name,dimensions_json FROM operational_metrics WHERE account_id='account'"
+                ).fetchall()
+        self.assertEqual((result["engine"], result["fallback_reason"]), ("LOCAL", "NETWORK"))
+        names = {row["metric_name"] for row in rows}
+        self.assertIn("assistant_provider_failure_count", names)
+        self.assertIn("assistant_local_fallback_count", names)
+        self.assertNotIn("Секретный", str([(row["metric_name"], row["dimensions_json"]) for row in rows]))
 
 
 if __name__ == "__main__":
