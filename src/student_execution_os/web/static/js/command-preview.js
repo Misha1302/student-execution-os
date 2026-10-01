@@ -59,7 +59,12 @@ function describe(action, item) {
     case 'COMPLETE_OBLIGATION': return t(item?.kind === 'REMINDER' ? 'cmd.completeReminder' : 'cmd.complete', { title });
     case 'CANCEL_OBLIGATION': return t(item?.kind === 'EVENT' ? 'cmd.cancelEvent' : item?.kind === 'REMINDER' ? 'cmd.cancelReminder' : 'cmd.cancel', { title });
     case 'ARCHIVE_OBLIGATION': return t('cmd.archive', { title });
-    case 'RESCHEDULE': return p.when ? t(p.keep_time ? 'cmd.rescheduleDay' : 'cmd.reschedule', { title, when: when(p.when) }) : t('cmd.rescheduleWhen', { title });
+    case 'RESCHEDULE': {
+      if (!p.when) return t('cmd.rescheduleWhen', { title });
+      const resolved = action.resolution?.precision === 'APPROXIMATE'
+        ? t('cmd.approximateTime', { when: when(p.when) }) : when(p.when);
+      return t(p.keep_time ? 'cmd.rescheduleDay' : 'cmd.reschedule', { title, when: resolved });
+    }
     case 'SNOOZE': return t('cmd.snooze', { title, when: when(p.until) });
     case 'LOG_PROGRESS': return p.count ? t('cmd.progressCount', { title, n: p.count }) : t('cmd.progress', { title, d: fmtDuration(p.minutes) });
     case 'UPDATE_TASK': case 'UPDATE_EVENT': case 'UPDATE_REMINDER': return t('cmd.update', { title });

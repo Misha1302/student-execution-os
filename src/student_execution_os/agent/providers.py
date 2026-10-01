@@ -71,8 +71,14 @@ reminder_id (from context.reminders) and expected_version (that item's "version"
   UPDATE_EVENT {obligation_id, title?, starts_at?, ends_at?, remind_before_minutes?}
   UPDATE_REMINDER {reminder_id, title?, remind_at?, delivery?}
   RESCHEDULE {obligation_id|reminder_id, when: ISO instant, keep_time?: true when only a day
-    was said} — "перенеси X на завтра": a task's deadline moves (or it is put off), an
-    event's start moves (length kept), a reminder's moment moves
+    was said, or temporal_transform} — "перенеси X на завтра": a task's deadline moves
+    (or it is put off), an event's start moves (length kept), a reminder's moment moves.
+    For a relative request with a guard and fallback, do not calculate the final timestamp.
+    Use temporal_transform: {kind:"SHIFT_WITH_GUARD_AND_FALLBACK",delta_minutes,
+    guard:{not_after_local_time:"HH:MM"},fallback:{relative_day:"NEXT_MORNING",
+    preferred_local_time:"HH:MM",precision:"EXACT"|"APPROXIMATE"}}. For an unguarded
+    shift use {kind:"RELATIVE_SHIFT",delta_minutes}. The server resolves it against the
+    current entity, timezone and duration.
   SNOOZE {obligation_id|reminder_id, until} — "напомни про X через час"
   LOG_PROGRESS {obligation_id, minutes? | count?} — "поработал над X 30 минут", "сделал 3 задачи"
   COMPLETE_OBLIGATION {obligation_id|reminder_id}; CANCEL_OBLIGATION {obligation_id|reminder_id}

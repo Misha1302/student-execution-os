@@ -1322,6 +1322,7 @@ export default {
   'cmd.reschedule': 'Move “{title}” to {when}',
   'cmd.rescheduleDay': 'Move “{title}” to {when} (same time of day)',
   'cmd.rescheduleWhen': 'Move “{title}” — but to when?',
+  'cmd.approximateTime': 'around {when}',
   'cmd.snooze': 'Remind me about “{title}” {when}',
   'cmd.progress': 'Log progress on “{title}”: {d}',
   'cmd.progressCount': 'Log progress on “{title}”: +{n}',

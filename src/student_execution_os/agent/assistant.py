@@ -23,6 +23,7 @@ from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
+from .semantic import TemporalPrecision, resolve_temporal_transform
 
 
 COMMANDS = {command.value for command in AgentCommand}
@@ -153,7 +154,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.UPDATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "remind_before_minutes",
                                       "attendance_policy"} | _TARGET,
     AgentCommand.UPDATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume"} | _TARGET,
-    AgentCommand.RESCHEDULE.value: {"when", "keep_time"} | _TARGET,
+    AgentCommand.RESCHEDULE.value: {"when", "keep_time", "temporal_transform"} | _TARGET,
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
 }
 _REQUIRED = {
@@ -162,7 +163,6 @@ _REQUIRED = {
     AgentCommand.CREATE_EVENT.value: ("title", "starts_at", "ends_at"),
     AgentCommand.CREATE_REMINDER.value: ("title", "remind_at"),
     AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
-    AgentCommand.RESCHEDULE.value: ("when",),
     AgentCommand.SNOOZE.value: ("until",),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
@@ -191,7 +191,8 @@ def _positive_minutes(value: object, field: str, *, allow_none: bool = False) ->
         raise ValidationError(f"assistant proposal {field} must be a positive whole number of minutes")
 
 
-def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account_id: str) -> dict[str, Any]:
+def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account_id: str, *,
+                      timezone_name: str | None = None) -> dict[str, Any]:
     """Validate one provider action against the command schema and canonical state.
 
     Anything a model could get wrong — unknown commands or fields, wrong types,
@@ -282,9 +283,16 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if isinstance(payload["remind_before_minutes"], bool) or not isinstance(payload["remind_before_minutes"], int) \
                 or not 0 <= payload["remind_before_minutes"] <= 1440:
             raise ValidationError("assistant remind_before_minutes must be 0-1440")
+    resolution: dict[str, str] | None = None
     if command == AgentCommand.RESCHEDULE.value:
+        if payload.get("when") is None and payload.get("temporal_transform") is None and "when" not in unresolved:
+            raise ValidationError("assistant RESCHEDULE payload needs when or temporal_transform")
+        if payload.get("when") is not None and payload.get("temporal_transform") is not None:
+            raise ValidationError("assistant RESCHEDULE must use when or temporal_transform, not both")
         if payload.get("when") is not None:
-            _instant(payload["when"], "when")
+            resolved_when = _instant(payload["when"], "when")
+            resolution = {"when": _iso(resolved_when), "precision": TemporalPrecision.EXACT.value,
+                          "reason": "EXACT_USER_OR_MODEL_TIME"}
         if "keep_time" in payload and not isinstance(payload["keep_time"], bool):
             raise ValidationError("assistant keep_time must be a boolean")
     if command == AgentCommand.SNOOZE.value and payload.get("until") is not None:
@@ -306,9 +314,22 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if canonical.connection.execute("SELECT 1 FROM obligations WHERE account_id=? AND id=?",
                                         (account_id, str(payload["obligation_id"]))).fetchone() is None:
             raise ValidationError("assistant proposal references an unknown obligation")
-    return {"command": command, "payload": payload, "confidence": confidence,
+    if command == AgentCommand.RESCHEDULE.value and payload.get("temporal_transform") is not None and not _target_unresolved(unresolved):
+        target = target_of(canonical, account_id, payload)
+        assert target is not None
+        current = _target_moment(canonical, account_id, target[0], target[1])
+        from student_execution_os.reminders import ReminderStore
+        zone = timezone_name or ReminderStore(canonical).prefs(account_id).timezone_name
+        resolved = resolve_temporal_transform(payload["temporal_transform"], current=current, timezone_name=zone)
+        payload["when"] = _iso(resolved.when)
+        resolution = {"when": _iso(resolved.when), "precision": resolved.precision.value,
+                      "reason": resolved.reason, "timezone": zone}
+    result = {"command": command, "payload": payload, "confidence": confidence,
             "unresolved_fields": list(unresolved), "expected_version": expected,
             "requires_confirmation": raw["requires_confirmation"]}
+    if resolution is not None:
+        result["resolution"] = resolution
+    return result
 
 
 def _instant(value: object, field: str) -> datetime:
@@ -331,6 +352,27 @@ def target_of(canonical: SQLiteCanonicalRepository, account_id: str, payload: di
                                            (account_id, str(payload["obligation_id"]))).fetchone()
         return None if row is None else (row["kind"], str(payload["obligation_id"]), int(row["version"]))
     return None
+
+
+def _target_moment(canonical: SQLiteCanonicalRepository, account_id: str, kind: str, entity_id: str) -> datetime:
+    if kind == "EVENT":
+        return canonical.get_event(account_id, entity_id).interval.starts_at
+    if kind == "REMINDER":
+        row = canonical.connection.execute(
+            "SELECT remind_at FROM reminders WHERE account_id=? AND id=?", (account_id, entity_id),
+        ).fetchone()
+        if row is not None:
+            return _dt(row["remind_at"])
+    if kind == "TASK":
+        row = canonical.connection.execute(
+            "SELECT actual_cutoff_at,actionable_from,target_at FROM tasks WHERE account_id=? AND obligation_id=?",
+            (account_id, entity_id),
+        ).fetchone()
+        if row is not None:
+            for field in ("actual_cutoff_at", "actionable_from", "target_at"):
+                if row[field]:
+                    return _dt(row[field])
+    raise ValidationError("assistant cannot shift an item without a current time")
 
 
 def _validate_target(command: str, payload: dict[str, Any], unresolved: list[str], expected: object,
@@ -515,7 +557,8 @@ class SQLiteAssistantService:
         raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
         actions = []
         for raw in raw_actions:
-            clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+            clean = validate_proposal(raw, self.canonical, self.principal.account_id,
+                                      timezone_name=str(context.get("timezone") or "UTC"))
             actions.append({
                 "id": str(uuid4()), **clean,
                 "provenance": {"provider": provider.name, "input": "user-authored-text"},
@@ -636,6 +679,8 @@ class SQLiteAssistantService:
         if "expected_version" in edit:
             raw["expected_version"] = edit.pop("expected_version")
         payload = {**action["payload"], **edit}
+        if payload.get("temporal_transform") is not None:
+            payload.pop("when", None)  # server-derived; recompute after the user's edit
         picked = "obligation_id" in edit or "reminder_id" in edit
         if picked:
             # The user chose which item the command is about.
@@ -651,7 +696,10 @@ class SQLiteAssistantService:
         raw["payload"] = payload
         raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit
                                     and not (picked and field in {"target", "obligation_id", "reminder_id", "expected_version"})]
-        clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+        clean = validate_proposal(
+            raw, self.canonical, self.principal.account_id,
+            timezone_name=str((action.get("resolution") or {}).get("timezone") or "") or None,
+        )
         return {**action, **clean, "requires_confirmation": action["requires_confirmation"]}
 
     def _execute(self, action: dict[str, object]) -> dict[str, object]:

@@ -1322,6 +1322,7 @@ export default {
   'cmd.reschedule': 'Перенести «{title}» на {when}',
   'cmd.rescheduleDay': 'Перенести «{title}» на {when} (время остаётся прежним)',
   'cmd.rescheduleWhen': 'Перенести «{title}» — но когда?',
+  'cmd.approximateTime': 'примерно {when}',
   'cmd.snooze': 'Напомнить про «{title}» {when}',
   'cmd.progress': 'Отметить прогресс по «{title}»: {d}',
   'cmd.progressCount': 'Отметить прогресс по «{title}»: +{n}',
