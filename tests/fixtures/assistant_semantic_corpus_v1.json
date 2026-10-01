@@ -187,7 +187,7 @@
       "locale": "ru",
       "turns": [{
         "text": "Отмени последнее изменение",
-        "expected": {"output_subset": {"intent": "UNDO_LAST_ASSISTANT_ACTION"}}
+        "expected": {"kind": "ACTION", "command": "UNDO_LAST", "payload_subset": {}}
       }]
     },
     {

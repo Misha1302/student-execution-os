@@ -168,6 +168,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.RESCHEDULE.value: {"when", "keep_time", "temporal_transform"} | _TARGET,
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
     AgentCommand.CREATE_TIME_CONSTRAINT.value: {"type", "starts_at", "ends_at", "reason"},
+    AgentCommand.UNDO_LAST.value: set(),
 }
 _REQUIRED = {
     AgentCommand.CREATE_NOTE.value: ("content",),
@@ -766,6 +767,9 @@ class SQLiteAssistantService:
             raise ValidationError("assistant provider returned an invalid actions list")
         if len(raw_actions) > 10:
             raise ValidationError("assistant proposed too many actions")
+        if any(isinstance(action, dict) and action.get("command") == AgentCommand.UNDO_LAST.value
+               for action in raw_actions) and len(raw_actions) != 1:
+            raise ValidationError("assistant undo must be the only proposed action")
         if raw_read is not None:
             if raw_actions:
                 raise ValidationError("assistant response cannot mix read query and mutations")
@@ -940,7 +944,30 @@ class SQLiteAssistantService:
             if action["expected_version"] is None or target[2] != int(action["expected_version"]):
                 raise VersionConflict("assistant proposal expected version is stale or missing")
         with self.canonical._tx() as conn:
-            results = [self._execute(action) for action in actions]
+            results = []
+            for sequence, action in enumerate(actions):
+                inverse = self._inverse(action)
+                action_result = self._execute(action)
+                results.append(action_result)
+                if inverse is not None and action_result.get("outcome") == "APPLIED" \
+                        and isinstance(action_result.get("version"), int):
+                    conn.execute(
+                        "INSERT INTO assistant_action_history("
+                        "account_id,principal_id,apply_idempotency_key,action_id,sequence_index,command,"
+                        "entity_id,committed_version,inverse_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            self.principal.account_id,
+                            self.principal.principal_id,
+                            key,
+                            action["id"],
+                            sequence,
+                            action["command"],
+                            action_result["entity_id"],
+                            action_result["version"],
+                            json.dumps(inverse, sort_keys=True),
+                            _iso(self.canonical.clock.now()),
+                        ),
+                    )
             result = {"batch_id": batch_id, "results": results, "replayed": False}
             conn.execute(
                 "INSERT INTO assistant_apply_records(account_id,principal_id,idempotency_key,request_hash,result_json,created_at) VALUES (?,?,?,?,?,?)",
@@ -1019,6 +1046,8 @@ class SQLiteAssistantService:
             task = self.canonical.update_task(**common, obligation_id=entity, expected_version=int(action["expected_version"]),
                 estimated_total_effort_minutes=int(data["estimated_total_effort_minutes"]), activate=bool(data.get("activate", False)))
             return {"action_id": action["id"], "entity_id": entity, "version": task.obligation.version, "status": task.obligation.lifecycle_status.value}
+        if command is AgentCommand.UNDO_LAST:
+            return {"action_id": action["id"], **self._undo_latest()}
         # Everything else runs through the same command handlers as the offline sync
         # queue, so an Assistant action and a button press mean exactly the same thing.
         from student_execution_os.sync.commands import APPLIED, NOOP, Commands
@@ -1078,3 +1107,129 @@ class SQLiteAssistantService:
             op_type, body = reschedule_change(kind, current, _dt(str(fields["when"])), bool(fields.get("keep_time")), zone)
             return op_type, entity, body
         raise ValidationError(f"unsupported assistant command {command.value}")
+
+    def _inverse(self, action: dict[str, Any]) -> dict[str, Any] | None:
+        command = AgentCommand(action["command"])
+        data = action["payload"]
+        target = target_of(self.canonical, self.principal.account_id, data)
+        if target is None:
+            return None
+        kind, entity_id, _version = target
+        requested = {key for key in data if key not in _TARGET}
+        if command in {AgentCommand.RESCHEDULE, AgentCommand.SNOOZE}:
+            if kind == "EVENT":
+                event = self.canonical.get_event(self.principal.account_id, entity_id)
+                return {"operation": "event.update", "payload": {"starts_at": _iso(event.interval.starts_at)}}
+            if kind == "REMINDER":
+                row = self.canonical.connection.execute(
+                    "SELECT remind_at FROM reminders WHERE account_id=? AND id=?",
+                    (self.principal.account_id, entity_id),
+                ).fetchone()
+                return {"operation": "reminder.update", "payload": {"remind_at": row["remind_at"]}}
+            row = self.canonical.connection.execute(
+                "SELECT cutoff_state,actual_cutoff_at,cutoff_boundary,actionable_from FROM tasks "
+                "WHERE obligation_id=?", (entity_id,),
+            ).fetchone()
+            if row["cutoff_state"] == "KNOWN":
+                payload = {"actual_cutoff": {
+                    "state": "KNOWN", "at": row["actual_cutoff_at"],
+                    "boundary": row["cutoff_boundary"] or "INCLUSIVE",
+                }}
+            else:
+                payload = {"actionable_from": row["actionable_from"]}
+            return {"operation": "task.update", "payload": payload}
+        if command is AgentCommand.UPDATE_EVENT:
+            row = self.canonical.connection.execute(
+                "SELECT o.title,o.description,e.starts_at,e.ends_at,e.attendance_policy FROM obligations o "
+                "JOIN events e ON e.obligation_id=o.id WHERE o.account_id=? AND o.id=?",
+                (self.principal.account_id, entity_id),
+            ).fetchone()
+            values = dict(row)
+            if "remind_before_minutes" in requested:
+                from student_execution_os.persistence import extras
+                values["remind_before_minutes"] = extras.event_lead(
+                    self.canonical, self.principal.account_id, entity_id,
+                )
+            return {"operation": "event.update", "payload": {
+                field: values[field] for field in requested if field in values
+            }}
+        if command is AgentCommand.UPDATE_REMINDER:
+            row = self.canonical.connection.execute(
+                "SELECT title,note,remind_at,delivery,wake_check,raise_volume FROM reminders "
+                "WHERE account_id=? AND id=?", (self.principal.account_id, entity_id),
+            ).fetchone()
+            values = dict(row)
+            values.update(wake_check=bool(values["wake_check"]), raise_volume=bool(values["raise_volume"]))
+            return {"operation": "reminder.update", "payload": {
+                field: values[field] for field in requested if field in values
+            }}
+        if command is AgentCommand.UPDATE_TASK:
+            row = self.canonical.connection.execute(
+                "SELECT o.title,o.description,o.category,o.importance,t.estimated_total_effort_minutes,"
+                "t.cutoff_state,t.actual_cutoff_at,t.cutoff_boundary,t.target_at,t.actionable_from "
+                "FROM obligations o JOIN tasks t ON t.obligation_id=o.id "
+                "WHERE o.account_id=? AND o.id=?", (self.principal.account_id, entity_id),
+            ).fetchone()
+            values = dict(row)
+            values["actual_cutoff"] = (
+                {"state": "KNOWN", "at": values["actual_cutoff_at"],
+                 "boundary": values["cutoff_boundary"] or "INCLUSIVE"}
+                if values["cutoff_state"] == "KNOWN" else {"state": values["cutoff_state"]}
+            )
+            if "remind_at" in requested:
+                reminder = self.canonical.connection.execute(
+                    "SELECT remind_at FROM reminder_states WHERE account_id=? AND obligation_id=?",
+                    (self.principal.account_id, entity_id),
+                ).fetchone()
+                values["remind_at"] = None if reminder is None else reminder["remind_at"]
+            return {"operation": "task.update", "payload": {
+                field: values[field] for field in requested if field in values
+            }}
+        return None
+
+    def _undo_latest(self) -> dict[str, Any]:
+        row = self.canonical.connection.execute(
+            "SELECT * FROM assistant_action_history WHERE account_id=? AND principal_id=? "
+            "AND undone_at IS NULL ORDER BY id DESC LIMIT 1",
+            (self.principal.account_id, self.principal.principal_id),
+        ).fetchone()
+        if row is None:
+            raise ValidationError("there is no reversible Assistant action to undo")
+        inverse = json.loads(row["inverse_json"])
+        operation = str(inverse.get("operation") or "")
+        entity_id = str(row["entity_id"])
+        if operation.startswith("reminder."):
+            current = self.canonical.connection.execute(
+                "SELECT version FROM reminders WHERE account_id=? AND id=?",
+                (self.principal.account_id, entity_id),
+            ).fetchone()
+        else:
+            current = self.canonical.connection.execute(
+                "SELECT version FROM obligations WHERE account_id=? AND id=?",
+                (self.principal.account_id, entity_id),
+            ).fetchone()
+        if current is None or int(current["version"]) != int(row["committed_version"]):
+            raise VersionConflict("Assistant undo conflicts with a newer entity version")
+        from student_execution_os.sync.commands import APPLIED, NOOP, Commands
+        outcome = Commands(
+            self.canonical,
+            account_id=self.principal.account_id,
+            actor=ActorCategory.USER_VIA_LLM,
+            now=self.canonical.clock.now(),
+        ).run(operation, entity_id, dict(inverse.get("payload") or {}))
+        if outcome.status not in {APPLIED, NOOP}:
+            raise ValidationError(outcome.message or outcome.code or "Assistant undo was not applied")
+        self.canonical.connection.execute(
+            "UPDATE assistant_action_history SET undone_at=? WHERE id=? AND undone_at IS NULL",
+            (_iso(self.canonical.clock.now()), row["id"]),
+        )
+        result = {
+            "entity_id": entity_id,
+            "operation": operation,
+            "outcome": outcome.status,
+            "entity": outcome.entity,
+            "undid_action_id": row["action_id"],
+        }
+        if isinstance(outcome.entity, dict):
+            result.update(version=outcome.entity.get("version"), status=outcome.entity.get("status"))
+        return result

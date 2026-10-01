@@ -29,6 +29,7 @@ class AgentCommand(StrEnum):
     ARCHIVE_OBLIGATION = "ARCHIVE_OBLIGATION"
     SNOOZE = "SNOOZE"
     CREATE_TIME_CONSTRAINT = "CREATE_TIME_CONSTRAINT"
+    UNDO_LAST = "UNDO_LAST"
 
 
 @dataclass(frozen=True)

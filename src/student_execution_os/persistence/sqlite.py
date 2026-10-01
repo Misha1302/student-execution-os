@@ -51,7 +51,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 _UNSET = object()
 
 
@@ -138,6 +138,7 @@ class SQLiteCanonicalRepository:
             (26, Path(__file__).with_name("migrations") / "026_oauth_connect.sql"),
             (27, Path(__file__).with_name("migrations") / "027_groups.sql"),
             (28, Path(__file__).with_name("migrations") / "028_auth_rate_limits.sql"),
+            (29, Path(__file__).with_name("migrations") / "029_assistant_action_history.sql"),
         ]
         for version, path in migrations:
             if version in applied:

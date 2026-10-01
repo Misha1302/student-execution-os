@@ -15,7 +15,7 @@ NOW = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
 
 
 class AuthRateLimitMigrationTest(unittest.TestCase):
-    def test_fresh_database_contains_v28_auth_limit_schema(self):
+    def test_fresh_database_contains_auth_limit_and_action_history_schema(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "fresh.sqlite"
             with SQLiteCanonicalRepository(database) as repo:
@@ -27,6 +27,12 @@ class AuthRateLimitMigrationTest(unittest.TestCase):
                 self.assertEqual(
                     columns,
                     {"scope", "key_hash", "window_started_at", "last_attempt_at", "attempt_count"},
+                )
+                self.assertEqual(
+                    repo.connection.execute(
+                        "SELECT count(*) FROM pragma_table_info('assistant_action_history')"
+                    ).fetchone()[0],
+                    12,
                 )
 
     def test_populated_v27_database_upgrades_and_rolls_back(self):
@@ -52,7 +58,7 @@ class AuthRateLimitMigrationTest(unittest.TestCase):
 
             with SQLiteCanonicalRepository(database) as repo:
                 repo.initialize()
-                self.assertEqual(repo.schema_version(), 28)
+                self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
                 self.assertEqual(
                     repo.connection.execute(
                         "SELECT login FROM auth_users WHERE id='existing-user'"
