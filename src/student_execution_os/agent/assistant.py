@@ -139,7 +139,7 @@ def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
 
 
 _ACTION_REQUIRED = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
-_ACTION_KEYS = _ACTION_REQUIRED | {"field_provenance"}
+_ACTION_KEYS = _ACTION_REQUIRED | {"field_provenance", "client_ref", "depends_on"}
 # Every field a CREATE_TASK proposal may carry maps onto the canonical task.create
 # command (sync/commands.py); anything else is rejected by validate_proposal.
 _CREATE_TASK_FIELDS = {
@@ -779,6 +779,7 @@ class SQLiteAssistantService:
             return provider.name, assistant_message, [], read_result
         raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
         raw_actions, preserved = self._preserve_previous_user_edits(raw_actions, context)
+        action_ids, dependencies = self._action_dependencies(raw_actions)
         actions = []
         for index, raw in enumerate(raw_actions):
             clean = validate_proposal(raw, self.canonical, self.principal.account_id,
@@ -786,7 +787,8 @@ class SQLiteAssistantService:
             field_provenance = clean.pop("field_provenance")
             local = isinstance(provider, DeterministicAssistantParser)
             actions.append({
-                "id": str(uuid4()), **clean,
+                "id": action_ids[index], **clean,
+                "depends_on": dependencies[index],
                 "provenance": {
                     "provider": provider.name,
                     "input": "user-authored-text",
@@ -806,6 +808,34 @@ class SQLiteAssistantService:
                 {field: "USER_EDIT" for field in preserved.get(index, set())}
             )
         return provider.name, assistant_message, actions, None
+
+    @staticmethod
+    def _action_dependencies(raw_actions: list[object]) -> tuple[list[str], list[list[str]]]:
+        action_ids = [str(uuid4()) for _ in raw_actions]
+        references: dict[str, int] = {}
+        for index, raw in enumerate(raw_actions):
+            if not isinstance(raw, dict):
+                continue
+            reference = raw.get("client_ref")
+            if reference is None:
+                continue
+            if not isinstance(reference, str) or not reference or len(reference) > 64 or reference in references:
+                raise ValidationError("assistant action client_ref must be unique short text")
+            references[reference] = index
+        dependencies: list[list[str]] = []
+        for index, raw in enumerate(raw_actions):
+            values = raw.get("depends_on", []) if isinstance(raw, dict) else []
+            if not isinstance(values, list) or not all(isinstance(value, str) for value in values) \
+                    or len(set(values)) != len(values):
+                raise ValidationError("assistant action depends_on must be unique client refs")
+            resolved = []
+            for value in values:
+                dependency_index = references.get(value)
+                if dependency_index is None or dependency_index >= index:
+                    raise ValidationError("assistant action dependency must reference an earlier action")
+                resolved.append(action_ids[dependency_index])
+            dependencies.append(resolved)
+        return action_ids, dependencies
 
     @staticmethod
     def _preserve_previous_user_edits(
@@ -930,7 +960,14 @@ class SQLiteAssistantService:
             raise ValidationError("selected action id is not in the preview batch")
         if not set(edits).issubset(selected):
             raise ValidationError("edits name an action that is not being applied")
-        actions = [self._edited(by_id[action_id], edits.get(action_id)) for action_id in selected]
+        selected_set = set(selected)
+        if any(not set(by_id[action_id].get("depends_on") or []).issubset(selected_set) for action_id in selected):
+            raise ValidationError("selected Assistant actions must include every dependency")
+        actions = [
+            self._edited(action, edits.get(action["id"]))
+            for action in json.loads(row["actions_json"])
+            if action["id"] in selected_set
+        ]
         if any(action["unresolved_fields"] for action in actions):
             raise ValidationError("unresolved proposal fields must be refined before apply")
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):

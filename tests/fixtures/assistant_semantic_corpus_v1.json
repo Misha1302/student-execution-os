@@ -141,7 +141,7 @@
       "context": {"obligations": [{"id": "event-ariadne", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 3, "starts_at": "2026-10-02T18:00:00+03:00"}]},
       "turns": [{
         "text": "Перенеси встречу на шесть, напомни о ней за двадцать минут, а после неё поставь час на отчёт",
-        "expected": {"output_subset": {"intent": "ACTION_PLAN"}}
+        "expected": {"output_subset": {"actions": [{"client_ref": "move"}, {"depends_on": ["move"]}]}}
       }]
     },
     {
