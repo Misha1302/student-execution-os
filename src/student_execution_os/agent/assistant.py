@@ -826,6 +826,7 @@ class SQLiteAssistantService:
             actions[-1]["provenance"]["fields"].update(
                 {field: "USER_EDIT" for field in preserved.get(index, set())}
             )
+        self._attach_conflicts(actions)
         return provider.name, assistant_message, actions, None
 
     @staticmethod
@@ -890,6 +891,75 @@ class SQLiteAssistantService:
         provenance = {key: value for key, value in provenance.items() if key not in fields} \
             if isinstance(provenance, dict) else provenance
         return {**raw, "payload": payload, "unresolved_fields": unresolved, "field_provenance": provenance}, fields
+
+    def _event_result_interval(self, action: dict[str, Any]) -> tuple[datetime, datetime] | None:
+        """The interval an action gives an event (None for anything that does not move one)."""
+        command, payload = action["command"], action["payload"]
+        if command == AgentCommand.UPDATE_EVENT.value and not {"starts_at", "ends_at"} & set(payload):
+            return None
+        if command not in (AgentCommand.CREATE_EVENT.value, AgentCommand.RESCHEDULE.value,
+                           AgentCommand.UPDATE_EVENT.value):
+            return None
+        if command == AgentCommand.RESCHEDULE.value:
+            target = target_of(self.canonical, self.principal.account_id, payload)
+            if target is None or target[0] != "EVENT":
+                return None
+        try:
+            return self._action_interval(action)
+        except ValidationError:
+            return None
+
+    def _attach_conflicts(self, actions: list[dict[str, Any]]) -> None:
+        """Warn, before confirmation, where a new event time overlaps something fixed.
+
+        Checked against other active events, class-series occurrences, protected time
+        (UNAVAILABLE / FIXED_PERSONAL_BLOCK constraints) and the other items of the
+        same plan. Nothing is moved to make room: the user sees the overlap and decides.
+        Derived plan blocks are not conflicts (the planner re-derives them).
+        """
+        from student_execution_os.recurrence import SQLiteRecurrenceRepository
+        account = self.principal.account_id
+        planned: dict[str, tuple[datetime, datetime]] = {}
+        titles: dict[str, str | None] = {}
+        targets: dict[str, str | None] = {}
+        for action in actions:
+            interval = self._event_result_interval(action)
+            if interval is None:
+                continue
+            planned[action["id"]] = interval
+            target = target_of(self.canonical, account, action["payload"])
+            targets[action["id"]] = target[1] if target else None
+            titles[action["id"]] = action["payload"].get("title") or (
+                self.canonical.get_event(account, target[1]).obligation.title if target else None)
+        moving = {target for target in targets.values() if target}  # compared at their new time instead
+        for action_id, (starts, ends) in planned.items():
+            found: list[dict[str, Any]] = []
+            for row in self.canonical.connection.execute(
+                "SELECT o.id,o.title,e.starts_at,e.ends_at FROM obligations o JOIN events e ON e.obligation_id=o.id "
+                "WHERE o.account_id=? AND o.lifecycle_status='ACTIVE' AND e.starts_at<? AND e.ends_at>? "
+                "ORDER BY e.starts_at LIMIT 6", (account, _iso(ends), _iso(starts)),
+            ):
+                if row["id"] not in moving:
+                    found.append({"kind": "EVENT", "title": row["title"], "starts_at": row["starts_at"],
+                                  "ends_at": row["ends_at"]})
+            for event in SQLiteRecurrenceRepository(self.canonical).expand_as_events(
+                    account_id=account, horizon_start=starts, horizon_end=ends):
+                if event.interval.starts_at < ends and event.interval.ends_at > starts:
+                    found.append({"kind": "CLASS", "title": event.obligation.title,
+                                  "starts_at": _iso(event.interval.starts_at), "ends_at": _iso(event.interval.ends_at)})
+            for row in self.canonical.connection.execute(
+                "SELECT starts_at,ends_at,reason FROM user_time_constraints WHERE account_id=? "
+                "AND type IN ('UNAVAILABLE','FIXED_PERSONAL_BLOCK') AND starts_at<? AND ends_at>? "
+                "ORDER BY starts_at LIMIT 3", (account, _iso(ends), _iso(starts)),
+            ):
+                found.append({"kind": "PROTECTED_TIME", "title": row["reason"], "starts_at": row["starts_at"],
+                              "ends_at": row["ends_at"]})
+            for other_id, (other_starts, other_ends) in planned.items():
+                if other_id != action_id and other_starts < ends and other_ends > starts:
+                    found.append({"kind": "PLAN", "title": titles[other_id],
+                                  "starts_at": _iso(other_starts), "ends_at": _iso(other_ends)})
+            if found:
+                next(action for action in actions if action["id"] == action_id)["conflicts"] = found[:6]
 
     # Time and wording of an imported calendar event belong to its source; only the
     # personal reminder lead (and cancelling it for oneself) is the user's —

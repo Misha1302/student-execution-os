@@ -175,6 +175,10 @@ class AssistantBrowserTest(unittest.TestCase):
         expect(rows).to_have_count(3)
         expect(rows.nth(2)).to_contain_text('Отчёт')
         expect(rows.nth(2)).to_contain_text('19:00')  # derived from the moved meeting's end
+        # «Семинар» is 19:00–20:00: the moved meeting (18:00–19:00) only touches it, the
+        # report (19:00–20:00) overlaps it — and the card says so before confirming.
+        expect(rows.nth(2).locator('[data-conflicts]')).to_contain_text('Семинар')
+        expect(rows.nth(0).locator('[data-conflicts]')).to_have_count(0)
         sheet.locator('.command-card [data-run]').click()
         sheet.wait_for(state='detached')
         self.assertEqual(self.starts('event-dima'), '28 18:00')

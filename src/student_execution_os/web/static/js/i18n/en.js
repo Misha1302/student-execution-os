@@ -1346,6 +1346,8 @@ export default {
   'cmd.undoLast': 'Undo the assistant’s last change',
   'cmd.rescheduleFromTo': 'Move “{title}”: was {from}, will be {when}',
   'cmd.needsDetails': 'Some details are missing — say a bit more.',
+  'cmd.overlap': 'Overlaps: {list}',
+  'cmd.protectedTime': 'protected time',
   'cmd.sourceOwned': 'This event comes from a connected schedule; its time changes only at the source. You can still set yourself a reminder.',
   'cmd.refineRequest': 'Change',
   'assistant.followingUp': 'Continuing: say what to change — e.g. “10:30 is better” or “and remind me 30 minutes before”.',
