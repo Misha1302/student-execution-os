@@ -128,7 +128,7 @@ for progress or effort:
 - intent/calibration mutations are offline-safe, while stale derived WORK blocks are
   hidden until the server replans.
 
-## v23 – v29
+## v23 – v30
 
 - **v23** — class series exceptions with stable external identity: the USER layer of
   an occurrence survives source refreshes ([ADR 0027](adr/0027-series-exceptions-and-external-identity.md)).
@@ -141,3 +141,8 @@ for progress or effort:
 - **v29** — `assistant_action_history`: the stored inverse and committed version of each
   reversible Assistant action, so «отмени последнее» / [Отменить] can revert the last
   Assistant apply without overwriting newer changes (30-day retention).
+- **v30** — `planning_preferences`: canonical soft planning preferences (KEEP_FREE,
+  WORK_LIMIT, AVOID_WORK, REST_AFTER_EVENTS) with daily windows and date ranges. The
+  planner expands them into the snapshot and uses them only to choose among legal
+  placements once the hard model is FEASIBLE; each is reported APPLIED / RELAXED /
+  UNSATISFIABLE. Rollback script drops the table.

@@ -57,7 +57,7 @@ say / type / import something
 
 ## Current status
 
-Schema **v29** (`persistence/sqlite.py::SCHEMA_VERSION`, migrations in
+Schema **v30** (`persistence/sqlite.py::SCHEMA_VERSION`, migrations in
 `src/student_execution_os/persistence/migrations/`). What each version added is in
 [docs/SCHEMA_HISTORY.md](docs/SCHEMA_HISTORY.md).
 
@@ -72,23 +72,29 @@ Implemented and covered by the test suites:
 - hosted auth with persistent login/IP abuse limits;
 - the **Assistant**: typed semantic intents validated server-side; guarded and
   approximate relative rescheduling resolved deterministically; bounded authorized
-  target candidates with explicit disambiguation; multi-turn follow-ups («нет, лучше
+  target candidates, with the server — not the model — deciding whether a pick is unique
+  (several equally plausible items become a choice for the user); multi-turn follow-ups («нет, лучше
   в 10:30») where explicit user edits win over later model output; voice and text in the
   same pipeline; read-only questions answered from server facts; planner-control
-  language stored as canonical constraints; dependency-ordered multi-action plans whose
+  language stored as canonical constraints, and soft wishes («оставь вечером час
+  свободным», «день полегче», «после пары полчаса отдыха», «учёбу до девяти», «не
+  ставь сложное сразу после подъёма») as canonical planning preferences that steer
+  placement but never decide feasibility; dependency-ordered multi-action plans whose
   dependent times are derived by the server; and undo of the last Assistant apply that
   refuses to overwrite newer changes;
-- bounded provider retry, one structured-output repair, BYOK-safe fallback to the local
-  parser, and privacy-safe reliability metrics.
+- an explicit provider retry policy: a retry only when no (billed) generation can have
+  run, never a blind resend after a read timeout, one total latency budget and attempt cap
+  per operation, one structured-output repair, BYOK-safe fallback to the local parser, and
+  privacy-safe reliability metrics (`agent/reliability.py`).
 
 Known limits:
 
 - Assistant quality with a live provider is evaluated only on demand
   (`python -m student_execution_os llm-eval`, opt-in, needs a configured provider); CI
   uses deterministic fake providers, which prove contracts, not model quality.
-- On Android the bearer token is stored in Capacitor Preferences (app-private, not
-  Keystore-backed) and the offline queue lives in WebView storage; see
-  [mobile/README.md](mobile/README.md).
+- On Android the offline queue is in native SQLite and the bearer token in the Android
+  Keystore (migrated from earlier releases at start-up); the read-model cache stays in
+  WebView storage by design. See [mobile/README.md](mobile/README.md).
 - Undo covers Assistant-originated creates, updates, reschedules and snoozes, not
   every manual operation (manual operations have their own short-lived undo).
 
