@@ -53,6 +53,17 @@ not missing subsystems:
   only classifications; it never consults the local parser.
 - The deterministic local parser remains the degradation path; every degraded answer
   is labelled `engine: LOCAL` with `fallback_reason`, never as AI.
+- Structured output is a declared endpoint/model capability
+  (`providers.supports_json_schema`): OpenAI, and OpenAI-compatible endpoints listed with
+  their documented models (Groq `openai/gpt-oss-20b`/`-120b`), get `response_format`
+  `json_schema` first; every other compatible server keeps `json_object`. A request-level
+  `FORMAT` refusal of `json_schema` switches that provider to JSON mode and the re-send is
+  a separate attempt of the reliability policy (at most one, inside `max_attempts` and the
+  budget, separately metered and quota-gated for STARTER, metric
+  `assistant_format_downgrade_count`). A generated answer that fails validation (Groq
+  `json_validate_failed`) is not a capability refusal: it goes to the one
+  structured-output repair. Schema-valid JSON is still only a proposal for the
+  deterministic validator.
 
 ## Consequences
 

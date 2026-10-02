@@ -16,6 +16,7 @@ from .providers import (
     check_probe_answer,
     platform_provider_from_environment,
     probe_context,
+    with_format_downgrade,
 )
 
 
@@ -30,7 +31,7 @@ def platform_llm_smoke(provider: Any | None = None, *, now: str = "2026-01-01T09
     report: dict[str, Any] = {"provider": provider.name, "model": provider.model}
     started = time.monotonic()
     try:
-        check_probe_answer(provider.interpret(PROBE_TEXT, probe_context(now)))
+        check_probe_answer(with_format_downgrade(lambda: provider.interpret(PROBE_TEXT, probe_context(now))))
     except ProviderUnavailable as failure:
         report.update(result=failure.reason, http_status=failure.http_status, retry_after=failure.retry_after,
                       route=failure.route or getattr(provider, "last_route", None))

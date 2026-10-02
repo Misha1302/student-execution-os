@@ -112,7 +112,8 @@ class LlmEgressRelayTests(unittest.TestCase):
         self.assertEqual(headers["X-SEOS-Relay-Token"], RELAY_TOKEN)
         body = self.relay_post.call_args.kwargs["json"]
         self.assertEqual(body["model"], "openai/gpt-oss-20b")
-        self.assertEqual(body["response_format"], {"type": "json_object"})
+        # Groq documents json_schema structured outputs for gpt-oss.
+        self.assertEqual(body["response_format"]["type"], "json_schema")
         self.assertIn("Essay", body["messages"][1]["content"])
 
     def test_host_normalisation_is_exact(self):

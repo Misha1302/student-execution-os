@@ -682,6 +682,28 @@ configured). It never uses the local parser, so `OK` means the provider returned
 action. It spends one small request on the platform key and does not touch STARTER
 counters or the database.
 
+### Assistant AI outcome counters
+
+Every Assistant interpretation records payload-free counters in `operational_metrics`
+(engine `AI`/`LOCAL`, fallback reason such as `FORMAT`, `INVALID_PROPOSAL`,
+`RATE_LIMITED`, `AUTH`, `QUOTA`, `STARTER_QUOTA`, structured-output failures, repairs,
+transient retries, json_schema downgrades, retry stop decisions, latency). A read-only
+summary of the last 24 hours, without account ids or text:
+
+```bash
+docker exec student-execution-os-api-1 python -c '
+import sqlite3, datetime as d
+since = (d.datetime.now(d.timezone.utc) - d.timedelta(days=1)).isoformat()
+c = sqlite3.connect("file:/data/student-execution-os.db?mode=ro", uri=True)
+for row in c.execute("SELECT COUNT(*), metric_name, dimensions_json, ROUND(AVG(value)) FROM operational_metrics"
+                     " WHERE metric_name LIKE ? AND recorded_at >= ? GROUP BY 2, 3 ORDER BY 2, 1 DESC",
+                     ("assistant_%", since)):
+    print(*row)'
+```
+
+STARTER exhaustion shows up as `reason: STARTER_QUOTA`; per-account request/token use is in
+`starter_llm_account_usage`, the global counter in `starter_llm_global_usage`.
+
 ## Not yet covered
 
 See [docs/ROADMAP.md](../docs/ROADMAP.md): password reset/change, email verification,

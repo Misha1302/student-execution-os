@@ -27,6 +27,9 @@
   previous turn established or the only candidate of a fitting kind.
 - Provider reliability: `agent/reliability.py` — delivery-aware retry matrix (NOT_SENT /
   ANSWERED / UNKNOWN), total latency budget via `providers.CALL_DEADLINE`, attempt cap.
+  Structured output: `providers.supports_json_schema` declares which endpoint/models get
+  `json_schema` (OpenAI; Groq gpt-oss); a request-level refusal is re-sent once in JSON mode
+  as a separate, metered reliability attempt (ADR 0029).
 - Device storage: `web/static/js/device-storage.js` (`OfflineOperationStore`,
   `ReadModelCache`, `CredentialStore`); on Android the queue is native SQLite and the token is
   Keystore-backed through the `SeosStorage` plugin (`mobile/android/.../storage/`); see

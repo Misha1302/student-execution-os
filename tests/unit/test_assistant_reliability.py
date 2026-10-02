@@ -320,5 +320,91 @@ class TimeoutDecisionMatrixTest(unittest.TestCase):
         self.assertTrue(any("UNKNOWN_OUTCOME" in item for item in decisions))
 
 
+
+class FormatDowngradeTest(unittest.TestCase):
+    def refused(self):
+        return ProviderUnavailable("refused", "FORMAT", 400, delivery="ANSWERED", format_downgraded=True)
+
+    def test_downgrade_is_one_bounded_attempt_not_a_transient_retry(self):
+        calls = []
+
+        def call():
+            calls.append(1)
+            if len(calls) == 1:
+                raise self.refused()
+            return "ok"
+
+        trace = ReliabilityTrace()
+        self.assertEqual(ReliabilityPolicy().run(call, trace=trace, sleep=lambda _s: None), "ok")
+        self.assertEqual((trace.attempts, trace.retries, trace.format_downgrades), (2, 0, 1))
+
+    def test_a_provider_that_keeps_claiming_downgrade_cannot_loop(self):
+        calls = []
+
+        def call():
+            calls.append(1)
+            raise self.refused()
+
+        trace = ReliabilityTrace()
+        with self.assertRaises(ProviderUnavailable):
+            ReliabilityPolicy().run(call, trace=trace, sleep=lambda _s: None)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual((trace.format_downgrades, trace.stop_reason), (1, "RETRIES_EXHAUSTED"))
+
+    def test_downgrade_then_rate_limit_keeps_one_retry_and_the_attempt_cap(self):
+        outcomes = [self.refused(),
+                    ProviderUnavailable("limited", "RATE_LIMITED", 429, retry_after=1, delivery="ANSWERED"),
+                    ProviderUnavailable("limited", "RATE_LIMITED", 429, retry_after=1, delivery="ANSWERED")]
+        sleeps = []
+
+        def call():
+            raise outcomes.pop(0)
+
+        trace = ReliabilityTrace()
+        with self.assertRaises(ProviderUnavailable) as caught:
+            ReliabilityPolicy().run(call, trace=trace, sleep=sleeps.append)
+        self.assertEqual(caught.exception.reason, "RATE_LIMITED")
+        self.assertEqual((trace.attempts, trace.retries, trace.format_downgrades), (3, 1, 1))
+        self.assertEqual(sleeps, [1.0])  # exactly the provider-advised wait, once
+
+    def test_downgrade_then_repair_is_bounded_by_the_operation(self):
+        class Provider:
+            name = "fixture"
+            model = "fixture"
+
+            def __init__(self):
+                self.calls = 0
+
+            def interpret(self, text, context):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ProviderUnavailable("refused", "FORMAT", 400, delivery="ANSWERED", format_downgraded=True)
+                raise ProviderUnavailable("not json", "FORMAT")
+
+            def repair(self, text, context, feedback):
+                self.calls += 1
+                raise ProviderUnavailable("refused", "FORMAT", 400, delivery="ANSWERED", format_downgraded=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with SQLiteCanonicalRepository(
+                str(Path(directory) / "downgrade.sqlite"),
+                clock=FrozenClock(datetime(2026, 10, 2, tzinfo=timezone.utc)),
+            ) as repository:
+                repository.initialize()
+                repository.create_account("account")
+                provider = Provider()
+                result = SQLiteAssistantService(
+                    repository, AuthenticatedPrincipal("account", "user", "client"), provider=provider,
+                ).interpret("Essay", degrade_invalid=True)
+                downgrades = repository.connection.execute(
+                    "SELECT COUNT(*) FROM operational_metrics WHERE metric_name='assistant_format_downgrade_count'"
+                ).fetchone()[0]
+        # interpret: schema refused -> one JSON-mode re-send -> FORMAT -> one repair;
+        # the repair's own downgrade claim is not honoured a second time.
+        self.assertEqual(provider.calls, 3)
+        self.assertEqual((result["engine"], result["fallback_reason"]), ("LOCAL", "FORMAT"))
+        self.assertEqual(result["reliability"]["attempts"], 3)
+        self.assertEqual(downgrades, 1)
+
 if __name__ == "__main__":
     unittest.main()
