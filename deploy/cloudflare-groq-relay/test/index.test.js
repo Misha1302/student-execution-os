@@ -281,13 +281,16 @@ test("a streamed body without Content-Length is still bounded", async () => {
 
 test("only allow-listed upstream response headers are returned", async () => {
   upstreamAnswers(429, '{"error":{"code":"rate_limit_exceeded"}}', {
-    "Retry-After": "7", "x-request-id": "req_1", "Set-Cookie": "__cf=secret", Location: "https://evil.example",
+    "Retry-After": "7", "x-request-id": "req_1", "x-should-retry": "false", "Set-Cookie": "__cf=secret",
+    Location: "https://evil.example",
     "Access-Control-Allow-Origin": "*", "x-ratelimit-remaining-tokens": "0", Server: "cloudflare",
   });
   const response = await worker.fetch(relayRequest(), ENV);
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("Retry-After"), "7");
   assert.equal(response.headers.get("x-request-id"), "req_1");
+  // The provider's explicit retry advice reaches the server's retry policy.
+  assert.equal(response.headers.get("x-should-retry"), "false");
   for (const name of ["Set-Cookie", "Location", "Access-Control-Allow-Origin", "x-ratelimit-remaining-tokens", "Server"]) {
     assert.equal(response.headers.get(name), null, name);
   }

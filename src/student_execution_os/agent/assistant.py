@@ -636,6 +636,7 @@ class SQLiteAssistantService:
                     "retries": self.reliability_trace.retries,
                     "repair_attempted": self.reliability_trace.repair_attempted,
                     "repair_succeeded": self.reliability_trace.repair_succeeded,
+                    "retry_stop": self.reliability_trace.stop_reason,
                 },
                 "message": message,
                 "actions": [],
@@ -669,6 +670,7 @@ class SQLiteAssistantService:
                     "retries": self.reliability_trace.retries,
                     "repair_attempted": self.reliability_trace.repair_attempted,
                     "repair_succeeded": self.reliability_trace.repair_succeeded,
+                    "retry_stop": self.reliability_trace.stop_reason,
                 },
                 "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
@@ -723,6 +725,20 @@ class SQLiteAssistantService:
                 account_id=self.principal.account_id,
                 dimensions={"provider": provider, "reason": structured_reason},
             )
+        if self.reliability_trace.retries:
+            metrics.record(
+                "assistant_provider_retry_count",
+                self.reliability_trace.retries,
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider},
+            )
+        if self.reliability_trace.stop_reason:
+            # Why a failed provider call was not retried (UNKNOWN_OUTCOME, BUDGET_EXHAUSTED, ...).
+            metrics.record(
+                "assistant_retry_stop_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "decision": self.reliability_trace.stop_reason},
+            )
         if self.reliability_trace.repair_attempted:
             metrics.record(
                 "assistant_repair_attempt_count",
@@ -752,9 +768,13 @@ class SQLiteAssistantService:
                  context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         """Ask one provider and validate every action it proposes (nothing is stored)."""
         try:
-            interpretation = self.reliability_policy.run(
-                lambda: provider.interpret(text, context), trace=self.reliability_trace,
-            )
+            if isinstance(provider, DeterministicAssistantParser):
+                # The local parser is not a provider call: no retry, no budget, no attempt.
+                interpretation = provider.interpret(text, context)
+            else:
+                interpretation = self.reliability_policy.run(
+                    lambda: provider.interpret(text, context), trace=self.reliability_trace,
+                )
             return self._validate_interpretation(provider, interpretation, text, context)
         except (ProviderUnavailable, ValidationError) as exc:
             repair = getattr(provider, "repair", None)

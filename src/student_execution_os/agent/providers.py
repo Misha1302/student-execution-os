@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from pathlib import Path
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -212,17 +213,28 @@ class ProviderUnavailable(ValidationError):
     ========== =============================================================
 
     ``retry_after`` is the provider's Retry-After in whole seconds (429/503), if any.
+    ``delivery`` / ``should_retry`` feed the retry policy (agent.reliability).
     ``route`` is the egress path taken (DIRECT, DIRECT_PINNED, PROXY, RELAY) or None
     when the request never left the server.
     """
 
     def __init__(self, message: str, reason: str = "NETWORK", http_status: int | None = None,
-                 *, retry_after: int | None = None, route: str | None = None) -> None:
+                 *, retry_after: int | None = None, route: str | None = None,
+                 delivery: str | None = None, should_retry: bool | None = None) -> None:
         super().__init__(message)
         self.reason = reason
         self.http_status = http_status
         self.retry_after = retry_after
         self.route = route
+        # Whether the provider can have started (and billed) a generation:
+        #   NOT_SENT  the request never reached the provider (connect/pool/write failure)
+        #   ANSWERED  the provider itself answered with an error status
+        #   UNKNOWN   the request was delivered but no answer arrived (read timeout,
+        #             dropped connection, a gateway 502/504): a generation may have run
+        #   None      the request was never attempted (local refusal)
+        self.delivery = delivery
+        # The provider's explicit retry advice (``x-should-retry``), when it gave one.
+        self.should_retry = should_retry
 
 
 def _error_fields(response: httpx.Response) -> tuple[bool, str]:
@@ -511,11 +523,36 @@ def _log_request(name: str, route: str | None, started: float, result: str, http
              round((time.monotonic() - started) * 1000))
 
 
+# Monotonic deadline of the current Assistant operation (agent.reliability sets it), so
+# no single provider call can outlive the operation's total latency budget.
+CALL_DEADLINE: ContextVar[float | None] = ContextVar("seos_llm_call_deadline", default=None)
+
+
+def _bounded_timeout(timeout: float) -> float:
+    deadline = CALL_DEADLINE.get()
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ProviderUnavailable("the assistant latency budget is exhausted", "TIMEOUT", delivery="NOT_SENT")
+    return min(timeout, remaining)
+
+
+def _should_retry(response: httpx.Response) -> bool | None:
+    raw = (response.headers.get("x-should-retry") or "").strip().lower()
+    return True if raw == "true" else False if raw == "false" else None
+
+
+# Gateway answers that do not tell whether the provider generated anything.
+_UNKNOWN_OUTCOME_STATUSES = {502, 504}
+
+
 def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: float, name: str,
           public_only: bool = False, custom_address: bool = False,
           observed: dict[str, Any] | None = None) -> httpx.Response:
     started = time.monotonic()
     route: str | None = None
+    timeout = _bounded_timeout(timeout)
     try:
         response, route, relayed = _send(url, headers=headers, body=body, timeout=timeout, name=name,
                                          public_only=public_only)
@@ -529,6 +566,8 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
                 f"the LLM egress relay for assistant provider {name} answered HTTP {response.status_code}",
                 _RELAY_ERRORS.get(relay_error.strip().lower(), "REQUEST"),
                 response.status_code, route=route,
+                # The relay answered by itself unless it lost the upstream mid-request.
+                delivery="UNKNOWN" if response.status_code in _UNKNOWN_OUTCOME_STATUSES else "NOT_SENT",
             )
         if response.status_code >= 300:
             # The provider's body is not echoed: some providers quote part of the key.
@@ -536,6 +575,8 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
                 f"assistant provider {name} answered HTTP {response.status_code}",
                 _reason(response.status_code, response, custom_address=custom_address),
                 response.status_code, retry_after=_retry_after(response), route=route,
+                delivery="UNKNOWN" if response.status_code in _UNKNOWN_OUTCOME_STATUSES else "ANSWERED",
+                should_retry=_should_retry(response),
             )
     except ProviderUnavailable as exc:
         if exc.route is None:
@@ -588,17 +629,25 @@ def _send(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         else:
             response = httpx.post(url, headers=headers, json=body, timeout=timeout,
                                   follow_redirects=False, trust_env=False)
-    except httpx.ConnectTimeout:
+    except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.WriteTimeout):
+        # The request was never (completely) delivered: no generation can have started.
         raise ProviderUnavailable(f"assistant provider {name} could not be reached in time", "NETWORK",
-                                  route=route) from None
+                                  route=route, delivery="NOT_SENT") from None
     except httpx.TimeoutException:
-        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "TIMEOUT", route=route) from None
+        # Read timeout: the provider has the request and may be generating (and billing).
+        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "TIMEOUT", route=route,
+                                  delivery="UNKNOWN") from None
     except (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL, UnicodeError):
         # Refused by httpx before anything was sent: a bug here, not the network.
         raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST",
                                   route=route) from None
+    except (httpx.ConnectError, httpx.ProxyError):
+        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route,
+                                  delivery="NOT_SENT") from None
     except httpx.HTTPError:
-        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route) from None
+        # Dropped after sending (read error, protocol error): the outcome is unknown.
+        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route,
+                                  delivery="UNKNOWN") from None
     return response, route, bool(relay)
 
 
