@@ -1357,7 +1357,7 @@ export default {
   'pref.days.from': 'с {from}',
   'pref.days.range': '{from} – {until}',
   'pref.status.APPLIED': 'Учтено',
-  'pref.status.RELAXED': 'Не удалось учесть: иначе не успеть',
+  'pref.status.RELAXED': 'Не удалось учесть в этом плане',
   'pref.status.UNSATISFIABLE': 'Не выполнимо: время уже занято',
   'plan.preferences': 'Пожелания к плану',
   'plan.preferencesHelp': 'Планировщик учитывает их, пока это не мешает успеть к дедлайнам.',

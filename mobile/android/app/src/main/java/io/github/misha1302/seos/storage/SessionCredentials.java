@@ -43,6 +43,9 @@ public final class SessionCredentials {
         boolean hasUser();
     }
 
+    // One lock for the whole process: the plugin and the background workers each build an
+    // instance, and a migration must never interleave with a sign-out.
+    private static final Object LOCK = new Object();
     private final CredentialVault vault;
     private final Legacy legacy;
 
@@ -56,57 +59,67 @@ public final class SessionCredentials {
         return new SessionCredentials(new KeystoreVault(app), new PreferencesLegacy(app));
     }
 
-    public synchronized Migration migrate() {
-        String old = legacy.token();
-        if (old == null || old.isEmpty()) return Migration.NOTHING_TO_MIGRATE;
-        try {
-            vault.write(old);
-            if (!old.equals(vault.read())) return Migration.VERIFY_FAILED;
-        } catch (Exception keystore) {
-            return Migration.SECURE_STORE_UNAVAILABLE;
+    public Migration migrate() {
+        synchronized (LOCK) {
+            String old = legacy.token();
+            if (old == null || old.isEmpty()) return Migration.NOTHING_TO_MIGRATE;
+            try {
+                vault.write(old);
+                if (!old.equals(vault.read())) return Migration.VERIFY_FAILED;
+            } catch (Exception keystore) {
+                return Migration.SECURE_STORE_UNAVAILABLE;
+            }
+            legacy.markMigrated();
+            return legacy.removeToken() ? Migration.MIGRATED : Migration.VERIFY_FAILED;
         }
-        legacy.markMigrated();
-        return legacy.removeToken() ? Migration.MIGRATED : Migration.VERIFY_FAILED;
     }
 
     /** The current token: migrates first, so a legacy-only token is still returned. */
-    public synchronized String token() {
-        Migration outcome = migrate();
-        if (outcome == Migration.VERIFY_FAILED || outcome == Migration.SECURE_STORE_UNAVAILABLE) {
-            return legacy.token();  // not migrated: the legacy copy is still the credential
-        }
-        if (!legacy.hasUser()) {
-            // Signed out — possibly by an older app version that only knows the legacy
-            // keys: the secure copy must not sign the user back in.
-            vault.clear();
-            return null;
-        }
-        try {
-            return vault.read();
-        } catch (Exception unreadable) {
-            return null;  // e.g. the Keystore key was wiped: the user signs in again
+    public String token() {
+        synchronized (LOCK) {
+            Migration outcome = migrate();
+            if (outcome == Migration.VERIFY_FAILED || outcome == Migration.SECURE_STORE_UNAVAILABLE) {
+                return legacy.token();  // not migrated: the legacy copy is still the credential
+            }
+            if (!legacy.hasUser()) {
+                // Signed out — possibly by an older app version that only knows the legacy
+                // keys: the secure copy must not sign the user back in.
+                vault.clear();
+                return null;
+            }
+            try {
+                return vault.read();
+            } catch (Exception unreadable) {
+                return null;  // e.g. the Keystore key was wiped: the user signs in again
+            }
         }
     }
 
     /** Stores a new token (null = sign out). Never falls back to plain storage. */
-    public synchronized void setToken(String value) throws Exception {
-        if (value == null || value.isEmpty()) {
-            clear();
-            return;
+    public void setToken(String value) throws Exception {
+        synchronized (LOCK) {
+            if (value == null || value.isEmpty()) {
+                clear();
+                return;
+            }
+            vault.write(value);
+            if (!value.equals(vault.read())) throw new IllegalStateException("secure credential verification failed");
+            legacy.removeToken();  // a stale legacy copy must not outlive a new login
         }
-        vault.write(value);
-        if (!value.equals(vault.read())) throw new IllegalStateException("secure credential verification failed");
-        legacy.removeToken();  // a stale legacy copy must not outlive a new login
     }
 
     /** Sign-out / server switch: both the secure and the legacy location are cleared. */
-    public synchronized void clear() {
-        vault.clear();
-        legacy.removeToken();
+    public void clear() {
+        synchronized (LOCK) {
+            vault.clear();
+            legacy.removeToken();
+        }
     }
 
-    public synchronized boolean migratedBefore() {
-        return legacy.migrated();
+    public boolean migratedBefore() {
+        synchronized (LOCK) {
+            return legacy.migrated();
+        }
     }
 
     static final class PreferencesLegacy implements Legacy {

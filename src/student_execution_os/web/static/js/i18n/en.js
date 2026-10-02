@@ -1357,7 +1357,7 @@ export default {
   'pref.days.from': 'from {from}',
   'pref.days.range': '{from} – {until}',
   'pref.status.APPLIED': 'Applied',
-  'pref.status.RELAXED': 'Not applied: deadlines would be missed',
+  'pref.status.RELAXED': 'Not applied in this plan',
   'pref.status.UNSATISFIABLE': 'Not possible: the time is already taken',
   'plan.preferences': 'Plan preferences',
   'plan.preferencesHelp': 'The planner follows them as long as deadlines can still be met.',

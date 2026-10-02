@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from time import monotonic
 from dataclasses import dataclass, replace
 
 from student_execution_os.domain.clock import Clock, SystemClock
@@ -21,6 +22,14 @@ _IMPORTANCE_RANK = {
     Importance.NORMAL: 2,
     Importance.LOW: 3,
 }
+
+
+# Wall-clock budget of the preference pass; past it the hard plan is kept as is.
+PREFERENCE_BUDGET_SECONDS = 0.75
+
+
+class _PreferenceBudgetExhausted(Exception):
+    pass
 
 
 def _block_id(*parts: object) -> str:
@@ -181,6 +190,10 @@ class Planner:
         UNSATISFIABLE (hard facts already break it, e.g. an event fills the evening).
         """
         guide = PreferenceGuide(tuple(snapshot.preference_windows))
+        if "EXACT_WITNESS" in feasibility.reasons:
+            # Only the exact search found a legal plan: a constructive placement that is
+            # even more constrained cannot exist, so nothing is honoured — say so.
+            return feasibility, tuple(f"PREFERENCE_RELAXED:{pid}" for pid in guide.preference_ids)
         hard = engine.hard_occupancy(snapshot)
         if hard is None:
             return feasibility, ()
@@ -190,13 +203,26 @@ class Planner:
         relaxed: list[str] = []
         order = list(relaxation_order(active.windows))
         witness = None
-        while True:
-            witness = engine.preferred_witness(snapshot, active.admissible) if active.windows else None
-            if witness is not None or not order:
-                break
-            dropped = order.pop(0)
-            relaxed.append(dropped)
-            active = active.without([dropped])
+        deadline = monotonic() + PREFERENCE_BUDGET_SECONDS
+
+        def admissible(task, candidate, occupancy, placements):
+            if monotonic() > deadline:
+                raise _PreferenceBudgetExhausted
+            return current.admissible(task, candidate, occupancy, placements)
+
+        try:
+            while True:
+                current = active
+                witness = engine.preferred_witness(snapshot, admissible) if active.windows else None
+                if witness is not None or not order:
+                    break
+                dropped = order.pop(0)
+                relaxed.append(dropped)
+                active = active.without([dropped])
+        except _PreferenceBudgetExhausted:
+            # Placement preferences must never make planning slow: keep the hard plan.
+            witness = None
+            relaxed = [pid for pid in guide.preference_ids if pid not in broken]
         notes = [f"PREFERENCE_UNSATISFIABLE:{pid}" for pid in broken]
         notes += [f"PREFERENCE_RELAXED:{pid}" for pid in relaxed]
         if witness is None:
