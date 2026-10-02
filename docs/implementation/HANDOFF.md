@@ -22,7 +22,9 @@
   `web/static/js/assistant-turn.js` + `command-preview.js`.
 - Assistant targets: `agent/disambiguation.py` — the server decides whether the model's pick
   is materially unique (authorized candidate set, the user's words, kind words, explicit
-  dates/times, previous turn); otherwise the target becomes a user choice.
+  dates/times, previous turn); otherwise the target becomes a user choice. With no
+  distinguishing evidence ("перенеси её") the pick continues only if it is the one target the
+  previous turn established or the only candidate of a fitting kind.
 - Provider reliability: `agent/reliability.py` — delivery-aware retry matrix (NOT_SENT /
   ANSWERED / UNKNOWN), total latency budget via `providers.CALL_DEADLINE`, attempt cap.
 - Device storage: `web/static/js/device-storage.js` (`OfflineOperationStore`,

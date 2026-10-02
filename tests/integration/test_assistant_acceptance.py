@@ -69,8 +69,11 @@ class ConversationProvider:
         raise AssertionError(text)
 
 
+PLAN = "Перенеси встречу на шесть, напомни о ней за двадцать минут, а после неё поставь час на отчёт."
+
+
 class PlanProvider:
-    """«Перенеси встречу на шесть, напомни о ней за двадцать минут, а после неё поставь час на отчёт.»"""
+    """Answers PLAN."""
 
     name = "plan-fixture"
     model = "fixture"
@@ -248,7 +251,7 @@ class ConflictAwarenessTest(AcceptanceBase):
         return sorted((item["kind"], item["title"]) for item in action.get("conflicts", []))
 
     def test_plan_items_warn_about_overlapping_events_but_not_each_other_or_the_old_slot(self):
-        move, remind, report = self.service(PlanProvider()).interpret("план")["actions"]
+        move, remind, report = self.service(PlanProvider()).interpret(PLAN)["actions"]
         self.assertEqual(self.kinds(move), [("EVENT", "Семинар")])  # 18:00–19:00 vs 18:30–19:30
         self.assertEqual(self.kinds(report), [("EVENT", "Семинар")])  # 19:00–20:00, back-to-back with the move
         self.assertNotIn("conflicts", remind)
@@ -257,7 +260,7 @@ class ConflictAwarenessTest(AcceptanceBase):
         preview = self.service(ConversationProvider()).interpret(
             "Перенеси встречу с Ариадной на три часа позже, иначе утром", {"timezone": "Europe/Moscow"})
         self.assertEqual(self.kinds(preview["actions"][0]), [("CLASS", "Пара по физике")])  # 10:00–11:00
-        moved_early = self.service(PlanProvider()).interpret("план")["actions"][0]
+        moved_early = self.service(PlanProvider()).interpret(PLAN)["actions"][0]
         self.assertNotIn(("PROTECTED_TIME", "сон"), self.kinds(moved_early))
 
     def test_protected_time_is_reported(self):
@@ -302,7 +305,7 @@ class MultiActionAcceptanceTest(AcceptanceBase):
 
     def test_explicit_edit_of_the_dependent_time_wins(self):
         service = self.service(PlanProvider())
-        preview = service.interpret("план")
+        preview = service.interpret(PLAN)
         move, remind, report = preview["actions"]
         service.apply({"batch_id": preview["batch_id"], "action_ids": [move["id"], remind["id"], report["id"]],
                        "idempotency_key": "plan", "edits": {
@@ -314,7 +317,7 @@ class MultiActionAcceptanceTest(AcceptanceBase):
 
     def test_work_task_after_an_approximate_fallback_is_approximate_too(self):
         service = self.service(PlanProvider(transform=GUARDED, task=True))
-        preview = service.interpret("план", {"timezone": "Europe/Moscow"})
+        preview = service.interpret(PLAN, {"timezone": "Europe/Moscow"})
         move, _remind, report = preview["actions"]
         self.assertEqual(report["resolution"]["precision"], "APPROXIMATE")
         self.assertEqual(self.local(datetime.fromisoformat(report["payload"]["actionable_from"])), "2026-10-02 11:00")
@@ -324,7 +327,7 @@ class MultiActionAcceptanceTest(AcceptanceBase):
 
     def test_ambiguous_prerequisite_leaves_the_dependent_time_unresolved_until_picked(self):
         service = self.service(PlanProvider(ambiguous=True))
-        preview = service.interpret("план")
+        preview = service.interpret(PLAN)
         move, report = preview["actions"]
         self.assertIn("starts_at", report["unresolved_fields"])
         self.assertNotIn("starts_at", report["payload"])
@@ -338,7 +341,7 @@ class MultiActionAcceptanceTest(AcceptanceBase):
         self.assertEqual(self.local(datetime.fromisoformat(self.created("Отчёт")["starts_at"])), "2026-10-01 19:00")
 
     def apply_plan(self, service):
-        preview = service.interpret("план")
+        preview = service.interpret(PLAN)
         service.apply({"batch_id": preview["batch_id"], "action_ids": [a["id"] for a in preview["actions"]],
                        "idempotency_key": "plan"})
         return preview
@@ -376,9 +379,9 @@ class MultiActionAcceptanceTest(AcceptanceBase):
         from student_execution_os.domain.errors import VersionConflict
 
         service = self.service(PlanProvider())
-        self.apply_plan(service)  # apply key "plan"
+        plan = self.apply_plan(service)  # apply key "plan"
         reminder = self.service(ConversationProvider())
-        later = reminder.interpret("И напомни за полчаса")
+        later = reminder.interpret("И напомни за полчаса", {"previous_batch_id": plan["batch_id"]})
         reminder.apply({"batch_id": later["batch_id"], "action_ids": [later["actions"][0]["id"]],
                         "idempotency_key": "later"})
         with self.assertRaises(VersionConflict):
@@ -389,7 +392,7 @@ class MultiActionAcceptanceTest(AcceptanceBase):
 
     def test_reference_outside_depends_on_is_rejected(self):
         with self.assertRaises(ValidationError):
-            self.service(PlanProvider(bad_reference=True)).interpret("план")
+            self.service(PlanProvider(bad_reference=True)).interpret(PLAN)
 
 
 if __name__ == "__main__":

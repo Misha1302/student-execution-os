@@ -11,12 +11,16 @@ sufficiently unique. The decision uses only deterministic evidence:
   its words appears in the user's text);
 * explicit kind words ("напоминание", "задача"…) and explicit dates/times the user
   mentioned for the item (a RESCHEDULE's destination time is not evidence);
-* the previous Assistant turn ("перенеси её ещё на час").
+* the previous Assistant turn ("перенеси её ещё на час"), but only when that turn
+  established exactly one target of a fitting kind.
 
 Outcome: one materially unique candidate → continue; several materially plausible
 candidates → the action becomes an unresolved target with those candidates for the
-user to pick; a pick outside the authorized set → rejected. Model confidence is
-never used as evidence.
+user to pick; a pick outside the authorized set → rejected. Without any evidence
+("перенеси её") the pick continues only when it is the one target the previous turn
+established, or the only candidate of a fitting kind there is; otherwise the user
+picks. Model confidence is never used as evidence, and neither is the model having
+picked something.
 """
 from __future__ import annotations
 
@@ -153,15 +157,30 @@ def candidates_from_context(context: dict[str, object]) -> list[Candidate]:
     return result
 
 
-def session_target_ids(context: dict[str, object]) -> set[str]:
+_SESSION_KEYS = (("obligation_id", frozenset({"TASK", "EVENT"})), ("reminder_id", frozenset({"REMINDER"})))
+
+
+def session_targets(context: dict[str, object]) -> dict[str, frozenset[str]]:
+    """Existing items the previous Assistant turn addressed, with the kinds each can be."""
     session = context.get("assistant_session")
     previous = session.get("previous_actions") if isinstance(session, dict) else None
-    ids: set[str] = set()
+    found: dict[str, frozenset[str]] = {}
     for action in previous if isinstance(previous, list) else []:
         payload = action.get("payload") if isinstance(action, dict) else None
         if isinstance(payload, dict):
-            ids.update(str(payload[key]) for key in ("obligation_id", "reminder_id") if payload.get(key))
-    return ids
+            for key, kinds in _SESSION_KEYS:
+                if payload.get(key):
+                    found[str(payload[key])] = found.get(str(payload[key]), frozenset()) | kinds
+    return found
+
+
+def established_target(context: dict[str, object], allowed_kinds: set[str]) -> str | None:
+    """The one item of a fitting kind the previous turn addressed, or None when it
+    addressed none or several (then a pronoun does not say which)."""
+    known = {c.id: c.kind for c in candidates_from_context(context)}
+    fitting = {item for item, kinds in session_targets(context).items()
+               if (known[item] in allowed_kinds if item in known else kinds & allowed_kinds)}
+    return next(iter(fitting)) if len(fitting) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -176,10 +195,10 @@ def judge(*, chosen_id: str, allowed_kinds: set[str], text: str, target_text: ob
           destination: datetime | None = None) -> Verdict:
     """Decide whether the model's pick is the one materially unique candidate."""
     pool = [c for c in candidates_from_context(context) if c.kind in allowed_kinds]
-    session = session_target_ids(context)
     chosen = next((c for c in pool if c.id == chosen_id), None)
-    if chosen is None and chosen_id not in session:
+    if chosen is None and chosen_id not in session_targets(context):
         return Verdict("OUT_OF_SCOPE", "TARGET_NOT_IN_AUTHORIZED_CONTEXT")
+    established = established_target(context, allowed_kinds)
 
     said = tokens(text)
     phrase = tokens(target_text) if isinstance(target_text, str) else []
@@ -188,15 +207,15 @@ def judge(*, chosen_id: str, allowed_kinds: set[str], text: str, target_text: ob
 
     scored = [(title_score(c.title, said), c) for c in pool]
     best = max((score for score, _ in scored), default=(0.0, 0))
-    if best[0] < 0.5:
-        # Nothing the user said names an item ("перенеси её"): the pick rests on the
-        # conversation, which the server cannot contradict.
-        return Verdict("CONTINUE", "NO_LEXICAL_EVIDENCE")
-    tied = [c for score, c in scored if score == best]
+    # Below half a title named, the words do not point at an item ("перенеси её"):
+    # every candidate of a fitting kind stays plausible.
+    tied = [c for score, c in scored if score == best] if best[0] >= 0.5 else list(pool)
+    evidence = best[0] >= 0.5
 
     hinted = {kind for stem, kind in _KIND_HINTS if any(word.startswith(stem) for word in tokens(text))}
-    if hinted and any(c.kind in hinted for c in tied):
+    if hinted and any(c.kind in hinted for c in tied) and any(c.kind not in hinted for c in tied):
         tied = [c for c in tied if c.kind in hinted]
+        evidence = True
 
     if len(tied) > 1:
         local_destination = destination.astimezone(zone) if destination else None
@@ -212,16 +231,31 @@ def judge(*, chosen_id: str, allowed_kinds: set[str], text: str, target_text: ob
             by_time = [c for c in narrowed
                        if c.moment and c.moment.astimezone(zone).time().replace(second=0, microsecond=0) in times]
             narrowed = by_time or narrowed
+        evidence = evidence or len(narrowed) < len(tied)
         tied = narrowed
 
-    if len(tied) > 1 and chosen_id in session and any(c.id == chosen_id for c in tied):
-        return Verdict("CONTINUE", "SESSION_CONTINUATION")
+    if not evidence:
+        # Nothing the user said distinguishes an item: the conversation may, the pick may not.
+        if established is not None and chosen_id == established:
+            return Verdict("CONTINUE", "SESSION_CONTINUATION")
+        if len(pool) == 1 and chosen is not None and established in (None, chosen_id):
+            return Verdict("CONTINUE", "SOLE_CANDIDATE")
+        return _ambiguous("NO_DISTINGUISHING_EVIDENCE", tied, chosen, established)
     if len(tied) == 1 and tied[0].id == chosen_id:
         return Verdict("CONTINUE", "UNIQUE")
-    if len(tied) == 1 and chosen_id in session:
+    if len(tied) > 1 and chosen_id == established and chosen is not None and chosen in tied:
         return Verdict("CONTINUE", "SESSION_CONTINUATION")
-    options = list(tied)
-    if chosen is not None and chosen not in options:
-        options.append(chosen)  # the model's pick stays selectable, but the user decides
-    return Verdict("AMBIGUOUS", "MULTIPLE_PLAUSIBLE" if len(tied) > 1 else "PICK_CONTRADICTS_TEXT",
-                   tuple(options[:MAX_CANDIDATES]))
+    return _ambiguous("MULTIPLE_PLAUSIBLE" if len(tied) > 1 else "PICK_CONTRADICTS_TEXT", tied, chosen, established)
+
+
+def _ambiguous(reason: str, plausible: list[Candidate], chosen: Candidate | None,
+               established: str | None) -> Verdict:
+    """The user picks. The previous turn's item and the model's pick are offered first
+    (the user may well mean them), then the rest of what fits, nearest first."""
+    first = [c for c in plausible if c.id == established]
+    if chosen is not None:
+        first.append(chosen)
+    rest = sorted((c for c in plausible if c not in first),
+                  key=lambda c: (c.moment is None, c.moment.timestamp() if c.moment else 0.0))
+    options = list(dict.fromkeys([*first, *rest]))
+    return Verdict("AMBIGUOUS", reason, tuple(options[:MAX_CANDIDATES]))

@@ -40,6 +40,36 @@ class PickProvider:
         }]}
 
 
+class EventUpdateProvider:
+    name = "event-update-fixture"
+    model = "fixture"
+
+    def __init__(self, event_id):
+        self.event_id = event_id
+
+    def interpret(self, text, context):
+        item = next(i for i in context["obligations"] if i["id"] == self.event_id)
+        return {"message": "remind", "actions": [{
+            "command": "UPDATE_EVENT", "payload": {"obligation_id": item["id"], "remind_before_minutes": 30},
+            "confidence": 0.99, "unresolved_fields": [], "expected_version": item["version"],
+            "requires_confirmation": False,
+        }]}
+
+
+class TwoMovesProvider:
+    name = "two-moves-fixture"
+    model = "fixture"
+
+    def interpret(self, text, context):
+        return {"message": "moved", "actions": [{
+            "command": "RESCHEDULE",
+            "payload": {"obligation_id": item["id"], "target_text": "встречи",
+                        "when": (datetime.fromisoformat(item["starts_at"]) + timedelta(days=1)).isoformat()},
+            "confidence": 0.99, "unresolved_fields": [], "expected_version": item["version"],
+            "requires_confirmation": False,
+        } for item in context["obligations"]]}
+
+
 def by_title(title, nth=0, kind=None):
     def pick(context):
         items = [i for i in [*context["obligations"], *context["reminders"]]
@@ -182,6 +212,63 @@ class AssistantAmbiguityTest(unittest.TestCase):
                                   PickProvider(by_title("Встреча с Ариадной", 1), NOW.replace(hour=19) + timedelta(days=5)),
                                   previous_batch_id=first["batch_id"])
         self.assert_continues(repeated, "ariadna-fri")
+
+    # -- no distinguishing evidence: the model's pick is not authority ----------------------
+    def test_a_pronoun_without_an_established_target_asks_instead_of_trusting_the_pick(self):
+        self.event("meeting-a", "Встреча с Ариадной", NOW.replace(hour=15))
+        self.event("meeting-b", "Встреча с Борисом", NOW.replace(hour=17))
+        for nth in (0, 1):
+            pick = PickProvider(lambda context, n=nth: sorted(context["obligations"], key=lambda i: i["id"])[n],
+                                NOW.replace(hour=19))
+            action = self.assert_ambiguous(self.interpret("Перенеси её на 19:00", pick), ["meeting-a", "meeting-b"])
+            self.assertEqual(action["target_guard"], "NO_DISTINGUISHING_EVIDENCE")
+            self.assertIsNone(action["expected_version"])
+        self.assertEqual(self.repository.get_event("account", "meeting-a").interval.starts_at, NOW.replace(hour=15))
+        self.assertEqual(self.repository.get_event("account", "meeting-b").interval.starts_at, NOW.replace(hour=17))
+
+    def test_a_pronoun_with_the_only_fitting_item_continues(self):
+        self.event("meeting", "Встреча с Ариадной", NOW.replace(hour=15))
+        Commands(self.repository, account_id="account", actor=ActorCategory.USER_UI, now=NOW).run(
+            "reminder.create", "reminder-milk", {"title": "Купить молоко", "remind_at": (NOW + timedelta(hours=3)).isoformat()})
+        # UPDATE_EVENT can only address events: the reminder is not a candidate.
+        preview = self.service(EventUpdateProvider("meeting")).interpret("Напомни о ней за полчаса",
+                                                                     {"timezone": "Europe/Moscow"})
+        self.assert_continues(preview, "meeting")
+
+    def test_an_explicit_time_alone_identifies_the_item(self):
+        self.event("call-a", "Созвон с Петей", NOW.replace(hour=15))
+        self.event("call-b", "Обед с Олей", NOW.replace(hour=13))
+        preview = self.interpret("То, что в 15:00, перенеси на 18:00",
+                                 PickProvider(by_title("Созвон с Петей"), NOW.replace(hour=18)))
+        self.assert_continues(preview, "call-a")
+        wrong = self.interpret("То, что в 15:00, перенеси на 18:00",
+                               PickProvider(by_title("Обед с Олей"), NOW.replace(hour=18)))
+        self.assertEqual(self.assert_ambiguous(wrong, ["call-a", "call-b"])["target_guard"], "PICK_CONTRADICTS_TEXT")
+
+    def test_a_previous_turn_with_several_targets_does_not_bind_a_pronoun(self):
+        self.event("meeting-a", "Встреча с Ариадной", NOW.replace(hour=15))
+        self.event("meeting-b", "Встреча с Борисом", NOW.replace(hour=17))
+        both = self.service(TwoMovesProvider()).interpret("Перенеси обе встречи на завтра",
+                                                          {"timezone": "Europe/Moscow"})
+        self.assertEqual(len(both["actions"]), 2)
+        pronoun = self.interpret("Нет, её лучше на 19:00",
+                                 PickProvider(by_title("Встреча с Борисом"), NOW.replace(hour=19)),
+                                 previous_batch_id=both["batch_id"])
+        self.assert_ambiguous(pronoun, ["meeting-a", "meeting-b"])
+
+    def test_an_unresolved_previous_target_establishes_nothing_until_the_user_picks(self):
+        self.event("ariadna-mon", "Встреча с Ариадной", NOW.replace(hour=15))
+        self.event("ariadna-fri", "Встреча с Ариадной", NOW.replace(hour=15) + timedelta(days=4))
+        first = self.interpret("Перенеси встречу с Ариадной на 18:00",
+                               PickProvider(by_title("Встреча с Ариадной", 1), NOW.replace(hour=18)))
+        action = self.assert_ambiguous(first, ["ariadna-mon", "ariadna-fri"])
+        pick = PickProvider(by_title("Встреча с Ариадной", 1), NOW.replace(hour=19))
+        unbound = self.interpret("Нет, её лучше на 19:00", pick, previous_batch_id=first["batch_id"])
+        self.assert_ambiguous(unbound, ["ariadna-mon", "ariadna-fri"])
+        # The user picked Friday in the preview; that pick now establishes the target.
+        chosen = self.interpret("Нет, её лучше на 19:00", pick, previous_batch_id=first["batch_id"],
+                                previous_edits={action["id"]: {"obligation_id": "ariadna-fri", "expected_version": 1}})
+        self.assert_continues(chosen, "ariadna-fri")
 
     # -- authorization ---------------------------------------------------------------------
     def test_items_outside_the_authorized_context_are_rejected(self):
