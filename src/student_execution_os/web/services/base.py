@@ -12,6 +12,7 @@ from student_execution_os.reminders import ReminderStore
 from student_execution_os.recurrence import SQLiteRecurrenceRepository
 from student_execution_os.planning import SQLitePlanningStateSource, build_planning_snapshot
 from student_execution_os.planning.model import PlanningPolicy
+from student_execution_os.planning.preference_store import derived_preference_windows
 from student_execution_os.planning.outlook import SQLitePlanningProfileRepository, off_hours_constraints
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
 
@@ -59,6 +60,7 @@ class ApplicationService:
                 optional_event_policy=profile.optional_event_policy,
             ),
             derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
+            derived_preferences=derived_preference_windows(repo, profile, self.account_id),
             assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
 

@@ -10,6 +10,7 @@
 import { api } from './api.js';
 import { peek } from './store.js';
 import { t, fmtDateTime, fmtDuration, fmtTime } from './i18n.js';
+import { describePreference } from './preferences.js';
 import { esc, icon, setBusy } from './ui.js';
 import { change, mutate } from './actions.js';
 import { matchTarget, rescheduleChange } from './commands.js';
@@ -38,10 +39,11 @@ export function knownItems() {
 export const isCommand = (action) => Boolean(KINDS[action?.command]);
 
 // Server actions that only exist as part of an Assistant proposal (never a capture card).
-const PLAN_ONLY = new Set(['UNDO_LAST', 'CREATE_TIME_CONSTRAINT']);
+const PLAN_ONLY = new Set(['UNDO_LAST', 'CREATE_TIME_CONSTRAINT', 'CREATE_PLANNING_PREFERENCE']);
 // What the server can revert for [Отменить] (it stores an inverse for these).
 const REVERSIBLE = new Set(['RESCHEDULE', 'SNOOZE', 'UPDATE_TASK', 'UPDATE_EVENT', 'UPDATE_REMINDER',
-  'CREATE_TASK', 'CREATE_EVENT', 'CREATE_REMINDER', 'CREATE_NOTE', 'CREATE_TIME_CONSTRAINT']);
+  'CREATE_TASK', 'CREATE_EVENT', 'CREATE_REMINDER', 'CREATE_NOTE', 'CREATE_TIME_CONSTRAINT',
+  'CREATE_PLANNING_PREFERENCE']);
 // A time the server derives from an earlier action («после неё») — known once that
 // action's item is picked, so it does not block the button.
 const DERIVED = new Set(['starts_at', 'ends_at', 'actionable_from', 'remind_at']);
@@ -97,6 +99,7 @@ function describe(action, item) {
     case 'CREATE_NOTE': return t('cmd.createNote');
     case 'CREATE_TIME_CONSTRAINT': return t(p.type === 'FIXED_PERSONAL_BLOCK' ? 'cmd.constraintBlock' : 'cmd.constraintFree',
       { from: when(p.starts_at), to: when(p.ends_at) });
+    case 'CREATE_PLANNING_PREFERENCE': return t('cmd.preference', { what: describePreference(p) });
     case 'UNDO_LAST': return t('cmd.undoLast');
     case 'COMPLETE_OBLIGATION': return t(item?.kind === 'REMINDER' ? 'cmd.completeReminder' : 'cmd.complete', { title });
     case 'CANCEL_OBLIGATION': return t(item?.kind === 'EVENT' ? 'cmd.cancelEvent' : item?.kind === 'REMINDER' ? 'cmd.cancelReminder' : 'cmd.cancel', { title });

@@ -28,6 +28,8 @@ from .nlparse import parse_task
 from .providers import ProviderUnavailable
 from .read import SQLiteAssistantReadService
 from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
+from student_execution_os.planning.preferences import LIGHT_DAY_WORK_MINUTES, PreferenceKind, preference_from_payload
+
 from .semantic import RelativeToAction, TemporalPrecision, parse_relative_to, resolve_temporal_transform
 
 
@@ -155,6 +157,8 @@ _RELATIVE_FIELDS = {
     AgentCommand.CREATE_TASK.value: ("actionable_from",),
     AgentCommand.CREATE_REMINDER.value: ("remind_at",),
 }
+_PREFERENCE_FIELDS = {"kind", "anchor", "target", "date_from", "date_until", "window_start", "window_end", "minutes",
+                      "reason"}
 _PAYLOAD_KEYS = {
     AgentCommand.CREATE_NOTE.value: {"content"},
     AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS | {_RELATIVE},
@@ -176,6 +180,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.RESCHEDULE.value: {"when", "keep_time", "temporal_transform"} | _TARGET,
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
     AgentCommand.CREATE_TIME_CONSTRAINT.value: {"type", "starts_at", "ends_at", "reason"},
+    AgentCommand.CREATE_PLANNING_PREFERENCE.value: _PREFERENCE_FIELDS,
     AgentCommand.UNDO_LAST.value: set(),
 }
 _REQUIRED = {
@@ -186,6 +191,7 @@ _REQUIRED = {
     AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
     AgentCommand.SNOOZE.value: ("until",),
     AgentCommand.CREATE_TIME_CONSTRAINT.value: ("type", "starts_at", "ends_at"),
+    AgentCommand.CREATE_PLANNING_PREFERENCE.value: ("kind", "date_from"),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -345,6 +351,13 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if payload.get("reason") is not None and (
                 not isinstance(payload["reason"], str) or len(payload["reason"]) > 5000):
             raise ValidationError("assistant time constraint reason must be text up to 5000 characters")
+    if command == AgentCommand.CREATE_PLANNING_PREFERENCE.value and not unresolved:
+        if payload.get("kind") == PreferenceKind.WORK_LIMIT.value and payload.get("minutes") is None:
+            # «сделай день полегче» without a number: the documented light-day budget.
+            payload["minutes"] = LIGHT_DAY_WORK_MINUTES
+            field_provenance["minutes"] = "MODEL_INFERRED"
+        # The one preference parser (shared with preference.create) decides validity.
+        preference_from_payload("assistant-preview", account_id, payload)
     if payload.get("target_text") is not None and (not isinstance(payload["target_text"], str) or len(payload["target_text"]) > 300):
         raise ValidationError("assistant target_text must be short text")
     if _RELATIVE in payload:
@@ -1411,6 +1424,8 @@ class SQLiteAssistantService:
             return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
         if command is AgentCommand.CREATE_TIME_CONSTRAINT:
             return "constraint.create", f"constraint-{uuid4()}", fields
+        if command is AgentCommand.CREATE_PLANNING_PREFERENCE:
+            return "preference.create", f"preference-{uuid4()}", fields
         if command is AgentCommand.UPDATE_TASK:
             return "task.update", entity, fields
         if command is AgentCommand.UPDATE_EVENT:
@@ -1516,7 +1531,8 @@ class SQLiteAssistantService:
 
     # Where each inverse's entity keeps its optimistic version.
     _VERSION_TABLES = {"reminder": ("reminders", "id"), "note": ("notes", "id"),
-                       "constraint": ("user_time_constraints", "id")}
+                       "constraint": ("user_time_constraints", "id"),
+                       "preference": ("planning_preferences", "id")}
 
     def _current_version(self, operation: str, entity_id: str) -> int | None:
         table, key = self._VERSION_TABLES.get(operation.split(".", 1)[0], ("obligations", "id"))
@@ -1533,6 +1549,7 @@ class SQLiteAssistantService:
             AgentCommand.CREATE_TASK.value: "task.delete", AgentCommand.CREATE_EVENT.value: "event.delete",
             AgentCommand.CREATE_REMINDER.value: "reminder.delete", AgentCommand.CREATE_NOTE.value: "note.delete",
             AgentCommand.CREATE_TIME_CONSTRAINT.value: "constraint.delete",
+            AgentCommand.CREATE_PLANNING_PREFERENCE.value: "preference.delete",
         }.get(action["command"])
         return None if operation is None else {"operation": operation, "payload": {}}
 

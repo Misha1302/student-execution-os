@@ -17,7 +17,26 @@ def _iso(value: datetime | None) -> str | None:
 
 def _stable_payload(*, account_id, revision, analysis_start, analysis_end, output_start, output_end,
                     tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, travel_projection, policy,
-                    soft_priority_task_ids, effort_multipliers) -> dict[str, object]:
+                    soft_priority_task_ids, effort_multipliers, preference_windows=()) -> dict[str, object]:
+    payload = _hard_payload(
+        account_id=account_id, revision=revision, analysis_start=analysis_start, analysis_end=analysis_end,
+        output_start=output_start, output_end=output_end, tasks=tasks, events=events, constraints=constraints,
+        dependencies=dependencies, milestones=milestones, cutoff_reconciliation=cutoff_reconciliation,
+        travel_projection=travel_projection, policy=policy, soft_priority_task_ids=soft_priority_task_ids,
+        effort_multipliers=effort_multipliers,
+    )
+    if preference_windows:
+        # Only present when the account has preferences, so existing plan hashes are unchanged.
+        payload["preference_windows"] = [
+            [w.preference_id, w.kind.value, w.target, w.minutes, _iso(w.starts_at), _iso(w.ends_at)]
+            for w in preference_windows
+        ]
+    return payload
+
+
+def _hard_payload(*, account_id, revision, analysis_start, analysis_end, output_start, output_end,
+                  tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, travel_projection, policy,
+                  soft_priority_task_ids, effort_multipliers) -> dict[str, object]:
     return {
         "account_id": account_id,
         "input_server_revision": revision,
@@ -243,6 +262,7 @@ def build_planning_snapshot(
     plan_output_horizon_end: datetime | None = None,
     policy: PlanningPolicy | None = None,
     derived_constraints=None,
+    derived_preferences=None,
     assume_attendance: bool = False,
 ) -> PlanningSnapshot:
     """Materialize one immutable, revision-bound planning input.
@@ -304,6 +324,10 @@ def build_planning_snapshot(
         # user's own constraints over the whole analysis horizon.
         extra = tuple(derived_constraints(analysis_horizon_start, effective_analysis_end))
         constraints = tuple(sorted((*constraints, *extra), key=lambda c: c.id))
+    preference_windows = (
+        tuple(derived_preferences(analysis_horizon_start, effective_analysis_end, events))
+        if derived_preferences is not None else ()
+    )
     output_start = plan_output_horizon_start or analysis_horizon_start
     output_end = plan_output_horizon_end or min(analysis_horizon_end, effective_analysis_end)
     if output_end > effective_analysis_end:
@@ -326,6 +350,7 @@ def build_planning_snapshot(
         policy=policy,
         soft_priority_task_ids=soft_priority_task_ids,
         effort_multipliers=effort_multipliers,
+        preference_windows=preference_windows,
     )
     input_hash = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -348,4 +373,5 @@ def build_planning_snapshot(
         effort_multipliers=effort_multipliers,
         cutoff_reconciliation=cutoff_reconciliation,
         travel_projection=travel_projection,
+        preference_windows=preference_windows,
     )

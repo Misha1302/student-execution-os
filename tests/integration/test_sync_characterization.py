@@ -22,7 +22,7 @@ REGISTERED = sorted("""
 calibration.set constraint.create constraint.delete constraint.update
 event.cancel event.create event.delete event.reopen event.update
 execution.cancel execution.finish execution.pause execution.resume execution.start
-intent.close intent.set
+intent.close intent.set preference.create preference.delete
 milestone.cancel milestone.complete milestone.create milestone.delete milestone.reopen milestone.update
 note.archive note.create note.delete note.link note.transcript.fail note.transcript.set note.unarchive note.update
 project.cancel project.complete project.create project.member.add project.member.remove project.reopen

@@ -76,6 +76,9 @@ class PlanningSnapshot:
     travel_projection: TravelProjection = TravelProjection()
     soft_priority_task_ids: tuple[str, ...] = ()
     effort_multipliers: tuple[tuple[str, float], ...] = ()
+    # Derived, UTC-expanded soft preference windows (planning.preferences). They steer
+    # placement only; feasibility never reads them.
+    preference_windows: tuple = ()
 
     def __post_init__(self) -> None:
         for name in (

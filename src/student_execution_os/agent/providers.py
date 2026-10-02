@@ -35,7 +35,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|UNDO_LAST","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
+{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
@@ -53,8 +53,23 @@ write SQL or include an identifier that is absent from context.
 Planner-control language becomes canonical constraints, never plan blocks:
   CREATE_TIME_CONSTRAINT {type:"UNAVAILABLE"|"FIXED_PERSONAL_BLOCK",starts_at,ends_at,reason?}.
 Use it for explicit protected/unavailable windows such as "завтра ничего до 12" or
-"оставь этот час свободным". Do not use it for vague preferences that need a new
-domain concept, and never claim that a derived plan block was edited.
+"оставь этот час свободным" (a fixed, known interval).
+Soft wishes about how the plan should look become a planning preference (the planner
+honours it when the hard schedule allows and reports when it cannot):
+  CREATE_PLANNING_PREFERENCE {kind,date_from:"YYYY-MM-DD",date_until?:"YYYY-MM-DD"|null,
+    anchor?:"CLOCK"|"WAKE",target?,window_start?:"HH:MM",window_end?:"HH:MM",minutes?,reason?}
+  kind KEEP_FREE: keep at least `minutes` contiguous free inside window_start-window_end
+    ("вечером" = 18:00-23:00 unless the user says otherwise).
+  kind WORK_LIMIT: plan at most `minutes` of work that local day; omit minutes for a
+    plain "полегче" day (the server uses its light-day budget).
+  kind AVOID_WORK: no work of target ALL|DEMANDING|STUDY in window_start-window_end
+    (window_end omitted = until the end of the day); with anchor WAKE use minutes
+    (the window then starts when the user's day starts) and no clock times.
+  kind REST_AFTER_EVENTS: no work for `minutes` after each event of target
+    CLASSES|ALL_EVENTS ("после пары" = CLASSES).
+  date_from/date_until are local dates; one day = both equal; "каждый день"/"обычно" =
+  date_from today and date_until null. Do not encode preferences as constraints, and
+  never claim that a derived plan block was edited.
 UNDO_LAST payload is {}. Use it only for an explicit request to undo the most recent
 Assistant change; the server reverts every reversible action of that last apply (a created
 item is removed). It checks each item's current version before applying a stored inverse;
@@ -147,7 +162,7 @@ _TOP_LEVEL_SCHEMA = {
                             "CREATE_TASK", "CREATE_EVENT", "CREATE_REMINDER", "CREATE_NOTE", "UPDATE_TASK",
                             "UPDATE_EVENT", "UPDATE_REMINDER", "RESCHEDULE", "SNOOZE", "LOG_PROGRESS",
                             "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
-                            "CREATE_TIME_CONSTRAINT", "UNDO_LAST",
+                            "CREATE_TIME_CONSTRAINT", "CREATE_PLANNING_PREFERENCE", "UNDO_LAST",
                         )]},
                         "payload": {"type": "object", "additionalProperties": True},
                         "client_ref": {"type": "string", "maxLength": 64},
