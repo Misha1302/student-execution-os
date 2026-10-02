@@ -136,11 +136,67 @@ server-side and change only the network path of allowlisted LLM requests.
 
 The application already has host-scoped egress seams, so changing network origin stays a
 deployment concern rather than adding provider-specific transport branches. The options
-below are deliberately explicit: Tor + Privoxy is the free CONNECT-proxy overlay, a
-dedicated HTTP CONNECT proxy preserves end-to-end provider TLS, and the Cloudflare Groq
-relay is the current production default for Groq. Native SOCKS5/SOCKS5h support would add
+below are deliberately explicit: the Cloudflare WARP proxy is the production route for
+Groq, Tor + Privoxy is the free CONNECT-proxy overlay, a dedicated HTTP CONNECT proxy
+preserves end-to-end provider TLS, and the Cloudflare Groq relay is kept for hosts where
+it is accepted. Native SOCKS5/SOCKS5h support would add
 application dependencies without providing a capability the existing HTTP CONNECT seam
 lacks.
+
+#### Cloudflare WARP egress (production route for Groq)
+
+Groq rejects the production VPS directly, through Tor exits and through the Cloudflare
+Worker relay (Cloudflare forwards the caller's country on Worker subrequests): all three
+answer `403`. A Cloudflare WARP client in proxy mode is accepted (an invalid-key probe gets
+Groq's `401 invalid_api_key`, i.e. the request reached authentication). It runs as its own
+Compose project, `deploy/llm-egress/warp/compose.yml`, so an application release or
+rollback never stops it:
+
+```
+Execution OS API --HTTP CONNECT, only api.groq.com--> seos-groq-warp:40001 (WARP proxy mode) --> Groq
+Execution OS API --everything else--> normal route
+```
+
+- **Ownership:** the WARP project is host infrastructure owned by the operator, started once
+  per host; its WARP registration (a free, anonymous device registration) lives in the
+  external volume `seos-warp-state`, never in the repository.
+- **Exposure:** no host port is published. The proxy listens on the internal network
+  `seos-g9-egress_egress` (no route out except through WARP) and the WARP container's own
+  uplink network. Only containers explicitly attached to `seos-g9-egress_egress` can use it,
+  and CONNECT keeps TLS end to end: the proxy never sees the provider key or the prompt.
+- **Restarts:** `restart: unless-stopped` and Docker enabled at boot bring it back after a
+  reboot; its healthcheck reports healthy only when WARP is connected and a request through
+  the proxy egresses with `warp=on`. Stop it with `stop`, not `down`: `down` removes the
+  network the API is attached to.
+- **Failure behaviour:** if WARP is down, only allowlisted provider requests fail (`NETWORK`)
+  and capture falls back to local parsing; the API itself is unaffected. There is no
+  automatic failover to another route.
+
+Start (once per host) and verify:
+
+```bash
+docker volume create seos-warp-state
+docker compose -f deploy/llm-egress/warp/compose.yml up -d --build
+docker inspect -f '{{.State.Health.Status}}' seos-groq-warp      # healthy
+```
+
+Then deploy the application with the overlay, which points `SEOS_LLM_EGRESS_PROXY` at the
+WARP proxy for exactly `api.groq.com`, clears the relay and `SEOS_LLM_EGRESS_PROXY_FILE`
+(one egress owner), and attaches only the `api` service to `seos-g9-egress_egress`:
+
+```bash
+docker compose \
+  -p student-execution-os \
+  -f deploy/docker-compose.nginx.yml \
+  -f deploy/docker-compose.warp-egress.yml \
+  --env-file /etc/student-execution-os/student-execution-os.env \
+  up -d --build --remove-orphans
+docker exec student-execution-os-api-1 python -m student_execution_os llm-smoke   # "result": "OK", "route": "PROXY"
+```
+
+Do not combine it with `docker-compose.tor.yml`. **Rollback:** deploy without the overlay
+(the environment file's relay or proxy settings apply again); the WARP project can keep
+running unused.
 
 #### Free Tor overlay
 
@@ -276,7 +332,7 @@ uses the proxy only when the provider request hostname exactly matches the comma
 allowlist; arbitrary user-supplied OpenAI-compatible hosts continue to use the normal
 route.
 
-#### Cloudflare Groq relay (default for production)
+#### Cloudflare Groq relay
 
 `deploy/cloudflare-groq-relay/` is a Cloudflare Worker that relays exactly
 `POST /openai/v1/chat/completions` to the hard-coded
@@ -287,6 +343,9 @@ whose original host is exactly in `SEOS_LLM_EGRESS_RELAY_HOSTS`:
 Execution OS API --HTTPS, X-SEOS-Relay-Token + user's Authorization--> Worker --HTTPS--> Groq
 Execution OS API --everything else--> Internet directly
 ```
+
+As of 2026-10-02 Groq answers `403` to this relay when it is called from the production
+VPS (see the WARP section above); it remains an option where the caller's region is accepted.
 
 **Trust difference:** unlike Tor or a CONNECT proxy, the Worker **terminates TLS**, so
 Cloudflare can technically observe the user's Groq key and the prompt it forwards. The
@@ -409,7 +468,8 @@ REL=/opt/student-execution-os/releases/$SHA
 ENV=/etc/student-execution-os/student-execution-os.env
 
 # 0. What runs now? Record it: it is the rollback target. Release with the same Compose file
-#    set (with or without deploy/docker-compose.tor.yml); a release does not change topology.
+#    set (with or without an egress overlay: docker-compose.warp-egress.yml or
+#    docker-compose.tor.yml); a release does not change topology.
 docker compose ls --filter name=student-execution-os          # CONFIG FILES = $PREV/deploy/...
 docker inspect --format '{{.Config.Image}}' student-execution-os-api-1   # previous image tag
 PREV=/opt/student-execution-os/releases/<sha from CONFIG FILES>
@@ -445,7 +505,9 @@ sudo grep -q "^SEOS_IMAGE_TAG=$SHA$" "$ENV" || echo "SEOS_IMAGE_TAG=$SHA" | sudo
 
 # 5. Review the resolved configuration without printing the environment.
 cd "$REL"
-C="docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml"   # + -f deploy/docker-compose.tor.yml if step 0 showed it
+C="docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml"   # + the egress overlay step 0 showed
+#    (-f deploy/docker-compose.warp-egress.yml needs the WARP project healthy first:
+#     docker inspect -f '{{.State.Health.Status}}' seos-groq-warp)
 sudo $C --env-file "$ENV" config --format json | python3 -c '
 import json, sys
 c = json.load(sys.stdin)
@@ -455,6 +517,11 @@ for name, svc in sorted(c["services"].items()):
           [v.get("source") for v in svc.get("volumes", [])])'
 #    expect: api and reminder-worker revision=$SHA, api only on 127.0.0.1:8765, data in
 #    /var/lib/student-execution-os, no caddy service.
+sudo $C --env-file "$ENV" config --format json | python3 -c '
+import json, sys
+env = json.load(sys.stdin)["services"]["api"].get("environment", {})
+print({k: env.get(k) for k in sorted(env) if k.startswith("SEOS_LLM_EGRESS") and not k.endswith("TOKEN_FILE")})'
+#    expect exactly one egress owner per host (proxy hosts and relay hosts do not overlap).
 
 # 6. Build and recreate (migrations run once, when the new api starts).
 sudo $C --env-file "$ENV" up -d --build --remove-orphans
@@ -464,6 +531,7 @@ docker image ls student-execution-os --format '{{.Tag}} {{.ID}} {{.CreatedAt}}' 
 # 7. Verify.
 curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health    # revision == $SHA, schema_version
 python3 deploy/smoke.py https://seos.185-102-139-43.sslip.io --expect-revision "$SHA" --expect-worker
+docker exec student-execution-os-api-1 python -m student_execution_os llm-smoke        # STARTER: "result": "OK" (exit 0); prints no key
 ```
 
 `--remove-orphans` removes services the chosen Compose files no longer define; with the
@@ -517,7 +585,7 @@ current database:
 ```bash
 cd "$PREV"                                         # recorded in step 0 of the release
 sudo cp -p "$ENV.bak-pre-${SHA:0:7}" "$ENV"        # previous SEOS_REVISION / SEOS_IMAGE_TAG
-sudo docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml [-f deploy/docker-compose.tor.yml] \
+sudo docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml [-f <egress overlay from step 0>] \
   --env-file "$ENV" up -d --remove-orphans          # the previous image tag still exists: no build
 sudo ln -sfn "$PREV" /opt/student-execution-os/current
 curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health   # previous revision; schema_version stays

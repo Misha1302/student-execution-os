@@ -1,0 +1,26 @@
+# LLM-only egress through the host's Cloudflare WARP proxy (deploy/llm-egress/warp/).
+#
+# Compose this over deploy/docker-compose.nginx.yml (or docker-compose.yml) after the
+# WARP project is up. Only the api joins the WARP network; it keeps its default network,
+# so everything except the exact hosts below takes the normal route. HTTP CONNECT keeps
+# TLS end to end with the provider. Do not combine with docker-compose.tor.yml: each
+# overlay is the single egress owner for its hosts, and this one switches the relay off.
+services:
+  api:
+    environment:
+      SEOS_LLM_EGRESS_PROXY: http://seos-groq-warp:40001
+      SEOS_LLM_EGRESS_PROXY_FILE: ""
+      # The WARP origin is verified for Groq only; add a host only after verifying it.
+      SEOS_LLM_EGRESS_PROXY_HOSTS: api.groq.com
+      SEOS_LLM_EGRESS_RELAY_URL: ""
+      SEOS_LLM_EGRESS_RELAY_TOKEN_FILE: ""
+      SEOS_LLM_EGRESS_RELAY_HOSTS: ""
+    networks:
+      - default
+      - llm-egress-warp
+
+networks:
+  default:
+  llm-egress-warp:
+    external: true
+    name: seos-g9-egress_egress
