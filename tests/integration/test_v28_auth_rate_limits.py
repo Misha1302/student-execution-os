@@ -35,6 +35,26 @@ class AuthRateLimitMigrationTest(unittest.TestCase):
                     12,
                 )
 
+    def test_retention_drops_finished_abuse_windows_even_without_new_attempts(self):
+        from datetime import timedelta
+
+        from student_execution_os.reliability.retention import purge_expired
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "retention.sqlite")
+            with SQLiteCanonicalRepository(database) as repo:
+                repo.initialize()
+                for key, started in (("old", NOW - timedelta(hours=2)), ("live", NOW - timedelta(minutes=5))):
+                    repo.connection.execute(
+                        "INSERT INTO auth_rate_limits VALUES ('IP', ?, ?, ?, 3)",
+                        (key.ljust(64, "0"), started.isoformat(), started.isoformat()),
+                    )
+                repo.connection.commit()
+            self.assertEqual(purge_expired(database, NOW)["auth_rate_limits"], 1)
+            with SQLiteCanonicalRepository(database) as repo:
+                left = [row[0][:4] for row in repo.connection.execute("SELECT key_hash FROM auth_rate_limits")]
+            self.assertEqual(left, ["live"])
+
     def test_populated_v27_database_upgrades_and_rolls_back(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "upgrade.sqlite"

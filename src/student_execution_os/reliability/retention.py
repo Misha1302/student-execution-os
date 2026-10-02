@@ -10,6 +10,8 @@ Some rows exist only to make an interaction safe, not as a record the user keeps
 * ``client_operations`` make offline sync exactly-once and repeat task titles in
   their stored results.
 * terminal ``reminder_messages`` form the reminder inbox (the app shows 30 days).
+* ``auth_rate_limits`` hold hashed login/IP keys only while an abuse window can still
+  matter; the limiter also prunes them on use, but a quiet server must not keep them.
 
 ``purge_expired`` deletes each class after its window. The reminder worker runs it
 periodically; nothing here touches canonical tasks, events or evidence.
@@ -24,12 +26,15 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _
 ASSISTANT_APPLY_RECORD_RETENTION = timedelta(days=30)
 CLIENT_OPERATION_RETENTION = timedelta(days=90)
 REMINDER_MESSAGE_RETENTION = timedelta(days=90)
+# Longer than any auth abuse window (10 minutes), so only finished windows are dropped.
+AUTH_RATE_LIMIT_RETENTION = timedelta(hours=1)
 
 RETENTION_POLICY = {
     "assistant_input": "deleted when the 30-minute preview expires",
     "assistant_apply_records_days": ASSISTANT_APPLY_RECORD_RETENTION.days,
     "offline_operation_log_days": CLIENT_OPERATION_RETENTION.days,
     "reminder_inbox_days": REMINDER_MESSAGE_RETENTION.days,
+    "auth_abuse_counters_hours": int(AUTH_RATE_LIMIT_RETENTION.total_seconds() // 3600),
 }
 
 
@@ -49,6 +54,9 @@ def purge_expired_in(repo: SQLiteCanonicalRepository, now: datetime) -> dict[str
             "reminder_messages": conn.execute(
                 "DELETE FROM reminder_messages WHERE created_at<? AND delivery_state IN ('SENT','NO_DEVICE','CANCELLED','DEAD')",
                 (_iso(now - REMINDER_MESSAGE_RETENTION),)).rowcount,
+            "auth_rate_limits": conn.execute(
+                "DELETE FROM auth_rate_limits WHERE window_started_at<?",
+                (_iso(now - AUTH_RATE_LIMIT_RETENTION),)).rowcount,
         }
 
 
