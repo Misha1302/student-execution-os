@@ -206,6 +206,10 @@ class AssistantBrowserTest(unittest.TestCase):
         page = self.page()
         sheet = self.say(page, 'Перенеси созвон на девять вечера')
         card = sheet.locator('.command-card')
+        # The local card comes first and is then replaced by the server's: wait for the server
+        # card (only it can be refined), so the choice tested is the server's target guard and
+        # the apply is the server's (committed before the sheet closes).
+        expect(card.locator('[data-refine]')).to_be_visible()
         chips = card.locator('[data-pick]')
         expect(chips).to_have_count(2)
         expect(chips.nth(0)).to_contain_text('Созвон')
