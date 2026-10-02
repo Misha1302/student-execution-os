@@ -90,7 +90,8 @@ class ProductHardeningTest(unittest.TestCase):
         self.screenshot(page, 'hardening-first-real-interpretation.png')
         sheet.locator('[data-create]').click()
         sheet.wait_for(state='detached')
-        expect(page.locator('.toast')).to_contain_text('Сегодня')
+        # The "task added" toast may already be up next to it: assert the welcome toast itself.
+        expect(page.locator('.toast').filter(has_text='Сегодня')).to_be_visible()
         self.assertEqual(self.errors, [])
 
     def test_voice_semantic_turns_cancel_and_manual_authority(self):
