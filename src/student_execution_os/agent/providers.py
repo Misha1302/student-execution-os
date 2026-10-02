@@ -871,6 +871,10 @@ class PlatformProviderPool:
         self.last_credential: str | None = None  # "primary" or "standby" (diagnostics)
         self._last_index = 0
 
+    def map_providers(self, wrapper):
+        """Return an equivalent pool with each real credential attempt wrapped."""
+        return PlatformProviderPool([wrapper(provider) for provider in self._providers])
+
     def _attempt(self, index: int, text: str, context: dict[str, object]):
         provider = self._providers[index]
         self._last_index = index

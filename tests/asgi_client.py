@@ -1,8 +1,51 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import sys
+import threading
 
+import fastapi.dependencies.utils
+import fastapi.routing
 import httpx
+import starlette.concurrency
+import starlette.routing
+
+
+if sys.version_info >= (3, 14):
+    # Some CPython 3.14 builds do not wake an asyncio selector when a delayed
+    # executor future completes. This test client already exists specifically for
+    # 3.14 compatibility; keep the workaround here rather than in production code.
+    _EXECUTOR = ThreadPoolExecutor(max_workers=32, thread_name_prefix="test-asgi")
+    _SLOTS = threading.BoundedSemaphore(32)
+
+    async def _run_in_threadpool(func, *args, **kwargs):
+        while not _SLOTS.acquire(blocking=False):
+            await asyncio.sleep(0.001)
+
+        def invoke():
+            try:
+                return func(*args, **kwargs)
+            finally:
+                _SLOTS.release()
+
+        try:
+            future = _EXECUTOR.submit(invoke)
+        except BaseException:
+            _SLOTS.release()
+            raise
+        while not future.done():
+            await asyncio.sleep(0.001)
+        return future.result()
+
+    fastapi.routing.run_in_threadpool = _run_in_threadpool
+    fastapi.dependencies.utils.run_in_threadpool = _run_in_threadpool
+    starlette.concurrency.run_in_threadpool = _run_in_threadpool
+    starlette.routing.run_in_threadpool = _run_in_threadpool
+
+    # app.py imports the helper directly, so replace that module-local reference too.
+    import student_execution_os.web.app as _web_app
+    _web_app.run_in_threadpool = _run_in_threadpool
 
 
 class TestClient:

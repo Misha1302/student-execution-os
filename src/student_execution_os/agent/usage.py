@@ -240,7 +240,7 @@ def _definitely_not_generated(failure: ProviderUnavailable) -> bool:
 
 
 class MeteredStarterProvider:
-    """Quota-protected PLATFORM_MANAGED provider; one reservation per operation.
+    """Quota-protected PLATFORM_MANAGED provider; one reservation per attempt.
 
     The request counter is never refunded (it bounds attempts against the operator's
     credential); the token charge is released only for a definite no-generation
@@ -254,6 +254,14 @@ class MeteredStarterProvider:
         self._account_id = account_id
         self.name = provider.name
         self.model = provider.model
+
+    @property
+    def last_usage(self) -> dict[str, int] | None:
+        return getattr(self._provider, "last_usage", None)
+
+    @property
+    def last_route(self) -> str | None:
+        return getattr(self._provider, "last_route", None)
 
     def _invoke(self, call, text: str, context: dict[str, object]):
         tokens = self._usage.policy.reservation_tokens(text, context)
