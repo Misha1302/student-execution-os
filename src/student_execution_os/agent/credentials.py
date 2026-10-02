@@ -43,6 +43,7 @@ from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _
 from .providers import (
     PROVIDERS,
     ProviderUnavailable,
+    PlatformProviderPool,
     assert_public_base_url,
     build_provider,
     normalize_provider,
@@ -273,8 +274,15 @@ class LlmCredentialStore:
         if self.entitlement(account_id) is not None:
             platform = self.platform_provider()
             if platform is not None:
+                def meter(provider):
+                    return MeteredStarterProvider(provider, self.usage, account_id)
+
+                if isinstance(platform, PlatformProviderPool):
+                    platform = platform.map_providers(meter)
+                else:
+                    platform = meter(platform)
                 return ResolvedLlm(CredentialSource.PLATFORM_MANAGED,
-                                   MeteredStarterProvider(platform, self.usage, account_id))
+                                   platform)
         return ResolvedLlm(CredentialSource.NONE, None)
 
     def public(self, account_id: str) -> dict[str, Any]:

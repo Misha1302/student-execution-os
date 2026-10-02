@@ -410,8 +410,22 @@ class StarterLlmTest(unittest.TestCase):
             self.assertEqual(quota["engine"], "AI")
             self.assertEqual(self.fake.calls, [PRIMARY, STANDBY])
         usage, _global, reservations = self.usage_rows(account)
-        self.assertEqual(usage, (3, 30))
-        self.assertEqual(sorted(total for total, _ in reservations), [0, 15, 15])
+        self.assertEqual(usage, (6, 30))
+        self.assertEqual(sorted(total for total, _ in reservations), [0, 0, 0, 0, 15, 15])
+
+    def test_standby_attempt_is_separately_gated_by_starter_request_quota(self):
+        with self.env(SEOS_STARTER_LLM_ACCOUNT_REQUEST_LIMIT="1"):
+            client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
+            headers, account = self.register(client, "standby-quota")
+            self.fake.status[PRIMARY] = 401
+            self.fake.error[PRIMARY] = {"error": {"message": "Invalid API Key", "code": "invalid_api_key"}}
+            result = self.interpret(client, headers)
+
+        self.assertEqual((result["engine"], result["fallback_reason"]), ("LOCAL", "STARTER_QUOTA"))
+        self.assertEqual(self.fake.calls, [PRIMARY])
+        usage, global_usage, reservations = self.usage_rows(account)
+        self.assertEqual((usage, global_usage), ((1, 0), (1, 0)))
+        self.assertEqual(reservations, [(0, "RECONCILED")])
 
     def test_invalid_or_revoked_byok_degrades_locally_and_never_spends_starter(self):
         with self.env():
