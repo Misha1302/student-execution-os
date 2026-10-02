@@ -196,6 +196,88 @@ class ConversationAcceptanceTest(AcceptanceBase):
         self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-02 10:30")
 
 
+class SourceOwnedEventTest(AcceptanceBase):
+    def setUp(self):
+        super().setUp()
+        self.repository.connection.execute(
+            "INSERT INTO external_identities(account_id,source_system_id,external_uid,local_kind,local_id,"
+            "first_seen_at,last_seen_at) VALUES ('account','ical:hse','uid-ariadne','EVENT','ariadne',?,?)",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        self.repository.connection.commit()
+
+    def test_imported_event_move_is_blocked_in_preview_and_refused_at_apply(self):
+        service = self.service(ConversationProvider())
+        preview = service.interpret("Перенеси встречу с Ариадной на три часа позже, иначе утром",
+                                    {"timezone": "Europe/Moscow"})
+        action = preview["actions"][0]
+        self.assertEqual(action["blocked"]["code"], "IMPORTED_EVENT_SOURCE_OWNED")
+        with self.assertRaises(ValidationError):
+            service.apply({"batch_id": preview["batch_id"], "action_ids": [action["id"]], "idempotency_key": "move"})
+        self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-01 20:00")
+
+    def test_a_personal_reminder_on_an_imported_event_is_allowed(self):
+        service = self.service(ConversationProvider())
+        preview = service.interpret("И напомни за полчаса")
+        self.assertNotIn("blocked", preview["actions"][0])
+        service.apply({"batch_id": preview["batch_id"], "action_ids": [preview["actions"][0]["id"]],
+                       "idempotency_key": "remind"})
+        self.assertEqual(self.lead(), 30)
+
+
+class ConflictAwarenessTest(AcceptanceBase):
+    def setUp(self):
+        super().setUp()
+        from student_execution_os.sync.commands import Commands
+
+        commands = Commands(self.repository, account_id="account", actor=ActorCategory.USER_UI, now=NOW)
+        for op_type, entity_id, payload in (
+            ("event.create", "event-seminar", {"title": "Семинар", "starts_at": "2026-10-01T18:30:00+03:00",
+                                               "ends_at": "2026-10-01T19:30:00+03:00"}),
+            ("series.create", "series-physics", {"title": "Пара по физике", "dtstart_local": "2026-10-02T10:00:00",
+                                                 "duration_minutes": 90, "recurrence_rule": "FREQ=DAILY;COUNT=3",
+                                                 "timezone_name": "Europe/Moscow"}),
+            ("constraint.create", "constraint-morning", {"type": "UNAVAILABLE", "reason": "сон",
+                                                         "starts_at": "2026-10-02T09:00:00+03:00",
+                                                         "ends_at": "2026-10-02T09:45:00+03:00"}),
+        ):
+            self.assertEqual(commands.run(op_type, entity_id, payload).status, "APPLIED")
+        self.repository.connection.commit()
+
+    def kinds(self, action):
+        return sorted((item["kind"], item["title"]) for item in action.get("conflicts", []))
+
+    def test_plan_items_warn_about_overlapping_events_but_not_each_other_or_the_old_slot(self):
+        move, remind, report = self.service(PlanProvider()).interpret("план")["actions"]
+        self.assertEqual(self.kinds(move), [("EVENT", "Семинар")])  # 18:00–19:00 vs 18:30–19:30
+        self.assertEqual(self.kinds(report), [("EVENT", "Семинар")])  # 19:00–20:00, back-to-back with the move
+        self.assertNotIn("conflicts", remind)
+
+    def test_fallback_morning_warns_about_a_class_and_protected_time(self):
+        preview = self.service(ConversationProvider()).interpret(
+            "Перенеси встречу с Ариадной на три часа позже, иначе утром", {"timezone": "Europe/Moscow"})
+        self.assertEqual(self.kinds(preview["actions"][0]), [("CLASS", "Пара по физике")])  # 10:00–11:00
+        moved_early = self.service(PlanProvider()).interpret("план")["actions"][0]
+        self.assertNotIn(("PROTECTED_TIME", "сон"), self.kinds(moved_early))
+
+    def test_protected_time_is_reported(self):
+        service = self.service(ConversationProvider())
+        first = service.interpret("Перенеси встречу с Ариадной на три часа позже, иначе утром",
+                                  {"timezone": "Europe/Moscow"})
+        provider = ConversationProvider()
+        early = provider.interpret  # «Лучше в 9:30» lands inside the protected morning
+
+        def interpret(text, context):
+            result = early("Лучше в 10:30", context)
+            result["actions"][0]["payload"]["when"] = "2026-10-02T09:30:00+03:00"
+            return result
+
+        provider.interpret = interpret
+        corrected = self.service(provider).interpret("Лучше в 9:30", {"timezone": "Europe/Moscow",
+                                                                      "previous_batch_id": first["batch_id"]})
+        self.assertIn(("PROTECTED_TIME", "сон"), self.kinds(corrected["actions"][0]))
+
+
 class MultiActionAcceptanceTest(AcceptanceBase):
     def test_dependent_time_is_derived_from_the_earlier_action_and_follows_its_correction(self):
         service = self.service(PlanProvider())

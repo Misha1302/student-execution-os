@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from student_execution_os.persistence.sqlite import _iso
+
 
 def jsonify(value: Any) -> Any:
     if isinstance(value, datetime):
@@ -113,4 +115,42 @@ def event_payload(event, *, remind_before_minutes: int | None = None, remind_at:
         "remind_before_minutes": remind_before_minutes,
         "remind_at": jsonify(remind_at),
         "canonical": True,
+    }
+
+
+def routine_payload(template) -> dict[str, Any]:
+    return {
+        "id": template.id,
+        "title": template.title,
+        "description": template.description,
+        "category": template.category.value,
+        "importance": template.importance.value,
+        "dtstart_local": template.dtstart_local.isoformat(),
+        "effort_minutes": template.effort_minutes,
+        "recurrence_rule": template.recurrence_rule.canonical(),
+        "timezone_name": template.timezone_name,
+        "splittable": template.splittable,
+        "min_chunk_minutes": template.min_chunk_minutes,
+        "max_chunk_minutes": template.max_chunk_minutes,
+        "status": template.status,
+        "series_end_before_local": None if template.series_end_before_local is None else template.series_end_before_local.isoformat(),
+        "version": template.version,
+        "created_at": _iso(template.created_at),
+        "updated_at": _iso(template.updated_at),
+    }
+
+
+def routine_occurrence_payload(item) -> dict[str, Any]:
+    return {
+        "template_id": item.template_id,
+        "original_recurrence_id": item.original_recurrence_id,
+        "identity": [item.template_id, item.original_recurrence_id],
+        "task_id": item.task_id,
+        "state": item.state,
+        "override_title": item.override_title,
+        "override_effort_minutes": item.override_effort_minutes,
+        "override_target_local": None if item.override_target_local is None else item.override_target_local.isoformat(),
+        "version": item.version,
+        "created_at": _iso(item.created_at),
+        "updated_at": _iso(item.updated_at),
     }

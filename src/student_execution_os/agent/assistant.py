@@ -817,12 +817,16 @@ class SQLiteAssistantService:
             if derived:
                 actions[-1]["provenance"]["fields"].update({field: "DERIVED" for field in derived})
                 actions[-1]["resolution"] = self._relative_resolution(actions[-1], actions)
+            blocked = self._source_owned_block(actions[-1])
+            if blocked:
+                actions[-1]["blocked"] = blocked
             actions[-1]["provenance"]["input"] = (
                 "voice-transcript" if context.get("source") == "VOICE" else "user-authored-text"
             )
             actions[-1]["provenance"]["fields"].update(
                 {field: "USER_EDIT" for field in preserved.get(index, set())}
             )
+        self._attach_conflicts(actions)
         return provider.name, assistant_message, actions, None
 
     @staticmethod
@@ -887,6 +891,100 @@ class SQLiteAssistantService:
         provenance = {key: value for key, value in provenance.items() if key not in fields} \
             if isinstance(provenance, dict) else provenance
         return {**raw, "payload": payload, "unresolved_fields": unresolved, "field_provenance": provenance}, fields
+
+    def _event_result_interval(self, action: dict[str, Any]) -> tuple[datetime, datetime] | None:
+        """The interval an action gives an event (None for anything that does not move one)."""
+        command, payload = action["command"], action["payload"]
+        if command == AgentCommand.UPDATE_EVENT.value and not {"starts_at", "ends_at"} & set(payload):
+            return None
+        if command not in (AgentCommand.CREATE_EVENT.value, AgentCommand.RESCHEDULE.value,
+                           AgentCommand.UPDATE_EVENT.value):
+            return None
+        if command == AgentCommand.RESCHEDULE.value:
+            target = target_of(self.canonical, self.principal.account_id, payload)
+            if target is None or target[0] != "EVENT":
+                return None
+        try:
+            return self._action_interval(action)
+        except ValidationError:
+            return None
+
+    def _attach_conflicts(self, actions: list[dict[str, Any]]) -> None:
+        """Warn, before confirmation, where a new event time overlaps something fixed.
+
+        Checked against other active events, class-series occurrences, protected time
+        (UNAVAILABLE / FIXED_PERSONAL_BLOCK constraints) and the other items of the
+        same plan. Nothing is moved to make room: the user sees the overlap and decides.
+        Derived plan blocks are not conflicts (the planner re-derives them).
+        """
+        from student_execution_os.recurrence import SQLiteRecurrenceRepository
+        account = self.principal.account_id
+        planned: dict[str, tuple[datetime, datetime]] = {}
+        titles: dict[str, str | None] = {}
+        targets: dict[str, str | None] = {}
+        for action in actions:
+            interval = self._event_result_interval(action)
+            if interval is None:
+                continue
+            planned[action["id"]] = interval
+            target = target_of(self.canonical, account, action["payload"])
+            targets[action["id"]] = target[1] if target else None
+            titles[action["id"]] = action["payload"].get("title") or (
+                self.canonical.get_event(account, target[1]).obligation.title if target else None)
+        moving = {target for target in targets.values() if target}  # compared at their new time instead
+        for action_id, (starts, ends) in planned.items():
+            found: list[dict[str, Any]] = []
+            for row in self.canonical.connection.execute(
+                "SELECT o.id,o.title,e.starts_at,e.ends_at FROM obligations o JOIN events e ON e.obligation_id=o.id "
+                "WHERE o.account_id=? AND o.lifecycle_status='ACTIVE' AND e.starts_at<? AND e.ends_at>? "
+                "ORDER BY e.starts_at LIMIT 6", (account, _iso(ends), _iso(starts)),
+            ):
+                if row["id"] not in moving:
+                    found.append({"kind": "EVENT", "title": row["title"], "starts_at": row["starts_at"],
+                                  "ends_at": row["ends_at"]})
+            for event in SQLiteRecurrenceRepository(self.canonical).expand_as_events(
+                    account_id=account, horizon_start=starts, horizon_end=ends):
+                if event.interval.starts_at < ends and event.interval.ends_at > starts:
+                    found.append({"kind": "CLASS", "title": event.obligation.title,
+                                  "starts_at": _iso(event.interval.starts_at), "ends_at": _iso(event.interval.ends_at)})
+            for row in self.canonical.connection.execute(
+                "SELECT starts_at,ends_at,reason FROM user_time_constraints WHERE account_id=? "
+                "AND type IN ('UNAVAILABLE','FIXED_PERSONAL_BLOCK') AND starts_at<? AND ends_at>? "
+                "ORDER BY starts_at LIMIT 3", (account, _iso(ends), _iso(starts)),
+            ):
+                found.append({"kind": "PROTECTED_TIME", "title": row["reason"], "starts_at": row["starts_at"],
+                              "ends_at": row["ends_at"]})
+            for other_id, (other_starts, other_ends) in planned.items():
+                if other_id != action_id and other_starts < ends and other_ends > starts:
+                    found.append({"kind": "PLAN", "title": titles[other_id],
+                                  "starts_at": _iso(other_starts), "ends_at": _iso(other_ends)})
+            if found:
+                next(action for action in actions if action["id"] == action_id)["conflicts"] = found[:6]
+
+    # Time and wording of an imported calendar event belong to its source; only the
+    # personal reminder lead (and cancelling it for oneself) is the user's —
+    # sync/handlers/events.py enforces the same at apply.
+    _SOURCE_OWNED_COMMANDS = {AgentCommand.RESCHEDULE.value, AgentCommand.UPDATE_EVENT.value}
+
+    def _source_owned_block(self, action: dict[str, Any]) -> dict[str, str] | None:
+        """Why an action can never apply to a source-owned event, shown in the preview."""
+        if action["command"] not in self._SOURCE_OWNED_COMMANDS:
+            return None
+        payload = action["payload"]
+        if action["command"] == AgentCommand.UPDATE_EVENT.value \
+                and not set(payload) - _TARGET - {"remind_before_minutes"}:
+            return None
+        target = target_of(self.canonical, self.principal.account_id, payload)
+        if target is None or target[0] != "EVENT":
+            return None
+        imported = self.canonical.connection.execute(
+            "SELECT 1 FROM external_identities WHERE account_id=? AND local_kind='EVENT' AND local_id=? "
+            "AND external_recurrence_id=''", (self.principal.account_id, target[1]),
+        ).fetchone()
+        if imported is None:
+            return None
+        return {"code": "IMPORTED_EVENT_SOURCE_OWNED",
+                "message": "this event comes from an imported calendar; its time changes only at the source"}
 
     @staticmethod
     def _relative_values(command: str, payload: dict[str, Any], relative: RelativeToAction,
@@ -1121,6 +1219,10 @@ class SQLiteAssistantService:
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):
             raise AuthorizationDenied("destructive or ambiguous action requires explicit confirmation")
         for action in actions:
+            blocked = self._source_owned_block(action)
+            if blocked:
+                raise ValidationError(blocked["message"])
+        for action in actions:
             if action["command"] not in _TARGET_KINDS:
                 continue
             target = target_of(self.canonical, self.principal.account_id, action["payload"])
@@ -1267,7 +1369,7 @@ class SQLiteAssistantService:
             from student_execution_os.sync.commands import Commands
             task_id = f"task-{uuid4()}"
             outcome = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
-                               now=self.canonical.clock.now()).task_create(
+                               now=self.canonical.clock.now()).tasks.task_create(
                 task_id, {key: value for key, value in data.items() if key != _RELATIVE})
             return {"action_id": action["id"], "entity_id": task_id, "operation": "task.create", "outcome": outcome.status,
                     "version": outcome.entity["version"], "status": outcome.entity["status"], "entity": outcome.entity}
@@ -1328,12 +1430,7 @@ class SQLiteAssistantService:
         if command is AgentCommand.RESCHEDULE:
             from student_execution_os.reminders import ReminderStore
             zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
-            if kind == "REMINDER":
-                current = commands._reminders().get(self.principal.account_id, entity)
-            elif kind == "EVENT":
-                current = commands._event_out(entity).entity
-            else:
-                current = commands._task_out(entity).entity
+            current = commands.current_entity(kind, entity)
             op_type, body = reschedule_change(kind, current, _dt(str(fields["when"])), bool(fields.get("keep_time")), zone)
             return op_type, entity, body
         raise ValidationError(f"unsupported assistant command {command.value}")

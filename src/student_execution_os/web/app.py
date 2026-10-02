@@ -165,7 +165,7 @@ def create_app(
         )
 
     app = FastAPI(
-        title="Student Execution OS",
+        title="botay! API",
         version="1",
         docs_url="/api/docs",
         redoc_url=None,
@@ -294,68 +294,68 @@ def create_app(
 
     @app.get("/api/v1/today")
     async def today(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.today()
+        return service.planning.today()
 
     @app.get("/api/v1/plan/current")
     async def current_plan(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.plan()
+        return service.planning.plan()
 
     @app.get("/api/v1/execution/active")
     async def execution_active(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.execution_active()
+        return service.execution.execution_active()
 
     @app.get("/api/v1/execution/sessions")
     async def execution_sessions(task_id: str | None = None, days: int = 90, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.execution_sessions(task_id, days)
+        return service.execution.execution_sessions(task_id, days)
 
     @app.get("/api/v1/execution/sessions/{session_id}")
     async def execution_session(session_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.execution_session(session_id)
+        return service.execution.execution_session(session_id)
 
     @app.get("/api/v1/plan/agenda")
     async def plan_agenda(days: int = 7, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.agenda(days)
+        return service.planning.agenda(days)
 
     @app.get("/api/v1/plan/constraints")
     async def plan_constraints(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.plan_constraints()
+        return service.planning.plan_constraints()
 
     @app.post("/api/v1/plan/control/preview")
     async def plan_control_preview(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.plan_control_preview(payload)
+        return service.planning.plan_control_preview(payload)
 
     @app.get("/api/v1/outlook")
     async def outlook(range: str = "week", anchor: str | None = None, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.outlook(range, anchor)
+        return service.planning.outlook(range, anchor)
 
     @app.get("/api/v1/settings/planning-profile")
     async def planning_profile(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.planning_profile()
+        return service.planning.planning_profile()
 
     @app.patch("/api/v1/settings/planning-profile")
     async def update_planning_profile(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.update_planning_profile(payload)
+        return service.planning.update_planning_profile(payload)
 
     @app.get("/api/v1/projects")
     async def list_projects(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.projects()
+        return service.projects.projects()
 
     @app.get("/api/v1/projects/{project_id}")
     async def get_project(project_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.project(project_id)
+        return service.projects.project(project_id)
 
     @app.get("/api/v1/notes")
     async def list_notes(q: str = "", include_archived: bool = False, service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.notes(q, include_archived)
+        return service.notes.notes(q, include_archived)
 
     @app.get("/api/v1/notes/{note_id}")
     async def get_note(note_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.note(note_id)
+        return service.notes.note(note_id)
 
     @app.put("/api/v1/notes/{note_id}/audio", status_code=201)
     async def put_note_audio(note_id: str, request: Request, service: UiService = Depends(current_service)) -> dict[str, Any]:
         content = await request.body()
-        return service.save_note_audio(
+        return service.notes.save_note_audio(
             note_id,
             request.headers.get("content-type", "application/octet-stream"),
             request.headers.get("x-filename"),
@@ -364,7 +364,7 @@ def create_app(
 
     @app.get("/api/v1/notes/{note_id}/audio")
     async def get_note_audio(note_id: str, service: UiService = Depends(current_service)) -> Response:
-        metadata, content = service.note_audio(note_id)
+        metadata, content = service.notes.note_audio(note_id)
         return Response(
             content=content,
             media_type=metadata["mime_type"],
@@ -373,48 +373,48 @@ def create_app(
 
     @app.post("/api/v1/feedback", status_code=201)
     async def beta_feedback(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.beta_feedback(payload)
+        return service.account.beta_feedback(payload)
 
     @app.get("/api/v1/tasks")
     async def list_tasks(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.tasks()
+        return service.tasks.tasks()
 
     @app.post("/api/v1/tasks", status_code=201)
     async def create_task(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.create_task(payload)
+        return service.tasks.create_task(payload)
 
     @app.patch("/api/v1/tasks/{task_id}")
     async def update_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.update_task(task_id, payload)
+        return service.tasks.update_task(task_id, payload)
 
     @app.post("/api/v1/tasks/{task_id}/activate")
     async def activate_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.activate_task(task_id, payload)
+        return service.tasks.activate_task(task_id, payload)
 
     @app.post("/api/v1/tasks/{task_id}/defer")
     async def defer_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.defer_task(task_id, payload)
+        return service.tasks.defer_task(task_id, payload)
 
     @app.post("/api/v1/tasks/{task_id}/start")
     async def start_task(task_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.start_task(task_id, payload)
+        return service.tasks.start_task(task_id, payload)
 
     @app.post("/api/v1/sync")
     async def sync(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.sync(payload)
+        return service.operations.sync(payload)
 
     @app.post("/api/v1/attachments", status_code=201)
     async def upload_attachment(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.upload_attachment(payload)
+        return service.tasks.upload_attachment(payload)
 
     @app.get("/api/v1/attachments")
     async def list_attachments(owner_kind: str, owner_id: str, service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.attachments(owner_kind, owner_id)
+        return service.tasks.attachments(owner_kind, owner_id)
 
     @app.get("/api/v1/attachments/{attachment_id}/download")
     async def download_attachment(attachment_id: str, service: UiService = Depends(current_service)) -> Response:
         from urllib.parse import quote
-        metadata, content = service.download_attachment(attachment_id)
+        metadata, content = service.tasks.download_attachment(attachment_id)
         mime = metadata["mime_type"]
         if mime in {"text/html", "application/xhtml+xml", "image/svg+xml"}:
             mime = "application/octet-stream"
@@ -429,68 +429,68 @@ def create_app(
 
     @app.post("/api/v1/attachment-links/{link_id}/unlink")
     async def unlink_attachment(link_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.unlink_attachment(link_id, payload)
+        return service.tasks.unlink_attachment(link_id, payload)
 
     @app.get("/api/v1/tasks/saved-views")
     async def list_saved_views(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.saved_views()
+        return service.tasks.saved_views()
 
     # Declared after /tasks/saved-views so that literal path keeps precedence.
     @app.get("/api/v1/tasks/{task_id}")
     async def get_task(task_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.task(task_id)
+        return service.tasks.task(task_id)
 
     @app.post("/api/v1/tasks/saved-views", status_code=201)
     async def create_saved_view(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.create_saved_view(payload)
+        return service.tasks.create_saved_view(payload)
 
     @app.patch("/api/v1/tasks/saved-views/{view_id}")
     async def update_saved_view(view_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.update_saved_view(view_id, payload)
+        return service.tasks.update_saved_view(view_id, payload)
 
     @app.delete("/api/v1/tasks/saved-views/{view_id}")
     async def delete_saved_view(view_id: str, expected_version: int, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.delete_saved_view(view_id, expected_version)
+        return service.tasks.delete_saved_view(view_id, expected_version)
 
     @app.post("/api/v1/obligations/{obligation_id}/{action}")
     async def lifecycle(obligation_id: str, action: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.lifecycle(obligation_id, action, int(payload["expected_version"]))
+        return service.tasks.lifecycle(obligation_id, action, int(payload["expected_version"]))
 
     @app.get("/api/v1/events")
     async def list_events(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.events()
+        return service.events.events()
 
     @app.get("/api/v1/work-routines")
     async def work_routines(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.work_routines()
+        return service.routines.work_routines()
 
     @app.get("/api/v1/reflection")
     async def reflection(days: int = 7, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.reflection(days)
+        return service.planning.reflection(days)
 
     @app.get("/api/v1/reflection/daily")
     async def reflection_daily(local_date: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.reflection_daily(local_date)
+        return service.planning.reflection_daily(local_date)
 
     @app.get("/api/v1/calendar")
     async def calendar(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.calendar()
+        return service.events.calendar()
 
     @app.get("/api/v1/commitments")
     async def list_commitments(place: str | None = None, q: str = "", service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.commitments(place, q)
+        return service.commitments.commitments(place, q)
 
     @app.get("/api/v1/connectors")
     async def list_connectors(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.connectors()
+        return service.connectors.connectors()
 
     @app.post("/api/v1/connectors/{connector_id}/sync")
     async def sync_connector(connector_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.sync_connector(connector_id)
+        return service.connectors.sync_connector(connector_id)
 
     @app.get("/api/v1/settings/academic-schedule")
     async def academic_schedule(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.academic_schedule()
+        return service.connectors.academic_schedule()
 
     # Connect and refresh fetch a remote feed (bounded retries); plain ``def`` runs them in
     # the threadpool so a slow calendar provider never blocks the event loop.
@@ -498,7 +498,7 @@ def create_app(
     def connect_academic_schedule(
         payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)
     ) -> dict[str, Any]:
-        return service.connect_academic_schedule(payload)
+        return service.connectors.connect_academic_schedule(payload)
 
     @app.post("/api/v1/settings/academic-schedule/import")
     async def import_academic_schedule(
@@ -511,7 +511,7 @@ def create_app(
             if size > MAX_ICS_BYTES:
                 raise ValidationError("calendar file is too large")
             chunks.append(chunk)
-        return service.import_academic_schedule(
+        return service.connectors.import_academic_schedule(
             b"".join(chunks),
             # Header values are Latin-1 on the wire, so the client percent-encodes the file name.
             display_name=unquote(request.headers.get("x-calendar-name", "Imported academic calendar"))[:120],
@@ -520,98 +520,98 @@ def create_app(
 
     @app.post("/api/v1/settings/academic-schedule/sync")
     def refresh_academic_schedule(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.refresh_academic_schedule()
+        return service.connectors.refresh_academic_schedule()
 
     @app.delete("/api/v1/settings/academic-schedule")
     async def disconnect_academic_schedule(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.disconnect_academic_schedule()
+        return service.connectors.disconnect_academic_schedule()
 
     @app.get("/api/v1/reminders")
     async def list_reminders(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.reminders()
+        return service.notifications.reminders()
 
     @app.get("/api/v1/reminders/alarms")
     async def upcoming_alarms(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.upcoming_alarms()
+        return service.notifications.upcoming_alarms()
 
     @app.get("/api/v1/notifications")
     async def notifications(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.notifications()
+        return service.notifications.notifications()
 
     @app.get("/api/v1/notification-preferences")
     async def notification_preferences(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.notification_preferences()
+        return service.notifications.notification_preferences()
 
     @app.patch("/api/v1/notification-preferences")
     async def update_notification_preferences(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.update_notification_preferences(payload)
+        return service.notifications.update_notification_preferences(payload)
 
     @app.get("/api/v1/mobile/devices")
     async def list_mobile_devices(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
-        return service.devices()
+        return service.notifications.devices()
 
     @app.post("/api/v1/mobile/devices", status_code=201)
     async def register_mobile_device(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.register_device(payload)
+        return service.notifications.register_device(payload)
 
     @app.post("/api/v1/mobile/devices/{device_id}/status")
     async def report_mobile_device_status(device_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.report_device_status(device_id, payload)
+        return service.notifications.report_device_status(device_id, payload)
 
     @app.get("/api/v1/notifications/health")
     async def notifications_health(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.notifications_health()
+        return service.notifications.notifications_health()
 
     @app.post("/api/v1/notifications/test", status_code=201)
     async def notifications_test(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.send_test_notification()
+        return service.notifications.send_test_notification()
 
     @app.get("/api/v1/notifications/{notification_id}/delivery")
     async def notification_delivery(notification_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.notification_delivery(notification_id)
+        return service.notifications.notification_delivery(notification_id)
 
     @app.post("/api/v1/mobile/devices/{device_id}/revoke")
     async def revoke_mobile_device(device_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.revoke_device(device_id, payload)
+        return service.notifications.revoke_device(device_id, payload)
 
     @app.post("/api/v1/notifications/{notification_id}/snooze")
     async def snooze_notification(notification_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.snooze_notification(notification_id, payload)
+        return service.notifications.snooze_notification(notification_id, payload)
 
     @app.post("/api/v1/events", status_code=201)
     async def create_event(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.create_event(payload)
+        return service.events.create_event(payload)
 
     @app.patch("/api/v1/events/{event_id}")
     async def update_event(event_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.update_event(event_id, payload)
+        return service.events.update_event(event_id, payload)
 
     @app.post("/api/v1/events/{event_id}/location-selection")
     async def select_event_location(event_id: str, payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.select_event_location(event_id, payload)
+        return service.events.select_event_location(event_id, payload)
 
     @app.get("/api/v1/evidence")
     async def evidence(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.evidence()
+        return service.account.evidence()
 
     @app.get("/api/v1/places")
     async def places(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.places()
+        return service.events.places()
 
     @app.get("/api/v1/settings/diagnostics")
     async def diagnostics(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.diagnostics()
+        return service.account.diagnostics()
 
     @app.get("/api/v1/account/export")
     async def account_export(service: UiService = Depends(current_service)) -> JSONResponse:
         return JSONResponse(
-            content=service.account_export(),
+            content=service.account.account_export(),
             headers={"Content-Disposition": 'attachment; filename="botay-export.json"'},
         )
 
     @app.get("/api/v1/account/deletion-policy")
     async def account_deletion_policy(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.account_deletion_policy()
+        return service.account.account_deletion_policy()
 
     @app.post("/api/v1/account/delete")
     async def account_delete(
@@ -621,11 +621,11 @@ def create_app(
             session = await current_session(request)
             if str(payload["confirm_login"]).strip().lower() == session.login:
                 payload = {**payload, "confirm_account_id": session.account_id}
-        return service.delete_account(payload)
+        return service.account.delete_account(payload)
 
     @app.get("/api/v1/ask/capabilities")
     async def ask_capabilities(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        result = service.assistant_capabilities()
+        result = service.assistant.assistant_capabilities()
         return {
             **result,
             "explanations": True,
@@ -885,42 +885,42 @@ def create_app(
     # Per-account AI (LLM) credentials. Responses carry only a masked key hint.
     @app.get("/api/v1/settings/llm")
     async def llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.llm_settings()
+        return service.assistant.llm_settings()
 
     @app.put("/api/v1/settings/llm")
     async def save_llm_settings(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.save_llm_settings(payload)
+        return service.assistant.save_llm_settings(payload)
 
     @app.delete("/api/v1/settings/llm")
     async def delete_llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.delete_llm_settings()
+        return service.assistant.delete_llm_settings()
 
     @app.post("/api/v1/settings/llm/test")
     async def test_llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.test_llm_settings()
+        return service.assistant.test_llm_settings()
 
     @app.post("/api/v1/assistant/interpret")
     async def assistant_interpret(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.assistant_interpret(payload)
+        return service.assistant.assistant_interpret(payload)
 
     @app.post("/api/v1/assistant/apply")
     async def assistant_apply(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.assistant_apply(payload)
+        return service.assistant.assistant_apply(payload)
 
     @app.post("/api/v1/assistant/undo")
     async def assistant_undo(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.assistant_undo(payload)
+        return service.assistant.assistant_undo(payload)
 
     @app.post("/api/v1/agent/cancel/preview")
     async def agent_cancel_preview(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.agent_cancel_preview(
+        return service.assistant.agent_cancel_preview(
             str(payload["obligation_id"]),
             int(payload["expected_version"]),
         )
 
     @app.post("/api/v1/agent/cancel/confirm-execute")
     async def agent_cancel_confirm_execute(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.agent_cancel_confirm_execute(
+        return service.assistant.agent_cancel_confirm_execute(
             str(payload["intent_id"]),
             payload.get("idempotency_key"),
         )

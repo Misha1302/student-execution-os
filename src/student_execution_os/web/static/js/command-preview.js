@@ -9,7 +9,7 @@
 // confirmation, the item's version and the action's validity on the server.
 import { api } from './api.js';
 import { peek } from './store.js';
-import { t, fmtDateTime, fmtDuration } from './i18n.js';
+import { t, fmtDateTime, fmtDuration, fmtTime } from './i18n.js';
 import { esc, icon, setBusy } from './ui.js';
 import { change, mutate } from './actions.js';
 import { matchTarget, rescheduleChange } from './commands.js';
@@ -50,6 +50,13 @@ const DERIVED = new Set(['starts_at', 'ends_at', 'actionable_from', 'remind_at']
 // anything about existing items, a plan of several actions, undo, or a constraint.
 export const isAssistantPlan = (actions) => actions.length > 1
   || actions.some((a) => isCommand(a) || PLAN_ONLY.has(a.command));
+
+// Overlaps the server found for a new event time (other events, classes, protected
+// time, other items of this plan): a warning before confirming, not a refusal.
+function conflictsHtml(action) {
+  const list = (action.conflicts || []).map((c) => `${c.title || t('cmd.protectedTime')} (${fmtTime(c.starts_at)}–${fmtTime(c.ends_at)})`);
+  return list.length ? `<small class="help warn" data-conflicts>${esc(t('cmd.overlap', { list: list.join(', ') }))}</small>` : '';
+}
 
 const blocking = (action) => (action.unresolved_fields || [])
   .filter((f) => !(action.payload?.relative_to && DERIVED.has(f)));
@@ -161,9 +168,13 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
           <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
         ${missingWhen ? `<small class="help">${esc(t('cmd.whenMissing'))}</small>` : ''}
         ${!isCommand(action) && blocking(action).length ? `<small class="help">${esc(t('cmd.needsDetails'))}</small>` : ''}
+        ${conflictsHtml(action)}
+        ${action.blocked ? `<small class="help" data-blocked="${esc(action.blocked.code)}">${esc(t('cmd.sourceOwned'))}</small>` : ''}
       </li>`;
     }).join('');
-    const ready = state.actions.every((a, i) => (isCommand(a)
+    // A change the server will refuse (e.g. moving an imported calendar event) is
+    // explained, never offered as if it could succeed.
+    const ready = state.actions.every((a, i) => !a.blocked && (isCommand(a)
       ? targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when')
       : !blocking(a).length));
     const destructive = state.actions.some((a) => DESTRUCTIVE.has(a.command));

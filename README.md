@@ -43,130 +43,66 @@ Feasibility → Planner → Risk / Next actions
 - Connector/source synchronization is separate from client/offline replication.
 - Automation must remain explainable and auditable.
 
-## Repository status
+## Main loop
 
-Implementation and product specification for **botay!** belong in this repository. Internal package/API/deployment identifiers still use the legacy `student_execution_os` / `SEOS` naming where renaming would add migration risk. `Misha1302/chatgpt-knowledge-base` is a separate system and is not an implementation target for this product.
+```text
+say / type / import something
+  → botay! interprets it (language model when available, local parser offline)
+  → typed Task / Event / Reminder / Note / constraint / question / command
+  → a deterministic preview of the effective change ("было → станет")
+  → the user confirms; the server validates authority, scope and version and applies it
+  → the planner derives a realistic plan from canonical state
+  → actual work is recorded separately from the plan, and future plans adapt
+```
 
-The current closed-beta branch uses schema **v22**. Earlier passes established the canonical task/event domain, tri-state feasibility, planning/risk, evidence reconciliation, connector checkpoints, travel, recurrence, hosted auth, backup/export/deletion, and the browser/Android client. V12 completes the execution transition:
+## Current status
 
-- one reminder model (`reminder_states` + `reminder_messages`) replaces the removed v7–v11 notification runtime;
-- reminder scheduling reacts to deadline/risk/start/progress/snooze/completion, while delivery retries remain a separate leased outbox concern;
-- `started_at` and `last_progress_at` are canonical execution facts;
-- `/api/v1/sync` stores client operation results atomically for exactly-once replay and explicit conflicts;
-- the mobile client persists cached reads and pending task operations across restart, then reconnects with the same operation ids;
-- Assistant providers (OpenAI, Anthropic, and OpenAI-compatible) run server-side with the account's own key and can only return validated proposals that the user applies through the controlled action boundary;
-- Capacitor push and speech recognition are native dependencies, with degraded behavior when Firebase/LLM configuration is absent.
+Schema **v29** (`persistence/sqlite.py::SCHEMA_VERSION`, migrations in
+`src/student_execution_os/persistence/migrations/`). What each version added is in
+[docs/SCHEMA_HISTORY.md](docs/SCHEMA_HISTORY.md).
 
-Schema v13 makes the student flow the primary path: **"+" → "Что нужно сделать?" → text or
-voice → task card → Create**.
+Implemented and covered by the test suites:
 
-- A deterministic RU/EN parser (`agent/nlparse.py`, mirrored on the device in
-  `web/static/js/nlparse.js` and held to the same fixtures) turns phrases like
-  "В пятницу к шести сдать лабораторную по физике, займёт часа два, это важно" into
-  deadline, effort, importance, category, work window, reminder and chunking — offline and
-  without an LLM. A configured LLM refines the card; its proposal is validated field by
-  field and applied through the same mapping as `task.create`, so nothing is dropped.
-- Capture shows a compact interpretation with optional fact editors. Quick tasks without
-  an estimate use a clearly provisional 15–60 minute range (30 minute planning nominal),
-  not a fabricated user estimate. Explicit unknown values remain supported by the API.
-- Conversational corrections and voice follow-ups update the same semantic draft; manual
-  edits remain authoritative. Material time disagreements ask about concrete meanings,
-  not parser implementations. Accidental closing/reload restores account-scoped drafts
-  for up to seven days; successful creation or explicit discard clears them.
-- First-run help opens a real guided Capture. Escape does not complete onboarding;
-  Skip or creating the first item does. Today leads with the next action.
-- Tasks can be fully edited and rescheduled; `remind_at` is an explicit reminder request.
-  Snooze (from the app or a notification) schedules the next reminder at that moment.
-- The Android app renders reminder pushes itself (data-only FCM for devices declaring
-  `reminder-actions-v1`) with working Start / Done / Snooze buttons that run as offline-safe
-  `/api/v1/sync` operations in WorkManager.
-- Expired Assistant previews (typed/dictated text) are deleted; operation logs and the
-  reminder inbox have retention windows (`reliability/retention.py`).
-- Technical details (schema, revisions, providers, sources) live under Settings → Advanced.
+- canonical Tasks, Events, Reminders, Notes, Projects, recurring work and class series,
+  with tri-state feasibility, derived plans, actual Execution Sessions and reflection;
+- offline-first clients (browser and Android) with a durable operation queue and
+  server-side exactly-once replay (`/api/v1/sync`);
+- external sources (academic iCalendar schedules, groups) on the SOURCE/USER model,
+  capability grants / MCP and OAuth connect;
+- hosted auth with persistent login/IP abuse limits;
+- the **Assistant**: typed semantic intents validated server-side; guarded and
+  approximate relative rescheduling resolved deterministically; bounded authorized
+  target candidates with explicit disambiguation; multi-turn follow-ups («нет, лучше
+  в 10:30») where explicit user edits win over later model output; voice and text in the
+  same pipeline; read-only questions answered from server facts; planner-control
+  language stored as canonical constraints; dependency-ordered multi-action plans whose
+  dependent times are derived by the server; and undo of the last Assistant apply that
+  refuses to overwrite newer changes;
+- bounded provider retry, one structured-output repair, BYOK-safe fallback to the local
+  parser, and privacy-safe reliability metrics.
 
-Schema v14 makes AI **bring your own key** (ADR 0017): each account can add its own
-OpenAI, Anthropic or OpenAI-compatible key in Settings → AI. The key is encrypted with a
-master key kept outside the database, bound to its account, shown only as `sk-••••abcd`,
-and deleted with the account. Without a key everything works with the local parser. The
-server-wide `SEOS_LLM_*` key is gone; operator credentials (`SEOS_PLATFORM_LLM_*`) serve
-only accounts with a platform-managed entitlement — the seam for a future paid plan
-([roadmap](docs/ROADMAP.md)).
+Known limits:
 
-Schema v21 ships opt-in **STARTER** AI: with `SEOS_STARTER_LLM_ENABLED=1`, accounts
-receive a basic platform-managed entitlement protected by atomic per-account and global
-request/token caps. Platform keys stay in API-only files and never enter SQLite or a
-client. BYOK always has priority and does not spend STARTER quota; exhausted or
-unavailable STARTER falls back to the local parser. This is not a paid billing tier.
+- Assistant quality with a live provider is evaluated only on demand
+  (`python -m student_execution_os llm-eval`, opt-in, needs a configured provider); CI
+  uses deterministic fake providers, which prove contracts, not model quality.
+- On Android the bearer token is stored in Capacitor Preferences (app-private, not
+  Keystore-backed) and the offline queue lives in WebView storage; see
+  [mobile/README.md](mobile/README.md).
+- Undo covers Assistant-originated creates, updates, reschedules and snoozes, not
+  every manual operation (manual operations have their own short-lived undo).
 
-Schema v22 turns the product into the **botay! closed-beta capture loop**:
+## Architecture boundaries
 
-- the same `+` flow proposes **Task / Event / Note** and uses Note as the safe fallback when typed text has no clear scheduling intent;
-- Notes are canonical account data with optimistic versions, archive/delete lifecycle, provenance links and the existing exactly-once client operation boundary;
-- voice Notes store original audio separately from transcript and user-edited text; transcription failure never destroys the recording;
-- Notes participate in backup/restore, account export and account deletion; audio is stored as SQLite BLOB data rather than large base64 request payloads;
-- Today exposes every canonical Event intersecting the user's local day and gives a currently-running fixed Event priority over generated work suggestions;
-- the user-facing brand, PWA/Android identity and beta feedback surface are **botay!**, while stable technical identifiers remain unchanged.
-
-
-Schema v15 makes the app **offline-first** and adds fixed-time events (ADR 0018):
-
-- Every task/event change (create, edit, start, done, «не сейчас», reschedule, won't do,
-  archive, delete) is queued durably on the device and shown on every screen at once;
-  the queue is sent in the background and replayed exactly once after reconnect or restart.
-- "Сегодня с 21 до 22 провести занятие по программированию" becomes an event 21:00–22:00
-  (1 h) with a clean title and no deadline, with an optional reminder before it.
-- Tasks: «Не буду делать», archive/restore and delete (tombstoned against late replays);
-  counted progress ("3 из 10 задач").
-- Sleep hours (Settings) keep work out of the night and reminders quiet; Plan shows seven
-  days with swipe; Today never hides open tasks; reasons are plain sentences.
-
-The normative baseline used by implementation is [docs/SPECIFICATION.md](docs/SPECIFICATION.md), version 2.1.
-
-Schema v18 closes the first actual-execution loop (ADR 0021):
-
-- starting a Task creates a canonical Execution Session rather than treating a single
-  `started_at` timestamp as the work history;
-- pause/resume creates active segments, so pause time is never counted as work;
-- actual work, planned work and remaining effort stay separate — finishing a session
-  asks the user whether the Task is done, how much remains, or whether the estimate
-  should stay unchanged;
-- execution lifecycle commands use the same durable offline queue / exactly-once sync
-  boundary as Tasks and Events, including explicit cross-device conflicts;
-- Today gives an active session priority, Task detail shows execution history, and
-  active execution is cached for offline restart;
-- execution history participates in account export/deletion and is covered by Python
-  and device-side projection regressions.
-
-Plan Control and Projects build on schema v18 without duplicating planner state:
-
-- pin/move/avoid gestures write canonical `UserTimeConstraint` records and preview the
-  real planner result before apply; `PlanBlock` remains derived;
-- Projects remain containers over canonical Tasks/Events and Milestones; progress and
-  project risk are derived from member state rather than stored as another truth.
-
-Schema v19 adds recurring **work** separately from recurring calendar Events (ADR 0024):
-
-- a work-routine template owns recurrence/timezone/default effort;
-- each occurrence has stable recurrence identity and materializes one ordinary Task,
-  so planner, execution sessions and progress use the existing Task model;
-- one occurrence can be skipped/reopened/edited without changing the series identity;
-- "this and future" performs a series split and refuses to rewrite future occurrences
-  that already contain user history;
-- routine state is offline-safe and included in account export/deletion.
-
-Schema v20 adds Reflection & Calibration (ADR 0025) without creating a second truth
-for progress or effort:
-
-- Daily Intent stores at most three explicit Task priorities plus a note and acts only
-  as a soft planner tie-break; closing the day removes that signal;
-- daily/weekly review derives planned-vs-actual, completion, carry-over and schedule
-  churn from saved PlanSnapshots, canonical Tasks and Execution Sessions;
-- estimate calibration is suggested only after repeated completed-task evidence and
-  never applies automatically;
-- an accepted category multiplier changes only the planning/risk projection; the
-  Task's canonical estimate and remaining effort remain unchanged;
-- intent/calibration mutations are offline-safe, while stale derived WORK blocks are
-  hidden until the server replans.
+| Area | Owner |
+| --- | --- |
+| Canonical domain and invariants | `domain/`, `persistence/` (SQLite, versioned migrations) |
+| Planning | `planning/` (snapshot → feasibility → planner → risk; plan blocks are derived) |
+| Writes from clients | `sync/commands.py::SyncService` owns the envelope, op_id replay and transaction; one domain handler per operation type in `sync/handlers/` |
+| Reads and app services | `web/queries.py::UiService` composes the owners in `web/services/`; routes in `web/app.py` call them explicitly |
+| Assistant | `agent/` — providers and reliability, typed proposals, deterministic temporal resolution, read queries, apply/undo |
+| External sources | `connectors/`, `recurrence/`, `academic/`, `groups/` |
+| Clients | `web/static/` (no-build ES modules), `mobile/` (Capacitor Android shell) |
 
 ## Run the current implementation locally
 
@@ -192,7 +128,7 @@ PYTHONPATH=src python -m student_execution_os notification-delivery-smoke
 PYTHONPATH=src python -m student_execution_os reliability-smoke
 ```
 
-The reminder smokes exercise recurrence identity, snooze state, delivery lease recovery after restart, and separation of delivery retry from creation of a new user reminder. `reliability-smoke` verifies backup/restore, export, connector checkpoint, reminder continuity, and account-deletion tombstones. The complete suite also covers fresh-v12 initialization, task start/progress/complete/completed-open/reopen, sync replay/conflict handling, Assistant schema rejection, native integration contracts, and offline reconnect persistence.
+The reminder smokes exercise recurrence identity, snooze state, delivery lease recovery after restart, and separation of delivery retry from creation of a new user reminder. `reliability-smoke` verifies backup/restore, export, connector checkpoint, reminder continuity, and account-deletion tombstones. The complete suite also covers fresh-database initialization, task start/progress/complete/completed-open/reopen, sync replay/conflict handling, Assistant schema rejection, native integration contracts, and offline reconnect persistence.
 
 ### Run the web UI / API server
 
@@ -236,51 +172,51 @@ See [mobile/README.md](mobile/README.md) for toolchain, LAN testing, CI artifact
 ## Documentation
 
 - [Normative specification](docs/SPECIFICATION.md)
-- [Implementation prompt — first vertical slice](docs/IMPLEMENTATION_PROMPT.md)
-- [Implementation stack ADR](docs/adr/0001-implementation-stack.md)
-- [Canonical state and concurrency ADR](docs/adr/0002-canonical-state-and-concurrency.md)
-- [Planning snapshot and feasibility ADR](docs/adr/0003-planning-snapshot-and-feasibility.md)
-- [Planner, risk, and derived plan ADR](docs/adr/0004-planner-risk-and-plan-projection.md)
-- [Evidence, reconciliation, provenance, and cutoff ownership ADR](docs/adr/0005-evidence-reconciliation-provenance.md)
-- [Google Calendar connector sync and checkpoint ownership ADR](docs/adr/0006-google-calendar-connector-sync.md)
-- [LLM extraction and authenticated action boundary ADR](docs/adr/0007-llm-extraction-action-boundary.md)
-- [Travel-aware planning ownership and feasibility ADR](docs/adr/0008-travel-aware-planning.md)
-- [Web application boundary and product UI ADR](docs/adr/0009-web-application-boundary-and-product-ui.md)
-- [Recurrence identity and notification workflow ADR](docs/adr/0010-recurrence-and-notification-workflow.md)
-- [Backup/restore and account export ADR](docs/adr/0011-backup-restore-and-account-export.md)
-- [Account deletion retention/tombstone ADR](docs/adr/0012-account-deletion-retention-and-tombstone.md)
-- [Durable notification delivery ADR](docs/adr/0013-durable-notification-delivery.md)
-- [Cancellation/reopen projection ADR](docs/adr/0014-cancel-reopen-projection-invalidation.md)
-- [Hosted auth and mobile client ADR](docs/adr/0015-hosted-auth-and-mobile-client.md)
-- [Daily product surfaces and schema v11 ADR](docs/adr/0016-daily-product-surfaces.md)
-- [Per-account LLM credentials (BYOK) ADR](docs/adr/0017-per-account-llm-credentials.md)
-- [Offline-first client, events and lifecycle (v15) ADR](docs/adr/0018-offline-first-events-and-lifecycle.md)
-- [Actual execution sessions and feedback loop (v18) ADR](docs/adr/0021-execution-feedback-loop.md)
-- [Canonical Plan Control ADR](docs/adr/0022-plan-control-canonical-constraints.md)
-- [Projects as containers ADR](docs/adr/0023-projects-as-containers.md)
-- [Recurring work as canonical Tasks (v19) ADR](docs/adr/0024-recurring-work.md)
-- [Derived Reflection and opt-in calibration (v20) ADR](docs/adr/0025-reflection-calibration.md)
+- [Schema and product history](docs/SCHEMA_HISTORY.md)
 - [Product roadmap](docs/ROADMAP.md)
 - [Server deployment](deploy/README.md)
 - [Android app](mobile/README.md)
-- [Pass 9/10 conformance gap ledger](docs/implementation/PASS9_GAP_LEDGER.md)
 - [Current implementation handoff](docs/implementation/HANDOFF.md)
 - [Licensing decision](docs/LICENSING.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
-## Planned implementation order
+Architecture decisions:
 
-1. Local Task/Event domain + exact/tri-state feasibility vertical slice.
-2. Evidence/reconciliation fixtures and reversible source matching.
-3. One reliable real connector with cursor/deletion/staleness semantics.
-4. LLM capture/action adapter behind the established evidence/authorization boundaries.
-5. Travel-aware planning.
-6. Recurrence/notifications as demanded by usage. **Implemented in Pass 8.**
-7. Reliability/security/conformance hardening. **Implemented through schema v12.**
-8. Offline task-operation replication and execution reminders. **Implemented for the MVP; external FCM/LLM/routing/OAuth providers remain configuration-dependent.**
-9. Per-account AI keys (BYOK). **Implemented in schema v14.** Bounded STARTER managed AI: **implemented in schema v21.** Paid billing: see [docs/ROADMAP.md](docs/ROADMAP.md).
-10. Offline-first client, fixed-time events, task lifecycle, sleep hours. **Implemented in schema v15.**
+- [ADR 0001 — Initial implementation stack](docs/adr/0001-implementation-stack.md)
+- [ADR 0002 — Canonical local state, SQLite persistence, and concurrency ownership](docs/adr/0002-canonical-state-and-concurrency.md)
+- [ADR 0003 — Immutable PlanningSnapshot and bounded sound feasibility](docs/adr/0003-planning-snapshot-and-feasibility.md)
+- [ADR 0004 — Derived PlanSnapshot, deterministic risk, and first execution slice](docs/adr/0004-planner-risk-and-plan-projection.md)
+- [ADR 0005 — Evidence, reconciliation, provenance, and cutoff ownership](docs/adr/0005-evidence-reconciliation-provenance.md)
+- [ADR 0006 — Google Calendar connector sync ownership and checkpoint semantics](docs/adr/0006-google-calendar-connector-sync.md)
+- [ADR 0007 — LLM extraction and authenticated action boundary](docs/adr/0007-llm-extraction-action-boundary.md)
+- [ADR 0008 — Travel-aware planning ownership and feasibility](docs/adr/0008-travel-aware-planning.md)
+- [ADR 0009 — Web application boundary and product UI](docs/adr/0009-web-application-boundary-and-product-ui.md)
+- [ADR 0010 — Recurrence identity and notification workflow ownership](docs/adr/0010-recurrence-and-notification-workflow.md)
+- [ADR 0011 — SQLite backup/restore and account export boundary](docs/adr/0011-backup-restore-and-account-export.md)
+- [ADR 0012 — Account deletion, retention, and replay tombstone](docs/adr/0012-account-deletion-retention-and-tombstone.md)
+- [ADR 0013 — Durable notification delivery outbox](docs/adr/0013-durable-notification-delivery.md)
+- [ADR 0014 — Cancellation/reopen projection invalidation](docs/adr/0014-cancel-reopen-projection-invalidation.md)
+- [ADR 0015 — Hosted session authentication and mobile-first client](docs/adr/0015-hosted-auth-and-mobile-client.md)
+- [ADR 0016 — Daily product surfaces and schema v11](docs/adr/0016-daily-product-surfaces.md)
+- [ADR 0017 — Per-account LLM credentials (BYOK) and the platform-managed seam](docs/adr/0017-per-account-llm-credentials.md)
+- [ADR 0018 — Offline-first client, fixed-time events, task lifecycle (schema v15)](docs/adr/0018-offline-first-events-and-lifecycle.md)
+- [ADR 0019 — Reminders and wake alarms, text commands, one agenda (schema v16)](docs/adr/0019-reminders-alarms-commands-and-agenda.md)
+- [ADR 0020 — Signed policy and Android sideload updates](docs/adr/0020-signed-android-updates.md)
+- [ADR 0021 — Actual execution sessions and feedback loop (schema v18)](docs/adr/0021-execution-feedback-loop.md)
+- [ADR 0022 — Plan control is canonical constraints, not mutable PlanBlocks](docs/adr/0022-plan-control-canonical-constraints.md)
+- [ADR 0023 — Projects are containers over existing obligations](docs/adr/0023-projects-as-containers.md)
+- [ADR 0024 — Recurring work materializes canonical Tasks](docs/adr/0024-recurring-work-materialized-tasks.md)
+- [ADR 0024 — Recurring work materializes canonical Tasks](docs/adr/0024-recurring-work.md)
+- [ADR 0025 — Reflection is derived; calibration is explicit and planning-only](docs/adr/0025-reflection-calibration.md)
+- [ADR 0026 — botay! Notes, Capture provenance, and original-audio ownership](docs/adr/0026-botay-notes-capture.md)
+- [ADR 0027 — Class series exceptions and stable external identity (schema v23)](docs/adr/0027-series-exceptions-and-external-identity.md)
+- [ADR 0028 — Academic schedule provider and iCalendar connection (schema v24)](docs/adr/0028-academic-schedule-provider.md)
+- [ADR 0029 — Production LLM path: classification, egress determinism, STARTER accounting](docs/adr/0029-production-llm-path.md)
+- [ADR 0030 — External capability grants, REST surface and MCP (schema v25)](docs/adr/0030-external-capabilities-mcp.md)
+- [ADR 0031 — Connecting ChatGPT/Codex: OAuth consent that issues capability grants (schema v26)](docs/adr/0031-oauth-connect-chatgpt-codex.md)
+- [ADR 0032 — Collaborative academic groups on the SOURCE/USER model (schema v27)](docs/adr/0032-collaborative-groups.md)
+- [ADR 0033 — Explicit reminders follow source-driven changes](docs/adr/0033-reminders-follow-source-changes.md)
 
 ## License
 
@@ -288,4 +224,6 @@ Licensed under the [Apache License 2.0](LICENSE). See [docs/LICENSING.md](docs/L
 
 ## Name
 
-`Student Execution OS` is a working project name and may change before public release.
+The product is **botay!** (lowercase, with the exclamation mark). Internal package, API,
+environment and deployment identifiers keep the original `student_execution_os` / `SEOS`
+names where renaming would add migration or release risk without a user-facing benefit.

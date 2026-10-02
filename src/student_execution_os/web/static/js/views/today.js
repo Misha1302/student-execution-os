@@ -2,7 +2,7 @@ import { load } from '../store.js';
 import { t, code, fmtTime, fmtDuration, fmtRelative, fmtDateTime, setServerNow, now, sameDay } from '../i18n.js';
 import { esc, icon, chip, riskChip, statusClass, statusIcon, empty, sectionHead, openSheet, setBusy } from '../ui.js';
 import { logProgress, lifecycle, change } from '../actions.js';
-import { rescheduleSheet } from '../capture.js';
+import { rescheduleSheet } from '../task-sheets.js';
 import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
 import { upcomingItems, currentEvent as runningEvent } from '../upcoming.js';
 import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';

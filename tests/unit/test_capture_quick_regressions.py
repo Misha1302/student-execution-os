@@ -30,7 +30,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 class CaptureAndQuickActionRegressions(unittest.TestCase):
     def test_reminder_enrichment_is_presence_aware_and_respects_authority(self):
         out = run_node(f"""
-const {{ mergeReminderDraft }} = await import('file://{JS}/capture.js');
+const {{ mergeReminderDraft }} = await import('file://{JS}/capture-candidates.js');
 const floor = {{ delivery: 'ALARM', wake_check: true, raise_volume: true }};
 const local = {{ title: 'Подъём', remind_at: '2026-09-27T04:00:00Z', delivery: 'ALARM',
   wake_check: true, raise_volume: true, note: 'known' }};

@@ -622,6 +622,7 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .command-row { font-weight: 600; overflow-wrap: anywhere; }
 .command-row.destructive > span { color: var(--danger); }
 .command-card [data-refine] { margin-top: 8px; }
+.command-row .help.warn { display: block; color: var(--warn); font-weight: 500; }
 .read-card .read-list { margin: 8px 0 0; display: grid; gap: 8px; }
 .read-card .read-list li { overflow-wrap: anywhere; }
 .capture .follow-up { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }

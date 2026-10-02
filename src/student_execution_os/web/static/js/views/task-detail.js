@@ -4,7 +4,8 @@ import { t, code, fmtDuration, fmtDateTime, fmtRelative, now } from '../i18n.js'
 import { esc, icon, chip, riskChip, kv, empty, setBusy } from '../ui.js';
 import { DURATION_PRESETS } from '../duration.js';
 import { lifecycle, logProgress, mutate, change, taskPlace } from '../actions.js';
-import { editTaskSheet, rescheduleSheet, deadlineText } from '../capture.js';
+import { editTaskSheet, rescheduleSheet } from '../task-sheets.js';
+import { deadlineText } from '../task-draft.js';
 import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 function fileBase64(file) {

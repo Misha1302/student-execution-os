@@ -48,35 +48,35 @@ class RelatedRegressionTests(unittest.TestCase):
 
     def create_task(self, task_id: str, effort=None):
         payload = {"title": task_id, "estimated_total_effort_minutes": effort}
-        self.commands.task_create(task_id, payload)
+        self.commands.tasks.task_create(task_id, payload)
         return self.repo.get_task("a", task_id)
 
     def test_unknown_effort_lifecycle_reconstructs_after_every_transition(self):
         self.create_task("task-draft-complete")
-        self.commands.task_complete("task-draft-complete", {})
+        self.commands.tasks.task_complete("task-draft-complete", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-complete").obligation.lifecycle_status.value, "COMPLETED")
-        self.commands.task_reopen("task-draft-complete", {})
+        self.commands.tasks.task_reopen("task-draft-complete", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-complete").obligation.lifecycle_status.value, "DRAFT")
 
         self.create_task("task-draft-cancel")
-        self.commands.task_cancel("task-draft-cancel", {})
+        self.commands.tasks.task_cancel("task-draft-cancel", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-cancel").obligation.lifecycle_status.value, "CANCELLED")
-        self.commands.task_reopen("task-draft-cancel", {})
+        self.commands.tasks.task_reopen("task-draft-cancel", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-cancel").obligation.lifecycle_status.value, "DRAFT")
 
         self.create_task("task-draft-archive")
-        self.commands.task_archive("task-draft-archive", {})
+        self.commands.tasks.task_archive("task-draft-archive", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-archive").obligation.lifecycle_status.value, "ARCHIVED")
-        self.commands.task_unarchive("task-draft-archive", {})
+        self.commands.tasks.task_unarchive("task-draft-archive", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-archive").obligation.lifecycle_status.value, "CANCELLED")
-        self.commands.task_archive("task-draft-archive", {})
-        self.commands.task_restore("task-draft-archive", {})
+        self.commands.tasks.task_archive("task-draft-archive", {})
+        self.commands.tasks.task_restore("task-draft-archive", {})
         self.assertEqual(self.repo.get_task("a", "task-draft-archive").obligation.lifecycle_status.value, "DRAFT")
 
         self.create_task("task-known-complete", 60)
-        self.commands.task_complete("task-known-complete", {})
+        self.commands.tasks.task_complete("task-known-complete", {})
         self.assertEqual(self.repo.get_task("a", "task-known-complete").obligation.lifecycle_status.value, "COMPLETED")
-        self.commands.task_reopen("task-known-complete", {})
+        self.commands.tasks.task_reopen("task-known-complete", {})
         self.assertEqual(self.repo.get_task("a", "task-known-complete").obligation.lifecycle_status.value, "ACTIVE")
 
     def test_preexisting_closed_null_effort_rows_are_readable(self):
@@ -193,19 +193,19 @@ class RelatedRegressionTests(unittest.TestCase):
 
     def test_stale_start_is_semantically_superseded(self):
         self.create_task("task-stale-start", 30)
-        self.commands.task_complete("task-stale-start", {})
-        result = self.commands.task_start("task-stale-start", {})
+        self.commands.tasks.task_complete("task-stale-start", {})
+        result = self.commands.tasks.task_start("task-stale-start", {})
         self.assertEqual((result.status, result.code, result.entity["status"]),
                          ("NOOP", "SUPERSEDED", "COMPLETED"))
 
     def test_acknowledgement_emits_alarm_resync_invalidation(self):
-        self.commands.reminder_create("reminder-wake-cross-device", {
+        self.commands.reminders.reminder_create("reminder-wake-cross-device", {
             "title": "Wake", "remind_at": "2026-09-27T06:00:00+00:00", "delivery": "ALARM",
             "wake_check": True, "raise_volume": True,
         })
         self.repo.connection.execute("UPDATE reminder_messages SET delivery_state='SENT' WHERE account_id='a' AND stage='ALARM_SYNC'")
         self.repo.connection.commit()
-        self.commands.reminder_ack("reminder-wake-cross-device", {"stage": "UP"})
+        self.commands.reminders.reminder_ack("reminder-wake-cross-device", {"stage": "UP"})
         pending = self.repo.connection.execute(
             "SELECT count(*) FROM reminder_messages WHERE account_id='a' AND stage='ALARM_SYNC' AND delivery_state='PENDING'"
         ).fetchone()[0]

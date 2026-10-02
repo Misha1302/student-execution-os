@@ -47,3 +47,6 @@ tmp/
 *.sqlite
 *.sqlite3
 *.db
+
+# Personal agent/editor settings (machine-local permissions)
+.claude/settings.local.json
