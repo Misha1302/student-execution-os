@@ -29,6 +29,7 @@ import { fieldsHtml, bindFields, FIELDS, setChip, factsHtml, questionsHtml, writ
 import { engineLine, capabilities } from './capture-engine.js';
 
 export const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const AI_ENRICH_DEBOUNCE_MS = 800;
 
 // ---- the sheet ----------------------------------------------------------------------
 
@@ -440,7 +441,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     // something the user wrote (the latest correction still wins either way).
     const source = captureSession.turns.at(-1)?.source === 'voice' ? 'VOICE' : 'TEXT';
     try {
-      result = await api('/api/v1/assistant/interpret', { method: 'POST', body: {
+      result = await api('/api/v1/assistant/interpret', { method: 'POST', timeoutMs: 50000, body: {
         text: raw, context: { timezone: deviceTimeZone(), locale: getLocale(), source, ...followUpContext },
       } });
     } catch (err) {
@@ -499,7 +500,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     clearTimeout(serverTimer);
     serverSeq += 1;
     parseTimer = setTimeout(() => { parseTimer = null; parseLocal(); }, 120);
-    serverTimer = setTimeout(enrich, 300);
+    // The local parser already refreshes the card at 120 ms. Give keyboard input a
+    // stable pause before spending a provider request; otherwise normal typing pauses
+    // can send several LLM calls whose late results are discarded but still consume TPM.
+    serverTimer = setTimeout(enrich, AI_ENRICH_DEBOUNCE_MS);
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

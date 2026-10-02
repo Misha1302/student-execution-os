@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from student_execution_os import __version__
 from student_execution_os.domain.errors import (
@@ -901,11 +902,15 @@ def create_app(
 
     @app.post("/api/v1/settings/llm/test")
     async def test_llm_settings(service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.assistant.test_llm_settings()
+        # Provider checks use synchronous HTTP; keep network waits off the ASGI event loop.
+        return await run_in_threadpool(service.assistant.test_llm_settings)
 
     @app.post("/api/v1/assistant/interpret")
     async def assistant_interpret(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
-        return service.assistant.assistant_interpret(payload)
+        # LLM I/O and provider-advised Retry-After waits are synchronous by design;
+        # run the whole operation in a worker so one rate-limited request cannot block
+        # health, sync, or another user on the event loop.
+        return await run_in_threadpool(service.assistant.assistant_interpret, payload)
 
     @app.post("/api/v1/assistant/apply")
     async def assistant_apply(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:

@@ -58,7 +58,11 @@ class ReliabilityPolicy:
     """
 
     max_transient_retries: int = 1
-    max_retry_after_seconds: int = 2
+    # Groq free-tier TPM pressure commonly returns an explicit 10-20s Retry-After.
+    # One provider-advised wait is cheaper and more truthful than silently replacing
+    # the neural interpretation with the deterministic parser. The 45s operation
+    # budget and one-retry cap still bound latency and prevent retry storms.
+    max_retry_after_seconds: int = 30
     base_delay_seconds: float = 0.05
     max_attempts: int = 3
     total_budget_seconds: float = 45.0

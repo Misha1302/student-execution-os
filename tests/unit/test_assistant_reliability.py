@@ -30,8 +30,8 @@ class AssistantReliabilityTest(unittest.TestCase):
                 result = ReliabilityPolicy(base_delay_seconds=0).run(request, trace=trace)
                 self.assertEqual((result, calls, trace.retries), ("ok", 2, 1))
 
-    def test_rate_limit_retries_only_with_short_explicit_retry_after(self):
-        for retry_after, expected in ((1, 2), (7, 1), (None, 1)):
+    def test_rate_limit_retries_once_when_provider_wait_fits_the_operation_budget(self):
+        for retry_after, expected in ((1, 2), (18, 2), (30, 2), (31, 1), (None, 1)):
             with self.subTest(retry_after=retry_after):
                 calls = 0
 
@@ -44,6 +44,22 @@ class AssistantReliabilityTest(unittest.TestCase):
                 with self.assertRaises(ProviderUnavailable):
                     ReliabilityPolicy().run(request, trace=ReliabilityTrace(), sleep=lambda _: None)
                 self.assertEqual(calls, expected)
+
+    def test_rate_limit_recovers_after_one_provider_advised_wait(self):
+        calls = 0
+        waits = []
+
+        def request():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ProviderUnavailable("rate limited", "RATE_LIMITED", 429, retry_after=18,
+                                          delivery="ANSWERED")
+            return "ok"
+
+        trace = ReliabilityTrace()
+        result = ReliabilityPolicy().run(request, trace=trace, sleep=waits.append)
+        self.assertEqual((result, calls, trace.retries, waits), ("ok", 2, 1, [18.0]))
 
     def test_timeout_auth_and_format_are_not_transient_retries(self):
         for reason in ("TIMEOUT", "AUTH", "FORMAT"):
@@ -154,7 +170,9 @@ class TimeoutDecisionMatrixTest(unittest.TestCase):
         ("UPSTREAM", "UNKNOWN", 504, None, None, "UNKNOWN_OUTCOME"),   # gateway timeout
         ("UPSTREAM", "UNKNOWN", 502, None, True, "UNKNOWN_OUTCOME"),   # advice cannot undo a possible generation
         ("RATE_LIMITED", "ANSWERED", 429, 1, None, "RETRY"),
-        ("RATE_LIMITED", "ANSWERED", 429, 30, None, "RETRY_AFTER_TOO_LONG"),
+        ("RATE_LIMITED", "ANSWERED", 429, 18, None, "RETRY"),
+        ("RATE_LIMITED", "ANSWERED", 429, 30, None, "RETRY"),
+        ("RATE_LIMITED", "ANSWERED", 429, 31, None, "RETRY_AFTER_TOO_LONG"),
         ("RATE_LIMITED", "ANSWERED", 429, None, None, "RETRY_AFTER_TOO_LONG"),
         ("QUOTA", "ANSWERED", 429, None, None, "NOT_TRANSIENT"),
         ("AUTH", "ANSWERED", 401, None, None, "NOT_TRANSIENT"),
