@@ -1,11 +1,25 @@
 # Deploying the server
 
 The container runs the API and web client in **session mode**: people register and log in,
-and every request is bound to the account of its bearer session. Caddy terminates TLS and
-obtains a certificate automatically for your domain. On a host that already runs nginx,
-use the separate nginx deployment below; it does not start Caddy or claim public ports.
+and every request is bound to the account of its bearer session.
 
-## First start
+There are two deployment topologies. They do not mix: pick the one that matches the host and
+use only its commands. A normal application release never switches between them.
+
+| | Topology A — Caddy host | Topology B — existing nginx host (production) |
+|---|---|---|
+| Compose | `deploy/docker-compose.yml` | `-p student-execution-os -f deploy/docker-compose.nginx.yml` |
+| Environment | `deploy/.env` | `/etc/student-execution-os/student-execution-os.env` (root, 0600) |
+| Ports 80/443 | Caddy container (TLS, automatic certificate) | host nginx (`deploy/nginx/`); the app listens on `127.0.0.1:8765` only |
+| Database | named volume `seos-data` | `/var/lib/student-execution-os` |
+| Backups | inside the volume, copy off the host | `/var/backups/student-execution-os` (mounted at `/backups`) |
+| Secrets | `deploy/secrets/` | `/etc/student-execution-os/secrets/` |
+| Section | **First start (Topology A)** | **Existing nginx host (Topology B)** |
+
+Never run `deploy/docker-compose.yml` on the nginx host: its Caddy container would compete
+with nginx for ports 80/443, and it would start a second, empty database volume.
+
+## First start (Topology A — Caddy host)
 
 1. Point a DNS record (A/AAAA) for your domain at the host; open ports 80 and 443.
 2. `cp deploy/.env.example deploy/.env` and set `SEOS_DOMAIN`.
@@ -326,20 +340,26 @@ every hour and trims operation logs / the reminder inbox after 90 days.
 
 ## Data and backups
 
-SQLite lives in the `seos-data` volume (`/data/student-execution-os.db`). Take a
-consistent, verified backup with the existing CLI:
+SQLite is `/data/student-execution-os.db` inside the containers. Take a consistent,
+verified backup with the existing CLI (it writes `<backup>.manifest.json` with the schema
+version, account count, SHA-256 and the integrity-check result):
 
 ```bash
+# Topology A: the seos-data volume
 docker compose -f deploy/docker-compose.yml exec api \
   python -m student_execution_os backup --database /data/student-execution-os.db \
   --output /data/seos-backup-$(date +%F).db
+
+# Topology B: /var/backups/student-execution-os on the host (= /backups in the api container)
+sudo /opt/student-execution-os/current/deploy/backup.sh
+#   or, with the systemd units installed: sudo systemctl start student-execution-os-backup.service
 ```
 
 Copy the backup and its `.manifest.json` off the host. The backup contains login password
 hashes and session token hashes (never raw passwords or tokens); treat it as sensitive.
 User-facing account export (Settings → Export) never includes credentials.
 
-## Existing nginx host (`seos.185-102-139-43.sslip.io`)
+## Existing nginx host (Topology B — `seos.185-102-139-43.sslip.io`)
 
 The nginx variant publishes the application only on host loopback and stores data in a
 host directory. It is intended for the current VPS, whose nginx owns ports 80 and 443.
@@ -374,29 +394,87 @@ The public URL is `https://seos.185-102-139-43.sslip.io`; health is at
 `/api/v1/health`, auth at `/api/v1/auth/*`, and all other account API calls require the
 bearer session token returned by registration/login.
 
-### Release-SHA checkout with persistent shared platform secrets
+### Releasing an exact revision (Topology B)
 
-For `~/seos-staging/<release-sha>/deploy/docker-compose.yml`, keep secrets outside the
-release so the next checkout reuses the same read-only mount. Do not put key contents
-in the environment or repository. Run these commands on the host after the two key
-files have already been installed by the operator:
+Releases are immutable `git archive` trees in `/opt/student-execution-os/releases/<full-sha>`;
+`/opt/student-execution-os/current` points at the running one (the backup unit uses it).
+The environment file and the secrets stay outside the release, so every release reuses
+them; never copy secret values into a release tree, and never print them.
 
 ```bash
-cd ~/seos-staging/<release-sha>
-test -r ~/seos-staging/shared/secrets/api/platform-groq-1.key
-test -r ~/seos-staging/shared/secrets/api/platform-groq-2.key
-sudo chown 10001:10001 ~/seos-staging/shared/secrets/api \
-  ~/seos-staging/shared/secrets/api/platform-groq-1.key \
-  ~/seos-staging/shared/secrets/api/platform-groq-2.key
-sudo chmod 0700 ~/seos-staging/shared/secrets/api
-sudo chmod 0400 ~/seos-staging/shared/secrets/api/platform-groq-1.key \
-  ~/seos-staging/shared/secrets/api/platform-groq-2.key
+SHA=<full 40-character release sha>            # e.g. the merged main commit
+REL=/opt/student-execution-os/releases/$SHA
+ENV=/etc/student-execution-os/student-execution-os.env
+PREV=$(readlink -f /opt/student-execution-os/current)   # record this: it is the rollback target
+
+# 0. Which Compose files does the running project use? Release with the same set
+#    (e.g. with or without deploy/docker-compose.tor.yml); a release does not change topology.
+docker compose ls --filter name=student-execution-os
+
+# 1. Release tree from the exact commit (no .git, nothing else in it).
+sudo install -d -m 0755 "$REL"
+git -C /path/to/clone fetch origin && git -C /path/to/clone archive "$SHA" | sudo tar -x -C "$REL"
+
+# 2. Presence / readability only — never cat these files.
+sudo test -r "$ENV"
+sudo test -r /etc/student-execution-os/secrets/api/credential.key
+sudo test -r /etc/student-execution-os/secrets/academic/academic-feed.key
+sudo test -r /etc/student-execution-os/secrets/worker/fcm-service-account.json   # if push is enabled
+# platform AI keys, if STARTER is enabled: each path listed in SEOS_PLATFORM_LLM_API_KEY_FILES,
+# as seen from the host (default dir /etc/student-execution-os/secrets/api/)
+
+# 3. Verified backup with the RUNNING release, before the new image migrates the schema.
+sudo "$PREV/deploy/backup.sh"
+ls -l /var/backups/student-execution-os | tail -2   # .db and .db.manifest.json
+
+# 4. Pin the revision for both services: api and reminder-worker read SEOS_REVISION
+#    (health "revision"); SEOS_IMAGE_TAG names the image so the previous one stays available.
+sudo cp -p "$ENV" "$ENV.bak-pre-${SHA:0:7}"
+sudo sed -i -e "s/^SEOS_REVISION=.*/SEOS_REVISION=$SHA/" -e "s/^SEOS_IMAGE_TAG=.*/SEOS_IMAGE_TAG=${SHA:0:7}/" "$ENV"
+sudo grep -q "^SEOS_REVISION=$SHA$" "$ENV" || echo "SEOS_REVISION=$SHA" | sudo tee -a "$ENV" >/dev/null
+sudo grep -q "^SEOS_IMAGE_TAG=${SHA:0:7}$" "$ENV" || echo "SEOS_IMAGE_TAG=${SHA:0:7}" | sudo tee -a "$ENV" >/dev/null
+
+# 5. Review the resolved configuration without printing the environment.
+cd "$REL"
+C="docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml"   # + -f deploy/docker-compose.tor.yml if step 0 showed it
+sudo $C --env-file "$ENV" config --format json | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+for name, svc in sorted(c["services"].items()):
+    print(name, svc.get("image"), "revision=" + str(svc.get("environment", {}).get("SEOS_REVISION")),
+          [p.get("host_ip", "") + ":" + str(p.get("published", "")) for p in svc.get("ports", [])],
+          [v.get("source") for v in svc.get("volumes", [])])'
+#    expect: api and reminder-worker revision=$SHA, api only on 127.0.0.1:8765, data in
+#    /var/lib/student-execution-os, no caddy service.
+
+# 6. Build and recreate (migrations run once, when the new api starts).
+sudo $C --env-file "$ENV" up -d --build --remove-orphans
+sudo ln -sfn "$REL" /opt/student-execution-os/current
+docker image ls student-execution-os --format '{{.Tag}} {{.ID}} {{.CreatedAt}}'   # provenance
+
+# 7. Verify.
+curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health    # revision == $SHA, schema_version
+python3 deploy/smoke.py https://seos.185-102-139-43.sslip.io --expect-revision "$SHA" --expect-worker
 ```
 
-Set or replace these exact entries in `deploy/.env` (do not append duplicate names):
+`--remove-orphans` removes services the chosen Compose files no longer define; with the
+same file set as step 0 it removes nothing.
+
+#### Platform AI (STARTER) on Topology B
+
+The platform keys are files in the API-only secret directory (default
+`/etc/student-execution-os/secrets/api/`, override with `SEOS_API_SECRETS_DIR` in `$ENV`):
+
+```bash
+S=/etc/student-execution-os/secrets/api
+sudo test -r "$S/platform-groq-1.key" && sudo test -r "$S/platform-groq-2.key"
+sudo chown 10001:10001 "$S/platform-groq-1.key" "$S/platform-groq-2.key"
+sudo chmod 0400 "$S/platform-groq-1.key" "$S/platform-groq-2.key"
+```
+
+and in `$ENV` (replace existing names, do not append duplicates):
 
 ```dotenv
-SEOS_API_SECRETS_DIR=../../shared/secrets/api
 SEOS_STARTER_LLM_ENABLED=1
 SEOS_PLATFORM_LLM_PROVIDER=openai-compatible
 SEOS_PLATFORM_LLM_MODEL=openai/gpt-oss-20b
@@ -411,31 +489,52 @@ SEOS_STARTER_LLM_MAX_OUTPUT_TOKENS=1200
 SEOS_STARTER_LLM_TOKEN_RESERVATION_OVERHEAD=256
 ```
 
-Then validate and recreate only the API service:
-
-```bash
-# The API and worker report SEOS_REVISION on /api/v1/health; without it they report
-# "unknown" and `smoke.py --expect-revision` fails. Use the full release SHA.
-export SEOS_REVISION=<release-sha>
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env config
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build api
-# provenance: record the locally built image IDs next to the SHA
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env images --format json
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env exec api \
-  python -m student_execution_os --help
-curl --fail --silent --show-error https://<domain>/api/v1/health
-```
-
-The two `test -r` commands inspect only file presence/readability, not contents. Review
-`docker compose ... config` before `up`; it may show file paths but must never show the
-key contents. A normal login can then verify Settings → AI shows Basic AI, the model,
-remaining quota, and reset time.
+then recreate with step 6. (`/run/secrets/seos/` is the container path of the API secret
+directory.) On a Caddy host (Topology A) the same keys go in `deploy/secrets/api/`, or in a
+shared directory named by `SEOS_API_SECRETS_DIR` in `deploy/.env`, and the same entries go in
+`deploy/.env`.
 
 Rollback STARTER without deleting data: set `SEOS_STARTER_LLM_ENABLED=0`, clear both
 `SEOS_PLATFORM_LLM_API_KEY_FILES` and `SEOS_PLATFORM_LLM_API_KEY`, and recreate `api`;
-STARTER becomes inactive and capture falls back to BYOK/local parsing. For a schema rollback, stop all writers, take
-a verified backup, drop the three v21 usage tables, delete migration 21, optionally
-delete only `llm_entitlements WHERE plan='STARTER'`, then deploy the previous image.
+STARTER becomes inactive and capture falls back to BYOK/local parsing.
+
+### Rollback (Topology B)
+
+**Application rollback (the default).** Every migration so far only adds tables or
+columns, and a build starts on a database a newer build has migrated: it skips the
+migrations it knows and ignores the rest. So a rollback is the previous release with the
+current database:
+
+```bash
+cd "$PREV"                                         # recorded in step 0 of the release
+sudo cp -p "$ENV.bak-pre-${SHA:0:7}" "$ENV"        # previous SEOS_REVISION / SEOS_IMAGE_TAG
+sudo docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml [-f deploy/docker-compose.tor.yml] \
+  --env-file "$ENV" up -d --remove-orphans          # the previous image tag still exists: no build
+sudo ln -sfn "$PREV" /opt/student-execution-os/current
+curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health   # previous revision; schema_version stays
+```
+
+Data written by the newer build is kept (and used again on roll-forward, which needs no
+migration). While the older build runs, the newer features are inactive (for v30: planning
+preferences are kept but not applied), and **account export and account deletion answer
+`422 VALIDATION_ERROR` ("data lifecycle contract does not classify database tables")** —
+the lifecycle guard refuses to export or delete an account incompletely. Everything else
+(sign-in, today/plan, sync with exactly-once replay, reminders, backups) works. Verified for
+a v30 database under the v27 and v29 builds; `tests/integration/test_v30_planning_preferences.py`
+keeps the contract.
+
+**Schema rollback (only when export/deletion must work on the old build for a long time).**
+Stop the api and worker, take a verified backup, then in the api image apply
+`src/student_execution_os/persistence/rollback/<NNN>_*_down.sql` for every version newer than
+the old build, newest first (v30 → v29: `030`; v30 → v27: `030`, `029`, `028`), and start the
+old release. This **deletes** those tables' rows: planning preferences (030), Assistant undo
+history (029), sign-in rate-limit windows (028). A later roll-forward recreates them empty.
+Never restore an older backup over newer legitimate writes to roll back; `restore` of a
+newer-schema backup into an older build is refused by design.
+
+**Android.** Android refuses to install a lower versionCode, so a client rollback is a newer
+versionCode built from older source; see `mobile/README.md` ("Storage") for what such a
+build finds (pending operations in the WebView mirror; sign-in again).
 
 For daily verified backups with 14-day retention, install the two files from
 `deploy/systemd/` under `/etc/systemd/system/`, enable
@@ -470,8 +569,8 @@ python deploy/smoke.py https://<domain> --expect-revision <release-sha> \
   --expect-worker --expect-push --expect-byok
 ```
 
-`--expect-revision` passes only if the services were started with `SEOS_REVISION`
-exported (see the release-SHA checkout above). `--expect-push` proves the worker has an
+`--expect-revision` passes only if the services were started with that `SEOS_REVISION`
+(see "Releasing an exact revision" above). `--expect-push` proves the worker has an
 FCM credential configured, not that Google delivered a message to a phone.
 
 registers a throwaway account, checks that a natural-language phrase is previewed and stored
@@ -488,6 +587,10 @@ falls back to the local parser, then removes it. The account is deleted at the e
 Inside the API container (it has the platform key files and egress settings):
 
 ```bash
+# Topology B
+sudo docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml \
+  --env-file /etc/student-execution-os/student-execution-os.env exec api python -m student_execution_os llm-smoke
+# Topology A
 docker compose -f deploy/docker-compose.yml exec api python -m student_execution_os llm-smoke
 ```
 
