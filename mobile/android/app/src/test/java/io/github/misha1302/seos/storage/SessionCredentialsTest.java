@@ -136,4 +136,18 @@ public class SessionCredentialsTest {
         assertThrows(IllegalStateException.class, () -> credentials.setToken("secret-token"));
         assertNull(legacy.token);
     }
+
+    @Test
+    public void aNewLoginSupersedesALegacySessionEvenWhenTheVaultFails() {
+        FakeVault vault = new FakeVault();
+        vault.failWrites = true;
+        FakeLegacy legacy = new FakeLegacy();
+        legacy.token = "older-account-session";
+        SessionCredentials credentials = new SessionCredentials(vault, legacy);
+        assertEquals(SessionCredentials.Migration.SECURE_STORE_UNAVAILABLE, credentials.migrate());
+        assertThrows(IllegalStateException.class, () -> credentials.setToken("new-login"));
+        assertNull(legacy.token);  // not written in plain storage, and the older session is gone
+        assertNull(vault.value);
+        assertNull(credentials.token());
+    }
 }

@@ -201,7 +201,8 @@ export class DeviceCredentialStore {
       this.memory = undefined;
       if (value != null) this.state = 'KEYSTORE';
     } catch {
-      // Never downgrade to plain storage: keep the session for this run only.
+      // A new token is never written to plain storage: keep it for this run only. (The
+      // native side also drops a legacy copy left by a failed migration.)
       this.memory = value == null ? undefined : String(value);
       this.state = value == null ? this.state : 'MEMORY_ONLY';
       if (value == null) await store.credentialClear().catch(() => {});

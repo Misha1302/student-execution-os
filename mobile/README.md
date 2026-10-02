@@ -133,10 +133,14 @@ Migration from earlier releases runs at every start (`initDeviceStorage()`), bef
 is read:
 
 - token: read the plain `CapacitorStorage/seos.token` → write it to the Keystore vault → read it
-  back and compare → mark migrated → only then remove the plain copy. A failure keeps the plain
-  copy and is reported (`SECURE_STORE_UNAVAILABLE` / `VERIFY_FAILED`); the token is never lost
-  and never written to plain storage again. If the Keystore cannot store a new login, the token
-  is kept in memory for that run only.
+  back and compare → mark migrated → only then remove the plain copy.
+- a failed migration (`SECURE_STORE_UNAVAILABLE` / `VERIFY_FAILED`) is reported and keeps the
+  existing plain token where it is: that session keeps working from the legacy copy (it is not
+  silently destroyed), and every later start retries the migration. Until one succeeds, that
+  pre-upgrade token remains in plain app storage.
+- a new credential (any login after the upgrade) is never persisted in plain storage. If the
+  Keystore cannot store it, it is kept in memory for that run only, and any legacy plain copy is
+  removed so an older session cannot come back after a restart.
 - queue: every `seos.ops.*` list is imported into SQLite by `op_id` (idempotent: a re-run or a
   run interrupted half-way never duplicates), verified, and only then marked done. op_ids are
   never rewritten, so the server's exactly-once replay still applies.

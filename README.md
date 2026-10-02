@@ -93,7 +93,8 @@ Known limits:
   (`python -m student_execution_os llm-eval`, opt-in, needs a configured provider); CI
   uses deterministic fake providers, which prove contracts, not model quality.
 - On Android the offline queue is in native SQLite and the bearer token in the Android
-  Keystore (migrated from earlier releases at start-up); the read-model cache stays in
+  Keystore (migrated from earlier releases at start-up; if that migration fails, the existing
+  pre-upgrade token stays in plain app storage until it succeeds); the read-model cache stays in
   WebView storage by design. See [mobile/README.md](mobile/README.md).
 - Undo covers Assistant-originated creates, updates, reschedules and snoozes, not
   every manual operation (manual operations have their own short-lived undo).

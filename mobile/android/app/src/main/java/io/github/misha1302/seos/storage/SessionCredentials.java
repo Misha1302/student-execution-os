@@ -16,6 +16,9 @@ import android.content.SharedPreferences;
  *
  * <p>Any failure leaves the legacy value where it is and reports the failure — the
  * credential is never lost silently and a failed migration is never reported as done.
+ * Until a later start migrates it, that existing legacy token stays readable in plain
+ * Preferences and keeps the session working. This is the only plain copy there can be:
+ * a new token is never written to plain storage ({@link #setToken}).
  * A legacy value that appears after migration can only have been written by an older
  * app version (a rollback build); it is the newest login, so it wins and is migrated.
  * The server URL and user are not secrets and stay in Preferences.
@@ -95,16 +98,24 @@ public final class SessionCredentials {
         }
     }
 
-    /** Stores a new token (null = sign out). Never falls back to plain storage. */
+    /**
+     * Stores a new token (null = sign out). A new token is only ever persisted in the vault:
+     * if the vault fails this throws and the caller keeps the token in memory for the run.
+     * Either way a legacy copy (an older session whose migration failed) is removed — it
+     * must not outlive a new login.
+     */
     public void setToken(String value) throws Exception {
         synchronized (LOCK) {
             if (value == null || value.isEmpty()) {
                 clear();
                 return;
             }
-            vault.write(value);
-            if (!value.equals(vault.read())) throw new IllegalStateException("secure credential verification failed");
-            legacy.removeToken();  // a stale legacy copy must not outlive a new login
+            try {
+                vault.write(value);
+                if (!value.equals(vault.read())) throw new IllegalStateException("secure credential verification failed");
+            } finally {
+                legacy.removeToken();
+            }
         }
     }
 

@@ -56,12 +56,16 @@ class FakeSeosStorage {
     return { result: 'MIGRATED' };
   }
 
-  async credentialGet() { return { value: prefs.get('seos.user') ? this.vault : null }; }
+  // SessionCredentials.token(): migrate first; a failed migration still reads the legacy copy.
+  async credentialGet() {
+    if ((await this.credentialMigrate()).result === 'SECURE_STORE_UNAVAILABLE') return { value: prefs.get('seos.token') ?? null };
+    return { value: prefs.get('seos.user') ? this.vault : null };
+  }
 
   async credentialSet({ value }) {
+    prefs.delete('seos.token');  // a new login supersedes a legacy copy, even when the vault fails
     if (this.failVault) throw new Error('CREDENTIAL_WRITE');
     this.vault = value;
-    prefs.delete('seos.token');
   }
 
   async credentialClear() { this.vault = null; prefs.delete('seos.token'); }
@@ -197,5 +201,23 @@ await api.setAuth('bearer-d', { account_id: 'acct-d' });
 assert.equal(prefs.has('seos.token'), false);
 assert.equal(await storage.credentialStore.get('seos.token'), 'bearer-d', 'kept for this run only');
 assert.equal(storage.credentialStore.security(), 'MEMORY_ONLY');
+
+// --- a pre-upgrade session whose migration fails is kept, not destroyed ------------------
+await api.clearAuth();
+prefs.set('seos.user', JSON.stringify({ account_id: 'acct-e' }));
+prefs.set('seos.token', 'bearer-legacy-e');
+assert.equal((await storage.initDeviceStorage()).credentials, 'SECURE_STORE_UNAVAILABLE');
+await api.restoreSession();
+assert.equal(api.session.token, 'bearer-legacy-e', 'the existing session keeps working');
+assert.equal(prefs.get('seos.token'), 'bearer-legacy-e', 'the legacy copy stays until a migration succeeds');
+assert.equal(storage.credentialStore.security(), 'CAPACITOR_PREFERENCES');
+// A new login while the Keystore still fails is memory-only and replaces the legacy session.
+await api.setAuth('bearer-f', { account_id: 'acct-f' });
+assert.equal(prefs.has('seos.token'), false, 'a new credential is never written to plain storage');
+assert.equal(await storage.credentialStore.get('seos.token'), 'bearer-f');
+assert.equal(storage.credentialStore.security(), 'MEMORY_ONLY');
+// After a restart nothing older comes back: the user signs in again.
+await storage.initDeviceStorage();
+assert.equal(await new storage.DeviceCredentialStore().get('seos.token'), null);
 
 console.log('native storage: ok');
