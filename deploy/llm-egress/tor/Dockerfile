@@ -1,6 +1,10 @@
 FROM debian:13-slim
 
-ARG TOR_VERSION=0.4.9.13-0+deb13u1
+# A version family, not one Debian revision: an exact `-0+deb13uN` pin stops
+# resolving as soon as Debian ships the next security revision (that broke CI
+# before). The 0.4.9 series keeps behaviour stable while security fixes still
+# install. Pass an exact version with --build-arg for a fully pinned build.
+ARG TOR_VERSION=0.4.9.*
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
