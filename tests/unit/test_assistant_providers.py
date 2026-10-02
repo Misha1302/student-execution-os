@@ -167,7 +167,7 @@ class AssistantProviderTests(unittest.TestCase):
                                   base_url="https://api.groq.com/openai/v1")
         for error, reason in ((httpx.LocalProtocolError("Illegal header value"), "REQUEST"),
                               (httpx.ConnectTimeout("timed out"), "NETWORK"),
-                              (httpx.ReadTimeout("timed out"), "NETWORK"),
+                              (httpx.ReadTimeout("timed out"), "TIMEOUT"),
                               (httpx.ConnectError("refused"), "NETWORK")):
             with patch("student_execution_os.agent.providers.httpx.post", side_effect=error), \
                  self.assertRaises(ProviderUnavailable) as caught:

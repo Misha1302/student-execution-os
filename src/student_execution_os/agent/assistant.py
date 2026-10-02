@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -16,13 +17,18 @@ from student_execution_os.domain.model import (
     Importance,
     LifecycleStatus,
     ObligationCategory,
+    UserTimeConstraintType,
 )
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _dt, _iso
+from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
+from .read import SQLiteAssistantReadService
+from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
+from .semantic import RelativeToAction, TemporalPrecision, parse_relative_to, resolve_temporal_transform
 
 
 COMMANDS = {command.value for command in AgentCommand}
@@ -86,6 +92,11 @@ class DeterministicAssistantParser:
                 command["payload"] = {"obligation_id": command["payload"].pop("target_text"), **command["payload"]}
                 command["unresolved_fields"].append("expected_version")
             return [command]
+        first_word = clean.casefold().split(" ", 1)[0].rstrip("?,")
+        if first_word in {"что", "когда", "сколько", "какие", "почему", "what", "when", "why", "which"}:
+            raise ValidationError("read question needs a typed assistant read query")
+        if context.get("assistant_session"):
+            raise ValidationError("conversational follow-up needs the language model")
         # Everyday phrasing ("в пятницу к шести сдать лабу, часа два, важно").
         parsed = parse_task(str(text), now=now or datetime.now(timezone.utc), timezone_name=str(context.get("timezone") or "UTC"))
         if not parsed.get("title"):
@@ -127,7 +138,8 @@ def _resolve_target(target: str, obligations: object) -> dict[str, Any] | None:
     return by_title[0] if len(by_title) == 1 else None
 
 
-_ACTION_KEYS = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
+_ACTION_REQUIRED = {"command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"}
+_ACTION_KEYS = _ACTION_REQUIRED | {"field_provenance", "client_ref", "depends_on"}
 # Every field a CREATE_TASK proposal may carry maps onto the canonical task.create
 # command (sync/commands.py); anything else is rejected by validate_proposal.
 _CREATE_TASK_FIELDS = {
@@ -136,13 +148,21 @@ _CREATE_TASK_FIELDS = {
 }
 _NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
 _TARGET = {"obligation_id", "reminder_id", "target_text"}
+# A time the server derives from an earlier action of the same plan (never a sync field).
+_RELATIVE = "relative_to"
+_RELATIVE_FIELDS = {
+    AgentCommand.CREATE_EVENT.value: ("starts_at", "ends_at"),
+    AgentCommand.CREATE_TASK.value: ("actionable_from",),
+    AgentCommand.CREATE_REMINDER.value: ("remind_at",),
+}
 _PAYLOAD_KEYS = {
     AgentCommand.CREATE_NOTE.value: {"content"},
-    AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS,
+    AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS | {_RELATIVE},
     AgentCommand.CREATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "duration_minutes", "category", "importance",
                                       "attendance_policy", "location_effect", "arrival_requirement_minutes",
-                                      "remind_before_minutes"},
-    AgentCommand.CREATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume", "obligation_id"},
+                                      "remind_before_minutes", _RELATIVE},
+    AgentCommand.CREATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume", "obligation_id",
+                                         _RELATIVE},
     AgentCommand.REFINE_TASK.value: {"obligation_id", "estimated_total_effort_minutes", "activate"},
     AgentCommand.LOG_PROGRESS.value: {"minutes", "count"} | _TARGET,
     AgentCommand.COMPLETE_OBLIGATION.value: set(_TARGET),
@@ -153,8 +173,10 @@ _PAYLOAD_KEYS = {
     AgentCommand.UPDATE_EVENT.value: {"title", "description", "starts_at", "ends_at", "remind_before_minutes",
                                       "attendance_policy"} | _TARGET,
     AgentCommand.UPDATE_REMINDER.value: {"title", "note", "remind_at", "delivery", "wake_check", "raise_volume"} | _TARGET,
-    AgentCommand.RESCHEDULE.value: {"when", "keep_time"} | _TARGET,
+    AgentCommand.RESCHEDULE.value: {"when", "keep_time", "temporal_transform"} | _TARGET,
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
+    AgentCommand.CREATE_TIME_CONSTRAINT.value: {"type", "starts_at", "ends_at", "reason"},
+    AgentCommand.UNDO_LAST.value: set(),
 }
 _REQUIRED = {
     AgentCommand.CREATE_NOTE.value: ("content",),
@@ -162,8 +184,8 @@ _REQUIRED = {
     AgentCommand.CREATE_EVENT.value: ("title", "starts_at", "ends_at"),
     AgentCommand.CREATE_REMINDER.value: ("title", "remind_at"),
     AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
-    AgentCommand.RESCHEDULE.value: ("when",),
     AgentCommand.SNOOZE.value: ("until",),
+    AgentCommand.CREATE_TIME_CONSTRAINT.value: ("type", "starts_at", "ends_at"),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -191,7 +213,8 @@ def _positive_minutes(value: object, field: str, *, allow_none: bool = False) ->
         raise ValidationError(f"assistant proposal {field} must be a positive whole number of minutes")
 
 
-def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account_id: str) -> dict[str, Any]:
+def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account_id: str, *,
+                      timezone_name: str | None = None) -> dict[str, Any]:
     """Validate one provider action against the command schema and canonical state.
 
     Anything a model could get wrong — unknown commands or fields, wrong types,
@@ -199,7 +222,7 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     so it can neither be previewed nor applied. Fields the model honestly marks as
     unresolved are allowed to be missing; apply refuses them until refined.
     """
-    if not isinstance(raw, dict) or set(raw) != _ACTION_KEYS:
+    if not isinstance(raw, dict) or not _ACTION_REQUIRED.issubset(raw) or set(raw) - _ACTION_KEYS:
         raise ValidationError("assistant provider returned an invalid typed action")
     command = raw["command"]
     payload = raw["payload"]
@@ -219,6 +242,12 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     unknown = set(payload) - _PAYLOAD_KEYS[command]
     if unknown:
         raise ValidationError(f"assistant {command} payload has unsupported fields: {', '.join(sorted(unknown))}")
+    field_provenance = raw.get("field_provenance") or {}
+    if not isinstance(field_provenance, dict) or set(field_provenance) - set(payload):
+        raise ValidationError("assistant field_provenance must name payload fields only")
+    if not all(value in {"MODEL_EXPLICIT", "MODEL_INFERRED"} for value in field_provenance.values()):
+        raise ValidationError("assistant field_provenance has an invalid value")
+    field_provenance = {field: field_provenance.get(field, "MODEL_INFERRED") for field in payload}
     for field in _REQUIRED.get(command, ()):
         if payload.get(field) in (None, "") and field not in unresolved:
             raise ValidationError(f"assistant {command} payload lacks {field}")
@@ -282,9 +311,16 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if isinstance(payload["remind_before_minutes"], bool) or not isinstance(payload["remind_before_minutes"], int) \
                 or not 0 <= payload["remind_before_minutes"] <= 1440:
             raise ValidationError("assistant remind_before_minutes must be 0-1440")
+    resolution: dict[str, str] | None = None
     if command == AgentCommand.RESCHEDULE.value:
+        if payload.get("when") is None and payload.get("temporal_transform") is None and "when" not in unresolved:
+            raise ValidationError("assistant RESCHEDULE payload needs when or temporal_transform")
+        if payload.get("when") is not None and payload.get("temporal_transform") is not None:
+            raise ValidationError("assistant RESCHEDULE must use when or temporal_transform, not both")
         if payload.get("when") is not None:
-            _instant(payload["when"], "when")
+            resolved_when = _instant(payload["when"], "when")
+            resolution = {"when": _iso(resolved_when), "precision": TemporalPrecision.EXACT.value,
+                          "reason": "EXACT_USER_OR_MODEL_TIME"}
         if "keep_time" in payload and not isinstance(payload["keep_time"], bool):
             raise ValidationError("assistant keep_time must be a boolean")
     if command == AgentCommand.SNOOZE.value and payload.get("until") is not None:
@@ -295,8 +331,24 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
             raise ValidationError("assistant LOG_PROGRESS needs minutes or count")
         if payload.get("count") is not None:
             _positive_minutes(payload["count"], "count")
+    if command == AgentCommand.CREATE_TIME_CONSTRAINT.value:
+        try:
+            constraint_type = UserTimeConstraintType(payload.get("type"))
+        except ValueError:
+            raise ValidationError("assistant time constraint has an invalid type") from None
+        if constraint_type is UserTimeConstraintType.PINNED_WORK:
+            raise ValidationError("assistant cannot create pinned work without an explicit task target")
+        starts = _instant(payload.get("starts_at"), "starts_at")
+        ends = _instant(payload.get("ends_at"), "ends_at")
+        if ends <= starts or ends - starts > timedelta(days=14):
+            raise ValidationError("assistant time constraint must be positive and at most 14 days")
+        if payload.get("reason") is not None and (
+                not isinstance(payload["reason"], str) or len(payload["reason"]) > 5000):
+            raise ValidationError("assistant time constraint reason must be text up to 5000 characters")
     if payload.get("target_text") is not None and (not isinstance(payload["target_text"], str) or len(payload["target_text"]) > 300):
         raise ValidationError("assistant target_text must be short text")
+    if _RELATIVE in payload:
+        parse_relative_to(payload[_RELATIVE])  # resolved against the plan by SQLiteAssistantService
     expected = raw["expected_version"]
     if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
         raise ValidationError("assistant expected_version must be an integer")
@@ -306,9 +358,22 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if canonical.connection.execute("SELECT 1 FROM obligations WHERE account_id=? AND id=?",
                                         (account_id, str(payload["obligation_id"]))).fetchone() is None:
             raise ValidationError("assistant proposal references an unknown obligation")
-    return {"command": command, "payload": payload, "confidence": confidence,
+    if command == AgentCommand.RESCHEDULE.value and payload.get("temporal_transform") is not None and not _target_unresolved(unresolved):
+        target = target_of(canonical, account_id, payload)
+        assert target is not None
+        current = _target_moment(canonical, account_id, target[0], target[1])
+        from student_execution_os.reminders import ReminderStore
+        zone = timezone_name or ReminderStore(canonical).prefs(account_id).timezone_name
+        resolved = resolve_temporal_transform(payload["temporal_transform"], current=current, timezone_name=zone)
+        payload["when"] = _iso(resolved.when)
+        resolution = {"when": _iso(resolved.when), "precision": resolved.precision.value,
+                      "reason": resolved.reason, "timezone": zone}
+    result = {"command": command, "payload": payload, "confidence": confidence,
             "unresolved_fields": list(unresolved), "expected_version": expected,
-            "requires_confirmation": raw["requires_confirmation"]}
+            "requires_confirmation": raw["requires_confirmation"], "field_provenance": field_provenance}
+    if resolution is not None:
+        result["resolution"] = resolution
+    return result
 
 
 def _instant(value: object, field: str) -> datetime:
@@ -331,6 +396,27 @@ def target_of(canonical: SQLiteCanonicalRepository, account_id: str, payload: di
                                            (account_id, str(payload["obligation_id"]))).fetchone()
         return None if row is None else (row["kind"], str(payload["obligation_id"]), int(row["version"]))
     return None
+
+
+def _target_moment(canonical: SQLiteCanonicalRepository, account_id: str, kind: str, entity_id: str) -> datetime:
+    if kind == "EVENT":
+        return canonical.get_event(account_id, entity_id).interval.starts_at
+    if kind == "REMINDER":
+        row = canonical.connection.execute(
+            "SELECT remind_at FROM reminders WHERE account_id=? AND id=?", (account_id, entity_id),
+        ).fetchone()
+        if row is not None:
+            return _dt(row["remind_at"])
+    if kind == "TASK":
+        row = canonical.connection.execute(
+            "SELECT actual_cutoff_at,actionable_from,target_at FROM tasks WHERE account_id=? AND obligation_id=?",
+            (account_id, entity_id),
+        ).fetchone()
+        if row is not None:
+            for field in ("actual_cutoff_at", "actionable_from", "target_at"):
+                if row[field]:
+                    return _dt(row[field])
+    raise ValidationError("assistant cannot shift an item without a current time")
 
 
 def _validate_target(command: str, payload: dict[str, Any], unresolved: list[str], expected: object,
@@ -397,10 +483,13 @@ def _validate_task_fields(payload: dict[str, Any], now: datetime) -> None:
 
 class SQLiteAssistantService:
     def __init__(self, canonical: SQLiteCanonicalRepository, principal: AuthenticatedPrincipal,
-                 provider: AssistantProvider | None = None) -> None:
+                 provider: AssistantProvider | None = None,
+                 reliability_policy: ReliabilityPolicy | None = None) -> None:
         self.canonical = canonical
         self.principal = principal
         self.provider = provider or DeterministicAssistantParser()
+        self.reliability_policy = reliability_policy or ReliabilityPolicy()
+        self.reliability_trace = ReliabilityTrace()
 
     def _context(self, client: dict[str, object]) -> dict[str, object]:
         """Server-owned context: the model only sees what the account already owns."""
@@ -436,10 +525,62 @@ class SQLiteAssistantService:
         }
         if isinstance(client.get("locale"), str):
             context["locale"] = client["locale"][:16]
+        if client.get("source") in {"TEXT", "VOICE"}:
+            context["source"] = client["source"]
+        previous_batch_id = client.get("previous_batch_id")
+        if previous_batch_id is not None:
+            context["assistant_session"] = self._previous_session(
+                str(previous_batch_id), client.get("previous_edits"),
+            )
         return context
+
+    def _previous_session(self, batch_id: str, edits: object) -> dict[str, object]:
+        row = self.canonical.connection.execute(
+            "SELECT actions_json,expires_at FROM assistant_batches "
+            "WHERE account_id=? AND principal_id=? AND id=?",
+            (self.principal.account_id, self.principal.principal_id, batch_id),
+        ).fetchone()
+        if row is None:
+            raise AuthorizationDenied("previous assistant batch is not scoped to this principal")
+        if _dt(row["expires_at"]) <= self.canonical.clock.now():
+            raise AuthorizationDenied("previous assistant batch expired")
+        actions = json.loads(row["actions_json"])
+        if not isinstance(actions, list) or len(actions) > 10:
+            raise ValidationError("previous assistant batch is invalid")
+        by_id = {action.get("id"): action for action in actions if isinstance(action, dict)}
+        if edits is None:
+            edits = {}
+        if not isinstance(edits, dict) or not set(edits).issubset(by_id) \
+                or not all(isinstance(value, dict) for value in edits.values()):
+            raise ValidationError("previous_edits must map previous action ids to field objects")
+        refined = [self._edited(action, edits.get(action.get("id"))) for action in actions]
+        return {
+            "previous_batch_id": batch_id,
+            "previous_actions": [
+                {
+                    key: action[key]
+                    for key in ("command", "payload", "expected_version", "unresolved_fields", "provenance", "resolution")
+                    if key in action
+                }
+                for action in refined
+            ],
+        }
 
     def interpret(self, text: str, context: dict[str, object] | None = None, *,
                   degrade_invalid: bool = False) -> dict[str, object]:
+        started = perf_counter()
+        self.reliability_trace = ReliabilityTrace()
+        self.provider_failure = None
+        try:
+            result = self._interpret(text, context, degrade_invalid=degrade_invalid)
+        except (ProviderUnavailable, ValidationError) as exc:
+            self._record_interpret_metrics(started, error=exc)
+            raise
+        self._record_interpret_metrics(started, result=result)
+        return result
+
+    def _interpret(self, text: str, context: dict[str, object] | None = None, *,
+                   degrade_invalid: bool = False) -> dict[str, object]:
         """Interpret ``text`` into a stored, expiring preview batch.
 
         A provider outage (or a refused key, an unsupported model, a non-JSON answer)
@@ -453,22 +594,43 @@ class SQLiteAssistantService:
         if len(str(text)) > 4000:
             raise ValidationError("assistant input is longer than 4000 characters")
         server_context = self._context(context if isinstance(context, dict) else {})
-        self.provider_failure: ProviderUnavailable | None = None
         local = isinstance(self.provider, DeterministicAssistantParser)
         try:
-            provider_name, message, actions = self._propose(self.provider, text, server_context)
+            provider_name, message, actions, read_result = self._propose(self.provider, text, server_context)
         except ProviderUnavailable as exc:
             # Provider outage (or a rejected key) degrades to the local parser instead
             # of failing the user; the reason code tells the client why.
             self.provider_failure = exc
-            provider_name, message, actions = self._local(text, server_context)
+            provider_name, message, actions, read_result = self._local(text, server_context)
         except ValidationError as exc:
             if local or not degrade_invalid:
                 raise
             self.provider_failure = ProviderUnavailable(str(exc), "INVALID_PROPOSAL")
-            provider_name, message, actions = self._local(text, server_context)
+            provider_name, message, actions, read_result = self._local(text, server_context)
         fallback = self.provider_failure is not None
         now = self.canonical.clock.now()
+        if read_result is not None:
+            return {
+                "batch_id": None,
+                "provider": provider_name,
+                "fallback": fallback,
+                "engine": "LOCAL" if local or fallback else "AI",
+                "model": None if local or fallback else getattr(self.provider, "model", None),
+                "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
+                "retry_after_seconds": getattr(self.provider_failure, "retry_after", None),
+                "reliability": {
+                    "attempts": self.reliability_trace.attempts,
+                    "retries": self.reliability_trace.retries,
+                    "repair_attempted": self.reliability_trace.repair_attempted,
+                    "repair_succeeded": self.reliability_trace.repair_succeeded,
+                },
+                "message": message,
+                "actions": [],
+                "read": read_result,
+                "created_at": _iso(now),
+                "expires_at": None,
+                "mutated_canonical_state": False,
+            }
         batch_id = str(uuid4())
         redacted = re.sub(r"\b[\w.+-]+@[\w.-]+\b", "[email]", text)[:2000]
         digest = hashlib.sha256(text.encode()).hexdigest()
@@ -489,41 +651,386 @@ class SQLiteAssistantService:
                 "fallback_reason": None if self.provider_failure is None else self.provider_failure.reason,
                 # A rate-limited provider's Retry-After, so a client can say when to retry.
                 "retry_after_seconds": getattr(self.provider_failure, "retry_after", None),
+                "reliability": {
+                    "attempts": self.reliability_trace.attempts,
+                    "retries": self.reliability_trace.retries,
+                    "repair_attempted": self.reliability_trace.repair_attempted,
+                    "repair_succeeded": self.reliability_trace.repair_succeeded,
+                },
                 "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
 
-    def _local(self, text: str, context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+    def _record_interpret_metrics(
+        self,
+        started: float,
+        *,
+        result: dict[str, object] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        metrics = SQLiteOperationalMetrics(self.canonical)
+        provider = getattr(self.provider, "name", "unknown")
+        reason = (
+            self.provider_failure.reason if error is not None and self.provider_failure is not None
+            else error.reason if isinstance(error, ProviderUnavailable)
+            else sanitized_validation_feedback(error) if error is not None
+            else result.get("fallback_reason") if result is not None
+            else None
+        )
+        engine = str(result.get("engine")) if result is not None else "NONE"
+        dimensions = {"engine": engine, "provider": provider, "reason": reason or "NONE"}
+        metrics.record(
+            "assistant_interpretation_count",
+            account_id=self.principal.account_id,
+            dimensions={**dimensions, "result": "ERROR" if error is not None else "OK"},
+        )
+        metrics.record(
+            "assistant_interpretation_latency_ms",
+            (perf_counter() - started) * 1000,
+            account_id=self.principal.account_id,
+            dimensions=dimensions,
+        )
+        if reason and reason != "NONE":
+            metrics.record(
+                "assistant_provider_failure_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "reason": reason},
+            )
+        if result is not None and result.get("fallback"):
+            metrics.record(
+                "assistant_local_fallback_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "reason": reason or "UNKNOWN"},
+            )
+        structured_reason = self.reliability_trace.repair_reason or (
+            reason if reason in {"FORMAT", "INVALID_PROPOSAL", "JSON_SCHEMA", "ACTION_SCHEMA"} else None
+        )
+        if structured_reason:
+            metrics.record(
+                "assistant_structured_output_failure_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "reason": structured_reason},
+            )
+        if self.reliability_trace.repair_attempted:
+            metrics.record(
+                "assistant_repair_attempt_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "succeeded": self.reliability_trace.repair_succeeded},
+            )
+        if result is not None:
+            ambiguous = sum(
+                1 for action in result.get("actions", [])
+                if isinstance(action, dict) and _target_unresolved(action.get("unresolved_fields") or [])
+            )
+            if ambiguous:
+                metrics.record(
+                    "assistant_target_ambiguity_count",
+                    ambiguous,
+                    account_id=self.principal.account_id,
+                    dimensions={"provider": provider},
+                )
+
+    def _local(self, text: str, context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         try:
             return self._propose(DeterministicAssistantParser(), text, context)
         except ValidationError:
             raise ValidationError("the language model is unavailable and the local parser did not understand the input") from None
 
     def _propose(self, provider: AssistantProvider, text: str,
-                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]]]:
+                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         """Ask one provider and validate every action it proposes (nothing is stored)."""
-        interpretation = provider.interpret(text, context)
+        try:
+            interpretation = self.reliability_policy.run(
+                lambda: provider.interpret(text, context), trace=self.reliability_trace,
+            )
+            return self._validate_interpretation(provider, interpretation, text, context)
+        except (ProviderUnavailable, ValidationError) as exc:
+            repair = getattr(provider, "repair", None)
+            repairable = (
+                isinstance(exc, ProviderUnavailable) and exc.reason == "FORMAT"
+            ) or (isinstance(exc, ValidationError) and not isinstance(exc, ProviderUnavailable))
+            if not repairable or not callable(repair):
+                raise
+            self.reliability_trace.repair_attempted = True
+            feedback = sanitized_validation_feedback(exc)
+            self.reliability_trace.repair_reason = feedback
+            try:
+                interpretation = self.reliability_policy.run(
+                    lambda: repair(text, context, feedback), trace=self.reliability_trace,
+                )
+                result = self._validate_interpretation(provider, interpretation, text, context)
+            except (ProviderUnavailable, ValidationError):
+                raise exc
+            self.reliability_trace.repair_succeeded = True
+            return result
+
+    def _validate_interpretation(self, provider: AssistantProvider, interpretation: object, text: str,
+                                 context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         if isinstance(interpretation, dict):
             raw_actions = interpretation.get("actions")
+            raw_read = interpretation.get("read_query")
             assistant_message = str(interpretation.get("message") or "")[:2000]
         else:
             raw_actions = interpretation
+            raw_read = None
             assistant_message = "I prepared a structured preview. Review it before applying."
         if not isinstance(raw_actions, list):
             raise ValidationError("assistant provider returned an invalid actions list")
         if len(raw_actions) > 10:
             raise ValidationError("assistant proposed too many actions")
+        if any(isinstance(action, dict) and action.get("command") == AgentCommand.UNDO_LAST.value
+               for action in raw_actions) and len(raw_actions) != 1:
+            raise ValidationError("assistant undo must be the only proposed action")
+        if raw_read is not None:
+            if raw_actions:
+                raise ValidationError("assistant response cannot mix read query and mutations")
+            read_result = SQLiteAssistantReadService(
+                self.canonical, self.principal.account_id,
+            ).execute(raw_read)
+            return provider.name, assistant_message, [], read_result
         raw_actions = self._reconcile_explicit_intent(text, context, raw_actions)
-        actions = []
-        for raw in raw_actions:
-            clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+        raw_actions, preserved = self._preserve_previous_user_edits(raw_actions, context)
+        action_ids, dependencies = self._action_dependencies(raw_actions)
+        actions: list[dict[str, Any]] = []
+        for index, raw in enumerate(raw_actions):
+            derived: tuple[str, ...] = ()
+            if isinstance(raw, dict) and isinstance(raw.get("payload"), dict) and _RELATIVE in raw["payload"]:
+                raw, derived = self._relative_from_model(raw, action_ids, dependencies[index], actions)
+            clean = validate_proposal(raw, self.canonical, self.principal.account_id,
+                                      timezone_name=str(context.get("timezone") or "UTC"))
+            field_provenance = clean.pop("field_provenance")
+            local = isinstance(provider, DeterministicAssistantParser)
             actions.append({
-                "id": str(uuid4()), **clean,
-                "provenance": {"provider": provider.name, "input": "user-authored-text"},
+                "id": action_ids[index], **clean,
+                "depends_on": dependencies[index],
+                "provenance": {
+                    "provider": provider.name,
+                    "input": "user-authored-text",
+                    "fields": {
+                        field: "LOCAL_INFERRED" if local else value
+                        for field, value in field_provenance.items()
+                    },
+                },
                 # Trust boundaries are server-owned. A provider cannot downgrade a
                 # destructive command merely by emitting a false flag.
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
             })
-        return provider.name, assistant_message, actions
+            if derived:
+                actions[-1]["provenance"]["fields"].update({field: "DERIVED" for field in derived})
+                actions[-1]["resolution"] = self._relative_resolution(actions[-1], actions)
+            actions[-1]["provenance"]["input"] = (
+                "voice-transcript" if context.get("source") == "VOICE" else "user-authored-text"
+            )
+            actions[-1]["provenance"]["fields"].update(
+                {field: "USER_EDIT" for field in preserved.get(index, set())}
+            )
+        return provider.name, assistant_message, actions, None
+
+    @staticmethod
+    def _action_dependencies(raw_actions: list[object]) -> tuple[list[str], list[list[str]]]:
+        action_ids = [str(uuid4()) for _ in raw_actions]
+        references: dict[str, int] = {}
+        for index, raw in enumerate(raw_actions):
+            if not isinstance(raw, dict):
+                continue
+            reference = raw.get("client_ref")
+            if reference is None:
+                continue
+            if not isinstance(reference, str) or not reference or len(reference) > 64 or reference in references:
+                raise ValidationError("assistant action client_ref must be unique short text")
+            references[reference] = index
+        dependencies: list[list[str]] = []
+        for index, raw in enumerate(raw_actions):
+            values = raw.get("depends_on", []) if isinstance(raw, dict) else []
+            if not isinstance(values, list) or not all(isinstance(value, str) for value in values) \
+                    or len(set(values)) != len(values):
+                raise ValidationError("assistant action depends_on must be unique client refs")
+            resolved = []
+            for value in values:
+                dependency_index = references.get(value)
+                if dependency_index is None or dependency_index >= index:
+                    raise ValidationError("assistant action dependency must reference an earlier action")
+                resolved.append(action_ids[dependency_index])
+            dependencies.append(resolved)
+        return action_ids, dependencies
+
+    def _relative_from_model(
+        self, raw: dict[str, Any], action_ids: list[str], dependency_ids: list[str], earlier: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """Bind a model's ``relative_to`` (a client_ref) to the earlier action and derive the time.
+
+        The reference must be one of the action's own dependencies, so a dependent
+        time can never outlive (or be applied without) the action it is measured from.
+        """
+        command = raw.get("command")
+        if command not in _RELATIVE_FIELDS:
+            raise ValidationError(f"assistant {command} cannot take a time relative to another action")
+        relative = parse_relative_to(raw["payload"][_RELATIVE])
+        declared = raw.get("depends_on") or []
+        if relative.action not in declared:
+            raise ValidationError("assistant relative_to must reference an action listed in depends_on")
+        referenced_id = dependency_ids[declared.index(relative.action)]
+        referenced = next(action for action in earlier if action["id"] == referenced_id)
+        fields = _RELATIVE_FIELDS[command]
+        payload = {**raw["payload"], _RELATIVE: relative.as_payload(referenced_id)}
+        unresolved = list(raw.get("unresolved_fields") or [])
+        interval = self._action_interval(referenced)
+        if interval is None:
+            # The earlier action still needs the user (e.g. which meeting?); the
+            # dependent time is derived once that is answered, at apply.
+            for field in fields:
+                payload.pop(field, None)
+                if field not in unresolved:
+                    unresolved.append(field)
+        else:
+            payload.update(self._relative_values(str(command), payload, relative, interval))
+        provenance = raw.get("field_provenance")
+        provenance = {key: value for key, value in provenance.items() if key not in fields} \
+            if isinstance(provenance, dict) else provenance
+        return {**raw, "payload": payload, "unresolved_fields": unresolved, "field_provenance": provenance}, fields
+
+    @staticmethod
+    def _relative_values(command: str, payload: dict[str, Any], relative: RelativeToAction,
+                         interval: tuple[datetime, datetime]) -> dict[str, Any]:
+        moment = relative.moment(*interval)
+        if command == AgentCommand.CREATE_EVENT.value:
+            duration = payload.get("duration_minutes")
+            if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
+                duration = 60  # the same default as an event given only a start
+            return {"starts_at": _iso(moment), "ends_at": _iso(moment + timedelta(minutes=duration)),
+                    "duration_minutes": duration}
+        if command == AgentCommand.CREATE_TASK.value:
+            return {"actionable_from": _iso(moment)}
+        return {"remind_at": _iso(moment)}
+
+    def _action_interval(self, action: dict[str, Any]) -> tuple[datetime, datetime] | None:
+        """The interval an action will leave its item in, exactly as apply computes it.
+
+        None while the action's own target or time is still unresolved.
+        """
+        command, payload = action["command"], action["payload"]
+        if command == AgentCommand.CREATE_EVENT.value:
+            if payload.get("starts_at") and payload.get("ends_at"):
+                return _dt(str(payload["starts_at"])), _dt(str(payload["ends_at"]))
+            return None
+        if command == AgentCommand.CREATE_REMINDER.value:
+            return (_dt(str(payload["remind_at"])),) * 2 if payload.get("remind_at") else None
+        if command not in (AgentCommand.RESCHEDULE.value, AgentCommand.UPDATE_EVENT.value):
+            raise ValidationError("assistant relative_to must reference an action that sets a time")
+        target = target_of(self.canonical, self.principal.account_id, payload)
+        if target is None:
+            return None
+        kind, entity_id, _version = target
+        if kind == "EVENT":
+            event = self.canonical.get_event(self.principal.account_id, entity_id).interval
+            length = event.ends_at - event.starts_at
+            if command == AgentCommand.UPDATE_EVENT.value:
+                starts = _dt(str(payload["starts_at"])) if payload.get("starts_at") else event.starts_at
+                if payload.get("ends_at"):
+                    return starts, _dt(str(payload["ends_at"]))
+                return starts, (starts + length if payload.get("starts_at") else event.ends_at)
+            if not payload.get("when"):
+                return None
+            from student_execution_os.reminders import ReminderStore
+            zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
+            _operation, body = reschedule_change("EVENT", {"starts_at": _iso(event.starts_at)}, _dt(str(payload["when"])),
+                                                 bool(payload.get("keep_time")), zone)
+            starts = _dt(body["starts_at"])
+            return starts, starts + length
+        if kind == "REMINDER" and command == AgentCommand.RESCHEDULE.value and payload.get("when"):
+            current = _target_moment(self.canonical, self.principal.account_id, kind, entity_id)
+            from student_execution_os.reminders import ReminderStore
+            zone = ZoneInfo(ReminderStore(self.canonical).prefs(self.principal.account_id).timezone_name)
+            _operation, body = reschedule_change("REMINDER", {"remind_at": _iso(current)}, _dt(str(payload["when"])),
+                                                 bool(payload.get("keep_time")), zone)
+            return (_dt(body["remind_at"]),) * 2
+        raise ValidationError("assistant relative_to must reference an event or reminder time")
+
+    @staticmethod
+    def _relative_resolution(action: dict[str, Any], earlier: list[dict[str, Any]]) -> dict[str, Any]:
+        relative = parse_relative_to(action["payload"][_RELATIVE])
+        referenced = next(item for item in earlier if item["id"] == relative.action)
+        first = _RELATIVE_FIELDS[action["command"]][0]
+        return {
+            "reason": "RELATIVE_TO_ACTION", **relative.as_payload(),
+            "when": action["payload"].get(first),
+            # «после неё» is only as exact as the time it is measured from.
+            "precision": (referenced.get("resolution") or {}).get("precision", TemporalPrecision.EXACT.value),
+        }
+
+    def _rebase_relative(self, action: dict[str, Any], earlier: list[dict[str, Any]]) -> dict[str, Any]:
+        """Re-derive a relative time from the earlier action as it will actually be applied.
+
+        A correction to the earlier action («нет, лучше на 10:30») moves the
+        dependent time with it; an explicit user edit of the dependent time itself
+        already removed ``relative_to`` in ``_edited``.
+        """
+        if action["payload"].get(_RELATIVE) is None:
+            return action
+        relative = parse_relative_to(action["payload"][_RELATIVE])
+        referenced = next((item for item in earlier if item["id"] == relative.action), None)
+        if referenced is None:
+            raise ValidationError("selected Assistant actions must include every dependency")
+        interval = self._action_interval(referenced)
+        if interval is None:
+            raise ValidationError("unresolved proposal fields must be refined before apply")
+        fields = _RELATIVE_FIELDS[action["command"]]
+        raw = {key: action[key] for key in _ACTION_REQUIRED}
+        raw["payload"] = {**action["payload"],
+                          **self._relative_values(action["command"], action["payload"], relative, interval)}
+        raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in fields]
+        clean = validate_proposal(raw, self.canonical, self.principal.account_id)
+        clean.pop("field_provenance", None)
+        rebased = {**action, **clean}
+        rebased["resolution"] = self._relative_resolution(rebased, earlier)
+        return rebased
+
+    @staticmethod
+    def _preserve_previous_user_edits(
+        raw_actions: list[object], context: dict[str, object],
+    ) -> tuple[list[object], dict[int, set[str]]]:
+        session = context.get("assistant_session")
+        previous = session.get("previous_actions") if isinstance(session, dict) else None
+        if not isinstance(previous, list):
+            return raw_actions, {}
+        preserved: dict[int, set[str]] = {}
+        for index, raw in enumerate(raw_actions):
+            if not isinstance(raw, dict) or not isinstance(raw.get("payload"), dict):
+                continue
+            candidates = []
+            for prior in previous:
+                if not isinstance(prior, dict) or not isinstance(prior.get("payload"), dict):
+                    continue
+                prior_payload = prior["payload"]
+                same_target = any(
+                    raw["payload"].get(field) is not None
+                    and raw["payload"].get(field) == prior_payload.get(field)
+                    for field in ("obligation_id", "reminder_id")
+                )
+                same_single_create = (
+                    len(raw_actions) == len(previous) == 1
+                    and str(raw.get("command", "")).startswith("CREATE_")
+                    and raw.get("command") == prior.get("command")
+                )
+                if same_target or same_single_create:
+                    candidates.append(prior)
+            if len(candidates) != 1:
+                continue
+            prior = candidates[0]
+            fields = (prior.get("provenance") or {}).get("fields")
+            if not isinstance(fields, dict):
+                continue
+            incoming_provenance = raw.get("field_provenance")
+            if not isinstance(incoming_provenance, dict):
+                incoming_provenance = {}
+                raw["field_provenance"] = incoming_provenance
+            for field, source in fields.items():
+                if source != "USER_EDIT" or incoming_provenance.get(field) == "MODEL_EXPLICIT":
+                    continue
+                if field in prior["payload"]:
+                    raw["payload"][field] = prior["payload"][field]
+                    incoming_provenance[field] = "MODEL_INFERRED"
+                    preserved.setdefault(index, set()).add(field)
+        return raw_actions, preserved
 
     @staticmethod
     def _reconcile_explicit_intent(text: str, context: dict[str, object],
@@ -600,7 +1107,15 @@ class SQLiteAssistantService:
             raise ValidationError("selected action id is not in the preview batch")
         if not set(edits).issubset(selected):
             raise ValidationError("edits name an action that is not being applied")
-        actions = [self._edited(by_id[action_id], edits.get(action_id)) for action_id in selected]
+        selected_set = set(selected)
+        if any(not set(by_id[action_id].get("depends_on") or []).issubset(selected_set) for action_id in selected):
+            raise ValidationError("selected Assistant actions must include every dependency")
+        actions: list[dict[str, Any]] = []
+        for stored in json.loads(row["actions_json"]):
+            if stored["id"] in selected_set:
+                # Declared order: an earlier action is final (with the user's edits)
+                # before a time that depends on it is derived.
+                actions.append(self._rebase_relative(self._edited(stored, edits.get(stored["id"])), actions))
         if any(action["unresolved_fields"] for action in actions):
             raise ValidationError("unresolved proposal fields must be refined before apply")
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):
@@ -614,14 +1129,80 @@ class SQLiteAssistantService:
             if action["expected_version"] is None or target[2] != int(action["expected_version"]):
                 raise VersionConflict("assistant proposal expected version is stale or missing")
         with self.canonical._tx() as conn:
-            results = [self._execute(action) for action in actions]
+            results = []
+            for sequence, action in enumerate(actions):
+                inverse = self._inverse(action)
+                action_result = self._execute(action)
+                results.append(action_result)
+                if inverse is None:
+                    inverse = self._creation_inverse(action, action_result)
+                if inverse is not None and action_result.get("outcome") == "APPLIED" \
+                        and isinstance(action_result.get("version"), int):
+                    conn.execute(
+                        "INSERT INTO assistant_action_history("
+                        "account_id,principal_id,apply_idempotency_key,action_id,sequence_index,command,"
+                        "entity_id,committed_version,inverse_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            self.principal.account_id,
+                            self.principal.principal_id,
+                            key,
+                            action["id"],
+                            sequence,
+                            action["command"],
+                            action_result["entity_id"],
+                            action_result["version"],
+                            json.dumps(inverse, sort_keys=True),
+                            _iso(self.canonical.clock.now()),
+                        ),
+                    )
             result = {"batch_id": batch_id, "results": results, "replayed": False}
             conn.execute(
                 "INSERT INTO assistant_apply_records(account_id,principal_id,idempotency_key,request_hash,result_json,created_at) VALUES (?,?,?,?,?,?)",
                 (self.principal.account_id, self.principal.principal_id, key, request_hash,
                  json.dumps(result, sort_keys=True), _iso(self.canonical.clock.now())),
             )
+        if edits:
+            SQLiteOperationalMetrics(self.canonical).record(
+                "assistant_user_correction_count",
+                account_id=self.principal.account_id,
+                dimensions={
+                    "provider": str(row["provider"]),
+                    "action_count": len(edits),
+                    "field_count": sum(len(value) for value in edits.values()),
+                },
+            )
         return result
+
+    def undo(self, payload: dict[str, object]) -> dict[str, object]:
+        """The [Отменить] button: UNDO_LAST without asking a model to read «отмени».
+
+        It is stored as a one-action batch and goes through ``apply``, so the same
+        idempotency record, history bookkeeping and version checks apply; the batch id
+        is derived from the key, so a retried request replays instead of undoing twice.
+        """
+        key = str(payload.get("idempotency_key", ""))
+        if not key or len(key) > 200:
+            raise ValidationError("idempotency_key is required")
+        target = payload.get("apply_idempotency_key")
+        if target is not None and (not isinstance(target, str) or not 0 < len(target) <= 200):
+            raise ValidationError("apply_idempotency_key must be the key of an Assistant apply")
+        scope = f"{self.principal.account_id}\0{self.principal.principal_id}\0{key}"
+        batch_id = f"undo-{hashlib.sha256(scope.encode()).hexdigest()[:32]}"
+        # Server-written (never model input): which apply the button belongs to.
+        action = {"id": f"{batch_id}-0", "command": AgentCommand.UNDO_LAST.value,
+                  "payload": {} if target is None else {"apply_idempotency_key": target}, "confidence": 1.0,
+                  "unresolved_fields": [], "expected_version": None, "requires_confirmation": False, "depends_on": [],
+                  "provenance": {"provider": "user-interface", "input": "undo-button", "fields": {}}}
+        now = self.canonical.clock.now()
+        with self.canonical._tx() as conn:
+            conn.execute(
+                "INSERT INTO assistant_batches(id,account_id,principal_id,input_hash,provider,redacted_input,actions_json,"
+                "created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+                (batch_id, self.principal.account_id, self.principal.principal_id,
+                 hashlib.sha256(b"undo").hexdigest(), "user-interface", "", json.dumps([action], sort_keys=True),
+                 _iso(now), _iso(now + timedelta(minutes=30))),
+            )
+        return self.apply({"batch_id": batch_id, "action_ids": [action["id"]], "idempotency_key": key})
 
     def _edited(self, action: dict[str, Any], edit: dict[str, Any] | None) -> dict[str, Any]:
         """Apply the user's answers/corrections from the preview card, then re-validate.
@@ -632,10 +1213,23 @@ class SQLiteAssistantService:
         if not edit:
             return action
         edit = dict(edit)
-        raw = {key: action[key] for key in _ACTION_KEYS}
+        raw = {key: action[key] for key in _ACTION_REQUIRED}
         if "expected_version" in edit:
             raw["expected_version"] = edit.pop("expected_version")
         payload = {**action["payload"], **edit}
+        if "when" in edit and "temporal_transform" not in edit:
+            # «нет, лучше на 10:30»: the user's exact time replaces the model's
+            # (possibly approximate) relative transform instead of being recomputed away.
+            payload.pop("temporal_transform", None)
+        elif payload.get("temporal_transform") is not None:
+            payload.pop("when", None)  # server-derived; recompute after the user's edit
+        derived = set(_RELATIVE_FIELDS.get(action["command"], ()))
+        if payload.get(_RELATIVE) is not None:
+            if derived & edit.keys():
+                payload.pop(_RELATIVE)  # an explicitly edited time is no longer "after it"
+            elif action["command"] == AgentCommand.CREATE_EVENT.value and payload.get("starts_at") \
+                    and isinstance(edit.get("duration_minutes"), int) and not isinstance(edit["duration_minutes"], bool):
+                payload["ends_at"] = _iso(_dt(str(payload["starts_at"])) + timedelta(minutes=edit["duration_minutes"]))
         picked = "obligation_id" in edit or "reminder_id" in edit
         if picked:
             # The user chose which item the command is about.
@@ -651,8 +1245,17 @@ class SQLiteAssistantService:
         raw["payload"] = payload
         raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit
                                     and not (picked and field in {"target", "obligation_id", "reminder_id", "expected_version"})]
-        clean = validate_proposal(raw, self.canonical, self.principal.account_id)
-        return {**action, **clean, "requires_confirmation": action["requires_confirmation"]}
+        clean = validate_proposal(
+            raw, self.canonical, self.principal.account_id,
+            timezone_name=str((action.get("resolution") or {}).get("timezone") or "") or None,
+        )
+        clean.pop("field_provenance", None)
+        provenance = dict(action.get("provenance") or {})
+        fields = {field: source for field, source in (provenance.get("fields") or {}).items() if field in clean["payload"]}
+        fields.update({field: "USER_EDIT" for field in edit if field != "expected_version"})
+        provenance["fields"] = fields
+        return {**action, **clean, "provenance": provenance,
+                "requires_confirmation": action["requires_confirmation"]}
 
     def _execute(self, action: dict[str, object]) -> dict[str, object]:
         command = AgentCommand(action["command"])
@@ -664,14 +1267,17 @@ class SQLiteAssistantService:
             from student_execution_os.sync.commands import Commands
             task_id = f"task-{uuid4()}"
             outcome = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
-                               now=self.canonical.clock.now()).task_create(task_id, dict(data))
-            return {"action_id": action["id"], "entity_id": task_id, "version": outcome.entity["version"],
-                    "status": outcome.entity["status"], "entity": outcome.entity}
+                               now=self.canonical.clock.now()).task_create(
+                task_id, {key: value for key, value in data.items() if key != _RELATIVE})
+            return {"action_id": action["id"], "entity_id": task_id, "operation": "task.create", "outcome": outcome.status,
+                    "version": outcome.entity["version"], "status": outcome.entity["status"], "entity": outcome.entity}
         if command is AgentCommand.REFINE_TASK:
             entity = str(data["obligation_id"])
             task = self.canonical.update_task(**common, obligation_id=entity, expected_version=int(action["expected_version"]),
                 estimated_total_effort_minutes=int(data["estimated_total_effort_minutes"]), activate=bool(data.get("activate", False)))
             return {"action_id": action["id"], "entity_id": entity, "version": task.obligation.version, "status": task.obligation.lifecycle_status.value}
+        if command is AgentCommand.UNDO_LAST:
+            return {"action_id": action["id"], **self._undo_latest(data.get("apply_idempotency_key"))}
         # Everything else runs through the same command handlers as the offline sync
         # queue, so an Assistant action and a button press mean exactly the same thing.
         from student_execution_os.sync.commands import APPLIED, NOOP, Commands
@@ -691,7 +1297,7 @@ class SQLiteAssistantService:
         """The sync operation (type, entity id, payload) an action stands for."""
         target = target_of(self.canonical, self.principal.account_id, data)
         kind, entity = (target[0], target[1]) if target else ("", "")
-        fields = {key: value for key, value in data.items() if key not in _TARGET}
+        fields = {key: value for key, value in data.items() if key not in _TARGET and key != _RELATIVE}
         if command is AgentCommand.CREATE_NOTE:
             return "note.create", f"note-{uuid4()}", {**fields, "source_kind": "CAPTURE"}
         if command is AgentCommand.CREATE_EVENT:
@@ -701,6 +1307,8 @@ class SQLiteAssistantService:
             return "event.create", f"event-{uuid4()}", fields
         if command is AgentCommand.CREATE_REMINDER:
             return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
+        if command is AgentCommand.CREATE_TIME_CONSTRAINT:
+            return "constraint.create", f"constraint-{uuid4()}", fields
         if command is AgentCommand.UPDATE_TASK:
             return "task.update", entity, fields
         if command is AgentCommand.UPDATE_EVENT:
@@ -729,3 +1337,160 @@ class SQLiteAssistantService:
             op_type, body = reschedule_change(kind, current, _dt(str(fields["when"])), bool(fields.get("keep_time")), zone)
             return op_type, entity, body
         raise ValidationError(f"unsupported assistant command {command.value}")
+
+    def _inverse(self, action: dict[str, Any]) -> dict[str, Any] | None:
+        command = AgentCommand(action["command"])
+        data = action["payload"]
+        target = target_of(self.canonical, self.principal.account_id, data)
+        if target is None:
+            return None
+        kind, entity_id, _version = target
+        requested = {key for key in data if key not in _TARGET}
+        if command in {AgentCommand.RESCHEDULE, AgentCommand.SNOOZE}:
+            if kind == "EVENT":
+                event = self.canonical.get_event(self.principal.account_id, entity_id)
+                return {"operation": "event.update", "payload": {"starts_at": _iso(event.interval.starts_at)}}
+            if kind == "REMINDER":
+                row = self.canonical.connection.execute(
+                    "SELECT remind_at FROM reminders WHERE account_id=? AND id=?",
+                    (self.principal.account_id, entity_id),
+                ).fetchone()
+                return {"operation": "reminder.update", "payload": {"remind_at": row["remind_at"]}}
+            row = self.canonical.connection.execute(
+                "SELECT cutoff_state,actual_cutoff_at,cutoff_boundary,actionable_from FROM tasks "
+                "WHERE obligation_id=?", (entity_id,),
+            ).fetchone()
+            if row["cutoff_state"] == "KNOWN":
+                payload = {"actual_cutoff": {
+                    "state": "KNOWN", "at": row["actual_cutoff_at"],
+                    "boundary": row["cutoff_boundary"] or "INCLUSIVE",
+                }}
+            else:
+                payload = {"actionable_from": row["actionable_from"]}
+            return {"operation": "task.update", "payload": payload}
+        if command is AgentCommand.UPDATE_EVENT:
+            row = self.canonical.connection.execute(
+                "SELECT o.title,o.description,e.starts_at,e.ends_at,e.attendance_policy FROM obligations o "
+                "JOIN events e ON e.obligation_id=o.id WHERE o.account_id=? AND o.id=?",
+                (self.principal.account_id, entity_id),
+            ).fetchone()
+            values = dict(row)
+            if "remind_before_minutes" in requested:
+                from student_execution_os.persistence import extras
+                values["remind_before_minutes"] = extras.event_lead(
+                    self.canonical, self.principal.account_id, entity_id,
+                )
+            return {"operation": "event.update", "payload": {
+                field: values[field] for field in requested if field in values
+            }}
+        if command is AgentCommand.UPDATE_REMINDER:
+            row = self.canonical.connection.execute(
+                "SELECT title,note,remind_at,delivery,wake_check,raise_volume FROM reminders "
+                "WHERE account_id=? AND id=?", (self.principal.account_id, entity_id),
+            ).fetchone()
+            values = dict(row)
+            values.update(wake_check=bool(values["wake_check"]), raise_volume=bool(values["raise_volume"]))
+            return {"operation": "reminder.update", "payload": {
+                field: values[field] for field in requested if field in values
+            }}
+        if command is AgentCommand.UPDATE_TASK:
+            row = self.canonical.connection.execute(
+                "SELECT o.title,o.description,o.category,o.importance,t.estimated_total_effort_minutes,"
+                "t.cutoff_state,t.actual_cutoff_at,t.cutoff_boundary,t.target_at,t.actionable_from "
+                "FROM obligations o JOIN tasks t ON t.obligation_id=o.id "
+                "WHERE o.account_id=? AND o.id=?", (self.principal.account_id, entity_id),
+            ).fetchone()
+            values = dict(row)
+            values["actual_cutoff"] = (
+                {"state": "KNOWN", "at": values["actual_cutoff_at"],
+                 "boundary": values["cutoff_boundary"] or "INCLUSIVE"}
+                if values["cutoff_state"] == "KNOWN" else {"state": values["cutoff_state"]}
+            )
+            if "remind_at" in requested:
+                reminder = self.canonical.connection.execute(
+                    "SELECT remind_at FROM reminder_states WHERE account_id=? AND obligation_id=?",
+                    (self.principal.account_id, entity_id),
+                ).fetchone()
+                values["remind_at"] = None if reminder is None else reminder["remind_at"]
+            return {"operation": "task.update", "payload": {
+                field: values[field] for field in requested if field in values
+            }}
+        return None
+
+    # Where each inverse's entity keeps its optimistic version.
+    _VERSION_TABLES = {"reminder": ("reminders", "id"), "note": ("notes", "id"),
+                       "constraint": ("user_time_constraints", "id")}
+
+    def _current_version(self, operation: str, entity_id: str) -> int | None:
+        table, key = self._VERSION_TABLES.get(operation.split(".", 1)[0], ("obligations", "id"))
+        row = self.canonical.connection.execute(
+            f"SELECT version FROM {table} WHERE account_id=? AND {key}=?",  # fixed identifiers above
+            (self.principal.account_id, entity_id),
+        ).fetchone()
+        return None if row is None else int(row["version"])
+
+    @staticmethod
+    def _creation_inverse(action: dict[str, Any], result: dict[str, Any]) -> dict[str, Any] | None:
+        """Undoing a creation deletes exactly that item, and only while it is unchanged."""
+        operation = {
+            AgentCommand.CREATE_TASK.value: "task.delete", AgentCommand.CREATE_EVENT.value: "event.delete",
+            AgentCommand.CREATE_REMINDER.value: "reminder.delete", AgentCommand.CREATE_NOTE.value: "note.delete",
+            AgentCommand.CREATE_TIME_CONSTRAINT.value: "constraint.delete",
+        }.get(action["command"])
+        return None if operation is None else {"operation": operation, "payload": {}}
+
+    def _undo_latest(self, expected_apply: object = None) -> dict[str, Any]:
+        """Revert the most recent Assistant apply as a whole («отмени последнее», [Отменить]).
+
+        Every reversible action of that apply is reverted in reverse order inside the
+        caller's transaction. Each inverse runs only if its item is still at the
+        version the Assistant left it in; within the group, an earlier action on the
+        same item may build on the version this undo itself produced (they were one
+        transaction, so nothing else can sit between them). Any newer change anywhere
+        fails the whole undo instead of overwriting it.
+        """
+        latest = self.canonical.connection.execute(
+            "SELECT apply_idempotency_key FROM assistant_action_history WHERE account_id=? AND principal_id=? "
+            "AND undone_at IS NULL ORDER BY id DESC LIMIT 1",
+            (self.principal.account_id, self.principal.principal_id),
+        ).fetchone()
+        if latest is None:
+            raise ValidationError("there is no reversible Assistant action to undo")
+        if expected_apply is not None and latest["apply_idempotency_key"] != expected_apply:
+            # A stale [Отменить] must not undo a newer Assistant change instead.
+            raise VersionConflict("a newer Assistant change exists; undo that one first")
+        rows = self.canonical.connection.execute(
+            "SELECT * FROM assistant_action_history WHERE account_id=? AND principal_id=? "
+            "AND apply_idempotency_key=? AND undone_at IS NULL ORDER BY sequence_index DESC, id DESC",
+            (self.principal.account_id, self.principal.principal_id, latest["apply_idempotency_key"]),
+        ).fetchall()
+        from student_execution_os.sync.commands import APPLIED, NOOP, Commands
+        commands = Commands(self.canonical, account_id=self.principal.account_id, actor=ActorCategory.USER_VIA_LLM,
+                            now=self.canonical.clock.now())
+        produced: dict[str, int] = {}
+        undone: list[dict[str, Any]] = []
+        for row in rows:
+            inverse = json.loads(row["inverse_json"])
+            operation = str(inverse.get("operation") or "")
+            entity_id = str(row["entity_id"])
+            expected = produced.get(entity_id, int(row["committed_version"]))
+            if self._current_version(operation, entity_id) != expected:
+                raise VersionConflict("Assistant undo conflicts with a newer entity version")
+            outcome = commands.run(operation, entity_id, dict(inverse.get("payload") or {}))
+            if outcome.status not in {APPLIED, NOOP}:
+                raise ValidationError(outcome.message or outcome.code or "Assistant undo was not applied")
+            self.canonical.connection.execute(
+                "UPDATE assistant_action_history SET undone_at=? WHERE id=? AND undone_at IS NULL",
+                (_iso(self.canonical.clock.now()), row["id"]),
+            )
+            after = self._current_version(operation, entity_id)
+            if after is not None:
+                produced[entity_id] = after
+            step = {"entity_id": entity_id, "operation": operation, "outcome": outcome.status,
+                    "entity": outcome.entity, "undid_action_id": row["action_id"]}
+            if isinstance(outcome.entity, dict):
+                step.update(version=outcome.entity.get("version"), status=outcome.entity.get("status"),
+                            deleted=bool(outcome.entity.get("deleted")))
+            undone.append(step)
+        # The latest action first, as before; the full list for a multi-action apply.
+        return {**undone[0], "undone": undone}

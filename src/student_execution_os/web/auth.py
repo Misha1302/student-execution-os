@@ -6,10 +6,7 @@ import hmac
 import re
 import secrets
 import sqlite3
-import threading
-import time
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -121,29 +118,71 @@ def _check_password(password: str) -> str:
     return password
 
 
-@dataclass
-class AttemptLimiter:
-    """In-process sliding-window limiter for authentication attempts."""
+class SQLiteAttemptLimiter:
+    """One compact persistent counter per scoped login or client address."""
 
-    limit: int
-    window_seconds: float
-    _hits: dict[str, deque] = field(default_factory=dict)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    def __init__(self, database: str, *, scope: str, limit: int, window_seconds: float,
+                 now: Callable[[], datetime]) -> None:
+        self.database = database
+        self.scope = scope
+        self.limit = limit
+        self.window = timedelta(seconds=window_seconds)
+        self._now = now
+
+    def _hash(self, key: str) -> str:
+        return hashlib.sha256(f"botay-auth-limit:{self.scope}:{key}".encode()).hexdigest()
+
+    def _repo(self) -> SQLiteCanonicalRepository:
+        repo = SQLiteCanonicalRepository(self.database, clock=FrozenClock(self._now()))
+        repo.initialize()
+        return repo
+
+    def _cleanup(self, conn: sqlite3.Connection, cutoff: datetime) -> None:
+        conn.execute(
+            "DELETE FROM auth_rate_limits WHERE scope=? AND window_started_at<=?",
+            (self.scope, _iso(cutoff)),
+        )
 
     def check(self, key: str) -> None:
-        now = time.monotonic()
-        with self._lock:
-            hits = self._hits.get(key)
-            if hits is None:
-                return
-            while hits and now - hits[0] > self.window_seconds:
-                hits.popleft()
-            if len(hits) >= self.limit:
+        now = self._now()
+        digest = self._hash(key)
+        with self._repo() as repo, repo._tx() as conn:
+            self._cleanup(conn, now - self.window)
+            row = conn.execute(
+                "SELECT attempt_count FROM auth_rate_limits WHERE scope=? AND key_hash=?",
+                (self.scope, digest),
+            ).fetchone()
+            if row is not None and int(row["attempt_count"]) >= self.limit:
                 raise RateLimited("too many attempts; try again later")
 
     def hit(self, key: str) -> None:
-        with self._lock:
-            self._hits.setdefault(key, deque()).append(time.monotonic())
+        now = self._now()
+        digest = self._hash(key)
+        with self._repo() as repo, repo._tx() as conn:
+            self._cleanup(conn, now - self.window)
+            row = conn.execute(
+                "SELECT attempt_count FROM auth_rate_limits WHERE scope=? AND key_hash=?",
+                (self.scope, digest),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO auth_rate_limits(scope,key_hash,window_started_at,last_attempt_at,attempt_count) "
+                    "VALUES (?,?,?,?,1)",
+                    (self.scope, digest, _iso(now), _iso(now)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE auth_rate_limits SET attempt_count=attempt_count+1,last_attempt_at=? "
+                    "WHERE scope=? AND key_hash=?",
+                    (_iso(now), self.scope, digest),
+                )
+
+    def clear(self, key: str) -> None:
+        with self._repo() as repo, repo._tx() as conn:
+            conn.execute(
+                "DELETE FROM auth_rate_limits WHERE scope=? AND key_hash=?",
+                (self.scope, self._hash(key)),
+            )
 
 
 class SQLiteAuthStore:
@@ -163,8 +202,8 @@ class SQLiteAuthStore:
         self.database = str(database)
         self.config = config
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self.ip_limiter = AttemptLimiter(limit=30, window_seconds=600)
-        self.login_limiter = AttemptLimiter(limit=8, window_seconds=600)
+        self.ip_limiter = SQLiteAttemptLimiter(self.database, scope="IP", limit=30, window_seconds=600, now=self._now)
+        self.login_limiter = SQLiteAttemptLimiter(self.database, scope="LOGIN", limit=8, window_seconds=600, now=self._now)
 
     def _repo(self) -> SQLiteCanonicalRepository:
         repo = SQLiteCanonicalRepository(self.database, clock=FrozenClock(self._now()))
@@ -218,6 +257,7 @@ class SQLiteAuthStore:
                 self.ip_limiter.hit(client_ip)
                 self.login_limiter.hit(login)
                 raise Unauthenticated("invalid login or password")
+            self.login_limiter.clear(login)
             with repo._tx() as conn:
                 return self._issue(conn, account_id=row["account_id"], user_id=row["id"], login=login, device_label=device_label)
 

@@ -299,20 +299,20 @@ class StarterLlmTest(unittest.TestCase):
             self.fake.error[PRIMARY] = {"error": {"message": "response_format is unsupported"}}
             semantic = self.interpret(client, headers)
             self.assertEqual((semantic["engine"], semantic["fallback_reason"]), ("LOCAL", "FORMAT"))
-            self.assertEqual(self.fake.calls, [PRIMARY])
+            self.assertEqual(self.fake.calls, [PRIMARY, PRIMARY])  # one controlled repair attempt
             for status, reason in ((429, "RATE_LIMITED"), (503, "UPSTREAM")):
                 self.fake.calls.clear()
                 self.fake.status[PRIMARY] = status
                 self.fake.error[PRIMARY] = {"error": {"message": "provider unavailable"}}
                 unavailable = self.interpret(client, headers)
                 self.assertEqual(unavailable["fallback_reason"], reason)
-                self.assertEqual(self.fake.calls, [PRIMARY])
+                self.assertEqual(self.fake.calls, [PRIMARY] if status == 429 else [PRIMARY, PRIMARY])
             self.fake.calls.clear()
             self.fake.status[PRIMARY] = 200
             self.fake.raise_for[PRIMARY] = httpx.ConnectError("network down")
             network = self.interpret(client, headers)
             self.assertEqual(network["fallback_reason"], "NETWORK")
-            self.assertEqual(self.fake.calls, [PRIMARY])
+            self.assertEqual(self.fake.calls, [PRIMARY, PRIMARY])
 
     GROQ_TPM_429 = {"error": {
         "message": "Rate limit reached for model `openai/gpt-oss-20b` in organization `org_x` service tier "
@@ -366,7 +366,7 @@ class StarterLlmTest(unittest.TestCase):
             client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
             headers, account = self.register(client, "charged")
             cases = (
-                (None, httpx.ReadTimeout("slow"), "NETWORK"),
+                (None, httpx.ReadTimeout("slow"), "TIMEOUT"),
                 (503, None, "UPSTREAM"),
                 (400, None, "FORMAT"),
             )
@@ -379,9 +379,9 @@ class StarterLlmTest(unittest.TestCase):
                 result = self.interpret(client, headers)
                 self.assertEqual(result["fallback_reason"], reason)
         usage, _global, reservations = self.usage_rows(account)
-        self.assertEqual(usage[0], 3)
+        self.assertEqual(usage[0], 5)  # timeout once; 5xx retry; format + one repair
         self.assertTrue(all(total is None and status == "RECONCILED" for total, status in reservations))
-        self.assertGreater(usage[1], 3 * 1200)  # full conservative reservations remain
+        self.assertGreater(usage[1], 5 * 1200)  # full conservative reservations remain
 
     def test_standby_is_used_only_for_credential_failures_and_its_outcome_is_accounted(self):
         with self.env():

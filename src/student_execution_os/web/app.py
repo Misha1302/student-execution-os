@@ -907,6 +907,10 @@ def create_app(
     async def assistant_apply(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.assistant_apply(payload)
 
+    @app.post("/api/v1/assistant/undo")
+    async def assistant_undo(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.assistant_undo(payload)
+
     @app.post("/api/v1/agent/cancel/preview")
     async def agent_cancel_preview(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.agent_cancel_preview(

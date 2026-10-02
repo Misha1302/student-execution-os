@@ -14,6 +14,7 @@ import { esc, icon, setBusy } from './ui.js';
 import { change, mutate } from './actions.js';
 import { matchTarget, rescheduleChange } from './commands.js';
 import { syncDeviceAlarms } from './reminders.js';
+import { assistantSession, offerUndo } from './assistant-turn.js';
 
 const DESTRUCTIVE = new Set(['COMPLETE_OBLIGATION', 'CANCEL_OBLIGATION', 'ARCHIVE_OBLIGATION']);
 const KINDS = {
@@ -36,6 +37,23 @@ export function knownItems() {
 
 export const isCommand = (action) => Boolean(KINDS[action?.command]);
 
+// Server actions that only exist as part of an Assistant proposal (never a capture card).
+const PLAN_ONLY = new Set(['UNDO_LAST', 'CREATE_TIME_CONSTRAINT']);
+// What the server can revert for [Отменить] (it stores an inverse for these).
+const REVERSIBLE = new Set(['RESCHEDULE', 'SNOOZE', 'UPDATE_TASK', 'UPDATE_EVENT', 'UPDATE_REMINDER',
+  'CREATE_TASK', 'CREATE_EVENT', 'CREATE_REMINDER', 'CREATE_NOTE', 'CREATE_TIME_CONSTRAINT']);
+// A time the server derives from an earlier action («после неё») — known once that
+// action's item is picked, so it does not block the button.
+const DERIVED = new Set(['starts_at', 'ends_at', 'actionable_from', 'remind_at']);
+
+// A server answer that needs the command card rather than a single capture card:
+// anything about existing items, a plan of several actions, undo, or a constraint.
+export const isAssistantPlan = (actions) => actions.length > 1
+  || actions.some((a) => isCommand(a) || PLAN_ONLY.has(a.command));
+
+const blocking = (action) => (action.unresolved_fields || [])
+  .filter((f) => !(action.payload?.relative_to && DERIVED.has(f)));
+
 function targetOf(action, picks, index) {
   if (picks[index]) return picks[index];
   const id = action.payload?.reminder_id || action.payload?.obligation_id;
@@ -52,14 +70,37 @@ const spokenTarget = (action) => action.payload?.target_text
 // "на завтра, 18:00": a moment inside a sentence starts lower-case.
 const when = (value) => { const text = fmtDateTime(value); return text.charAt(0).toLowerCase() + text.slice(1); };
 
+const approx = (action, value) => (action.resolution?.precision === 'APPROXIMATE'
+  ? t('cmd.approximateTime', { when: when(value) }) : when(value));
+
+// The item's current time, for "было → станет".
+const currentTime = (item) => item?.starts_at || item?.remind_at
+  || (item?.actual_cutoff?.state === 'KNOWN' ? item.actual_cutoff.at : null);
+
 function describe(action, item) {
   const p = action.payload || {};
-  const title = item?.title || spokenTarget(action) || '…';
+  const title = item?.title || spokenTarget(action) || p.title || '…';
   switch (action.command) {
+    case 'CREATE_TASK': return p.actionable_from ? t('cmd.createTaskFrom', { title, when: approx(action, p.actionable_from) })
+      : t('cmd.createTask', { title });
+    case 'CREATE_EVENT': return p.starts_at ? t('cmd.createEvent', { title, when: approx(action, p.starts_at), d: fmtDuration(p.duration_minutes) })
+      : t('cmd.createEventWhen', { title });
+    case 'CREATE_REMINDER': return p.remind_at ? t('cmd.createReminder', { title, when: approx(action, p.remind_at) })
+      : t('cmd.createEventWhen', { title });
+    case 'CREATE_NOTE': return t('cmd.createNote');
+    case 'CREATE_TIME_CONSTRAINT': return t(p.type === 'FIXED_PERSONAL_BLOCK' ? 'cmd.constraintBlock' : 'cmd.constraintFree',
+      { from: when(p.starts_at), to: when(p.ends_at) });
+    case 'UNDO_LAST': return t('cmd.undoLast');
     case 'COMPLETE_OBLIGATION': return t(item?.kind === 'REMINDER' ? 'cmd.completeReminder' : 'cmd.complete', { title });
     case 'CANCEL_OBLIGATION': return t(item?.kind === 'EVENT' ? 'cmd.cancelEvent' : item?.kind === 'REMINDER' ? 'cmd.cancelReminder' : 'cmd.cancel', { title });
     case 'ARCHIVE_OBLIGATION': return t('cmd.archive', { title });
-    case 'RESCHEDULE': return p.when ? t(p.keep_time ? 'cmd.rescheduleDay' : 'cmd.reschedule', { title, when: when(p.when) }) : t('cmd.rescheduleWhen', { title });
+    case 'RESCHEDULE': {
+      if (!p.when) return t('cmd.rescheduleWhen', { title });
+      const resolved = approx(action, p.when);
+      const from = currentTime(item);
+      if (from && !p.keep_time) return t('cmd.rescheduleFromTo', { title, from: when(from), when: resolved });
+      return t(p.keep_time ? 'cmd.rescheduleDay' : 'cmd.reschedule', { title, when: resolved });
+    }
     case 'SNOOZE': return t('cmd.snooze', { title, when: when(p.until) });
     case 'LOG_PROGRESS': return p.count ? t('cmd.progressCount', { title, n: p.count }) : t('cmd.progress', { title, d: fmtDuration(p.minutes) });
     case 'UPDATE_TASK': case 'UPDATE_EVENT': case 'UPDATE_REMINDER': return t('cmd.update', { title });
@@ -105,8 +146,9 @@ function candidatesFor(action) {
 }
 
 // Renders the proposal into `box`; resolves when it was carried out or dismissed.
-// state: { source: 'local'|'server', batchId?, actions }
-export function renderCommands(box, state, { onDone = () => {} } = {}) {
+// state: { source: 'local'|'server', batchId?, validUntil?, actions }
+// onRefine: the user wants to correct a server proposal by saying what to change.
+export function renderCommands(box, state, { onDone = () => {}, onRefine = null } = {}) {
   const picks = {};
   const draw = () => {
     const rows = state.actions.map((action, index) => {
@@ -118,9 +160,12 @@ export function renderCommands(box, state, { onDone = () => {} } = {}) {
         ${choosing ? `<div class="command-pick"><small class="help">${esc(t('cmd.which'))}</small>
           <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
         ${missingWhen ? `<small class="help">${esc(t('cmd.whenMissing'))}</small>` : ''}
+        ${!isCommand(action) && blocking(action).length ? `<small class="help">${esc(t('cmd.needsDetails'))}</small>` : ''}
       </li>`;
     }).join('');
-    const ready = state.actions.every((a, i) => !isCommand(a) || (targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when')));
+    const ready = state.actions.every((a, i) => (isCommand(a)
+      ? targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when')
+      : !blocking(a).length));
     const destructive = state.actions.some((a) => DESTRUCTIVE.has(a.command));
     box.innerHTML = `<article class="capture-card command-card">
       <span class="eyebrow">${icon('spark')} ${esc(t('capture.commandTitle'))}</span>
@@ -128,12 +173,14 @@ export function renderCommands(box, state, { onDone = () => {} } = {}) {
       ${destructive ? `<p class="help">${esc(t('cmd.confirmHelp'))}</p>` : ''}
       <button type="button" class="button ${destructive ? 'danger' : 'primary'} wide" data-run ${ready ? '' : 'disabled'}>
         ${esc(destructive ? t('cmd.confirmDestructive') : t('capture.commandApply'))}</button>
+      ${onRefine && state.source === 'server' ? `<button type="button" class="button ghost wide" data-refine>${esc(t('cmd.refineRequest'))}</button>` : ''}
     </article>`;
     box.hidden = false;
     box.querySelectorAll('[data-pick]').forEach((b) => b.addEventListener('click', () => {
       picks[Number(b.dataset.pick)] = knownItems().find((x) => x.id === b.dataset.pid && x.kind === b.dataset.kind) || null;
       draw();
     }));
+    box.querySelector('[data-refine]')?.addEventListener('click', () => onRefine(state));
     box.querySelector('[data-run]')?.addEventListener('click', async (e) => {
       const button = e.currentTarget;
       setBusy(button, true);
@@ -173,7 +220,13 @@ async function applyServer(state, picks) {
     idempotency_key: `assistant-${state.batchId}-${Object.keys(edits).length}`,
   };
   if (Object.keys(edits).length) body.edits = edits;
-  const result = await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body }), { success: t('capture.commandDone') });
+  const reversible = state.actions.some((a) => REVERSIBLE.has(a.command));
+  const result = await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body }),
+    { success: reversible ? null : t('capture.commandDone') });
   syncDeviceAlarms();
-  return Boolean(result);
+  if (!result) return false;
+  // «И напомни за полчаса» right after can refer to what was just done.
+  assistantSession.commit(state.batchId, state.validUntil);
+  if (reversible) offerUndo(body.idempotency_key);
+  return true;
 }

@@ -1915,6 +1915,10 @@ class UiService:
         with self._repo() as repo:
             return SQLiteAssistantService(repo, self.principal).apply(payload)
 
+    def assistant_undo(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._repo() as repo:
+            return SQLiteAssistantService(repo, self.principal).undo(payload)
+
     def agent_cancel_confirm_execute(self, intent_id: str, idempotency_key: str | None = None) -> dict[str, Any]:
         with self._repo() as repo:
             gateway = SQLiteActionGateway(repo)

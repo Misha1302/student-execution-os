@@ -204,6 +204,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "client_operations",
     "assistant_batches",
     "assistant_apply_records",
+    "assistant_action_history",
     "attachment_blobs",
     "attachment_links",
     "saved_task_views",
@@ -281,6 +282,7 @@ SECRET_REVOCATION_STATUS = "LLM_CREDENTIALS_PURGED_REVOKE_AT_PROVIDER"
 _GLOBAL_LIFECYCLE_TABLES = {
     "schema_migrations",
     "worker_heartbeats",
+    "auth_rate_limits",
     "account_deletion_tombstones",
     "starter_llm_global_usage",
     # OAuth client registrations are not account data; authorizations reference an

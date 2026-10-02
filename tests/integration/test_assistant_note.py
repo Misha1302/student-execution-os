@@ -33,8 +33,17 @@ class AssistantNoteTest(unittest.TestCase):
                         validate_proposal({**proposal, 'payload': payload}, repository, 'account')
                 assistant = SQLiteAssistantService(repository, AuthenticatedPrincipal('account', 'user', 'test-client'), provider=Provider())
                 preview = assistant.interpret(content)
-                request = {'batch_id': preview['batch_id'], 'action_ids': [preview['actions'][0]['id']], 'idempotency_key': 'note-test'}
+                action_id = preview['actions'][0]['id']
+                corrected = content.replace('граф', 'ориентированный граф')
+                request = {'batch_id': preview['batch_id'], 'action_ids': [action_id], 'idempotency_key': 'note-test',
+                           'edits': {action_id: {'content': corrected}}}
                 result = assistant.apply(request)
                 self.assertTrue(assistant.apply(request)['replayed'])
                 row = repository.connection.execute('SELECT content FROM notes WHERE account_id=?', ('account',)).fetchall()
-                self.assertEqual([record['content'] for record in row], [content])
+                self.assertEqual([record['content'] for record in row], [corrected])
+                correction_metrics = repository.connection.execute(
+                    "SELECT dimensions_json FROM operational_metrics "
+                    "WHERE account_id=? AND metric_name='assistant_user_correction_count'", ('account',),
+                ).fetchall()
+                self.assertEqual(len(correction_metrics), 1)
+                self.assertNotIn(corrected, correction_metrics[0]['dimensions_json'])

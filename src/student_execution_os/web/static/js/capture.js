@@ -20,7 +20,8 @@ import { parseTask, captureKind, correctedText, reminderTurn } from './nlparse.j
 import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
-import { renderCommands, knownItems, isCommand } from './command-preview.js';
+import { renderCommands, knownItems, isAssistantPlan } from './command-preview.js';
+import { assistantSession, renderRead, validUntil } from './assistant-turn.js';
 import { createReminder, deliveryChips, hasAlarm } from './reminders.js';
 import { durationPicker, readDuration, writeDuration, focusDurationOther, DURATION_PRESETS } from './duration.js';
 import { eventFieldsHtml, readEventFields, bindEventFields, eventWhen, conflictHtml, createEvent, DEFAULT_LEAD, leadPicker, readLead } from './events.js';
@@ -407,6 +408,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
         <button type="button" class="button small ghost" data-voice-cancel>${esc(t('common.cancel'))}</button>
       </div>
       <p class="help" data-capture-hint>${esc(t('capture.hint'))}</p>
+      <p class="help follow-up" data-follow-up hidden>${esc(t('assistant.followingUp'))}
+        <button type="button" class="link" data-follow-up-clear>${esc(t('assistant.newTopic'))}</button></p>
       <details class="kind-switch" data-kind-switch><summary data-kind-label>${esc(t(`capture.kind.${kind}`))} · ${esc(t('capture.changeKind'))}</summary>${chipGroup('capture-kind', KINDS.map((k) => [k, t(`capture.kind.${k}`)]), kind)}</details>
       <details class="help"><summary>${esc(t('capture.examples'))}</summary><p>${esc(t('capture.commandExamples'))}</p></details>
       <div data-capture-status class="capture-status" hidden></div>
@@ -445,6 +448,22 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
   growInput();
 
   const showStatus = (message) => { status.hidden = !message; status.textContent = message || ''; };
+  // «Нет, лучше в 10:30» follows up on the proposal the user applied or chose to refine.
+  const followUp = dialog.querySelector('[data-follow-up]');
+  const showFollowUp = () => { followUp.hidden = !assistantSession.active; };
+  followUp.querySelector('[data-follow-up-clear]').addEventListener('click', () => { assistantSession.forget(); showFollowUp(); });
+  showFollowUp();
+  const commandBox = dialog.querySelector('[data-commands]');
+  const refine = (state) => {
+    // Keep this proposal as the context of the next sentence instead of applying it.
+    assistantSession.commit(state.batchId, state.validUntil);
+    commands = null;
+    commandBox.hidden = true;
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    showFollowUp();
+    focusSoon(input);
+  };
   const engineEl = dialog.querySelector('[data-engine]');
   const showEngine = (state, extra) => {
     const line = engineLine(state, extra);
@@ -741,10 +760,23 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     }
     showEngine('thinking');
     let result;
+    const followUpContext = assistantSession.context();
+    // Typed or dictated: the server records which, so a transcript slip is not taken as
+    // something the user wrote (the latest correction still wins either way).
+    const source = captureSession.turns.at(-1)?.source === 'voice' ? 'VOICE' : 'TEXT';
     try {
-      result = await api('/api/v1/assistant/interpret', { method: 'POST', body: { text: raw, context: { timezone: deviceTimeZone(), locale: getLocale() } } });
+      result = await api('/api/v1/assistant/interpret', { method: 'POST', body: {
+        text: raw, context: { timezone: deviceTimeZone(), locale: getLocale(), source, ...followUpContext },
+      } });
     } catch (err) {
       if (seq !== serverSeq) return;
+      if (followUpContext.previous_batch_id && err.status === 403) {
+        // The proposal it followed expired on the server: continue as a fresh request.
+        assistantSession.forget();
+        showFollowUp();
+        enrich();
+        return;
+      }
       showEngine(err.code === 'NETWORK' ? 'offline' : 'fallback', { reason: err.code === 'NETWORK' ? null : 'SERVER' });
       if (command && err.code !== 'NETWORK') showStatus(errorMessage(err));
       return; // the local card stays; creating still works offline
@@ -754,10 +786,18 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     if (result.engine === 'AI') showEngine('ai', { model: result.model });
     else if (result.fallback) showEngine('fallback', { reason: result.fallback_reason });
     else showEngine(caps?.live_llm_provider ? 'local' : 'noai');
+    if (result.read) {
+      // A question: show the server's facts; nothing is created or changed.
+      commands = { source: 'server', read: result.read, actions: [] };
+      renderRead(commandBox, result.read);
+      render();
+      return;
+    }
     const actions = result.actions || [];
-    if (actions.some(isCommand)) {
-      commands = { source: 'server', batchId: result.batch_id, actions };
-      renderCommands(dialog.querySelector('[data-commands]'), commands, { onDone: () => dialog.close('applied') });
+    if (isAssistantPlan(actions)) {
+      commands = { source: 'server', batchId: result.batch_id, validUntil: validUntil(result), actions };
+      // Only a language model can read «нет, лучше в 10:30» against the previous proposal.
+      renderCommands(commandBox, commands, { onDone: () => dialog.close('applied'), onRefine: result.engine === 'AI' ? refine : null });
       render();
       return;
     }
@@ -930,6 +970,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     dictation?.cancel?.(); dictation = null;
     if (['saved', 'discarded', 'applied'].includes(dialog.returnValue)) writeCaptureDraft(localStorage, scope, null);
     else persist();
+    // A follow-up survives only a proposal that was carried out, not a dismissed dialog.
+    if (dialog.returnValue !== 'applied') assistantSession.forget();
   });
   dialog.querySelector('[data-discard]').addEventListener('click', () => dialog.close('discarded'));
   dialog.querySelector('[data-tutorial-skip]')?.addEventListener('click', () => {

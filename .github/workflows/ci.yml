@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  core-verification:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -33,16 +33,6 @@ jobs:
           if git ls-files | grep -E '(^|/)(\.dev\.vars|\.wrangler/)'; then
             echo "Wrangler secrets/state must not be committed" >&2; exit 1
           fi
-      - name: Validate default and Tor-enabled Compose configurations
-        run: |
-          docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config >/dev/null
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tor.yml --env-file deploy/.env.example config >/dev/null
-          docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml --env-file deploy/.env.example config >/dev/null
-          docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml -f deploy/docker-compose.tor.yml --env-file deploy/.env.example config >/dev/null
-      - name: Build Tor LLM egress images
-        run: |
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tor.yml \
-            --env-file deploy/.env.example build tor llm-egress-proxy
       - name: Unit, integration and acceptance tests
         run: make test
       - name: Web API tests
@@ -73,3 +63,20 @@ jobs:
         run: python -m student_execution_os reliability-smoke
       - name: Web host smoke
         run: python -m student_execution_os.web.server --help >/dev/null
+
+  infrastructure-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate default and Tor-enabled Compose configurations
+        run: |
+          docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config >/dev/null
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tor.yml --env-file deploy/.env.example config >/dev/null
+          docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml --env-file deploy/.env.example config >/dev/null
+          docker compose -p student-execution-os -f deploy/docker-compose.nginx.yml -f deploy/docker-compose.tor.yml --env-file deploy/.env.example config >/dev/null
+      - name: Build Tor LLM egress images
+        run: |
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tor.yml \
+            --env-file deploy/.env.example build tor llm-egress-proxy

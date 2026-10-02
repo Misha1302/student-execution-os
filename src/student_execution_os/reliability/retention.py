@@ -6,6 +6,7 @@ Some rows exist only to make an interaction safe, not as a record the user keeps
   the proposal made from it. A preview can be applied for 30 minutes; after that the
   row is deleted, not merely refused.
 * ``assistant_apply_records`` make an Apply exactly-once; they keep result ids only.
+* ``assistant_action_history`` keeps bounded inverse metadata for conflict-safe Undo.
 * ``client_operations`` make offline sync exactly-once and repeat task titles in
   their stored results.
 * terminal ``reminder_messages`` form the reminder inbox (the app shows 30 days).
@@ -39,6 +40,9 @@ def purge_expired_in(repo: SQLiteCanonicalRepository, now: datetime) -> dict[str
                 "DELETE FROM assistant_batches WHERE expires_at<=?", (_iso(now),)).rowcount,
             "assistant_apply_records": conn.execute(
                 "DELETE FROM assistant_apply_records WHERE created_at<?",
+                (_iso(now - ASSISTANT_APPLY_RECORD_RETENTION),)).rowcount,
+            "assistant_action_history": conn.execute(
+                "DELETE FROM assistant_action_history WHERE created_at<?",
                 (_iso(now - ASSISTANT_APPLY_RECORD_RETENTION),)).rowcount,
             "client_operations": conn.execute(
                 "DELETE FROM client_operations WHERE created_at<?", (_iso(now - CLIENT_OPERATION_RETENTION),)).rowcount,

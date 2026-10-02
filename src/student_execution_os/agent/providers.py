@@ -35,9 +35,40 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false}]}
+{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|UNDO_LAST","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
+When context.assistant_session is present, its previous_actions are the bounded prior
+semantic turn. Resolve pronouns and corrections against it; do not create a new item
+unless the latest user text explicitly asks for one. Fields marked USER_EDIT remain
+unchanged unless the latest text explicitly corrects that same field.
+For a factual question return actions=[] and one read_query. Never answer from general
+knowledge and never invent planner reasons. Allowed read_query shapes are:
+  {kind:"AGENDA_WINDOW",starts_at,ends_at}; {kind:"FREE_TIME",starts_at,ends_at};
+  {kind:"ITEM_LOOKUP",obligation_id|reminder_id}; {kind:"DUE_BEFORE",before};
+  {kind:"URGENT_TASKS"}; {kind:"WHAT_NOW"};
+  {kind:"PLAN_EXPLANATION",obligation_id}.
+The server executes these typed read queries against authorized canonical state. Do not
+write SQL or include an identifier that is absent from context.
+Planner-control language becomes canonical constraints, never plan blocks:
+  CREATE_TIME_CONSTRAINT {type:"UNAVAILABLE"|"FIXED_PERSONAL_BLOCK",starts_at,ends_at,reason?}.
+Use it for explicit protected/unavailable windows such as "завтра ничего до 12" or
+"оставь этот час свободным". Do not use it for vague preferences that need a new
+domain concept, and never claim that a derived plan block was edited.
+UNDO_LAST payload is {}. Use it only for an explicit request to undo the most recent
+Assistant change; the server reverts every reversible action of that last apply (a created
+item is removed). It checks each item's current version before applying a stored inverse;
+never reconstruct stale values yourself.
+For multiple actions, give each action a unique client_ref and list only earlier refs in
+depends_on. The server replaces refs with opaque action ids, validates the whole graph,
+and applies the selected dependency-closed plan atomically in declared order.
+When a new item's time is defined by an earlier action ("после неё час на отчёт",
+"напомни за 20 минут до новой встречи"), do not compute it: put
+relative_to:{action:"<earlier client_ref, also in depends_on>",anchor:"START"|"END",
+offset_minutes} in a CREATE_EVENT (with duration_minutes), CREATE_TASK or CREATE_REMINDER
+payload and omit starts_at/ends_at, actionable_from or remind_at. The server derives the
+time from the earlier action's resolved result. For a reminder about an existing event
+use UPDATE_EVENT remind_before_minutes instead.
 CREATE_NOTE payload: {content}: an idea, reference or unstructured note, not scheduled work.
 Preserve meaningful newlines in notes. Example: "Идея для курсовой: расписание как граф".
 CREATE_TASK payload (omit what the user did not say; no other keys are accepted):
@@ -71,8 +102,14 @@ reminder_id (from context.reminders) and expected_version (that item's "version"
   UPDATE_EVENT {obligation_id, title?, starts_at?, ends_at?, remind_before_minutes?}
   UPDATE_REMINDER {reminder_id, title?, remind_at?, delivery?}
   RESCHEDULE {obligation_id|reminder_id, when: ISO instant, keep_time?: true when only a day
-    was said} — "перенеси X на завтра": a task's deadline moves (or it is put off), an
-    event's start moves (length kept), a reminder's moment moves
+    was said, or temporal_transform} — "перенеси X на завтра": a task's deadline moves
+    (or it is put off), an event's start moves (length kept), a reminder's moment moves.
+    For a relative request with a guard and fallback, do not calculate the final timestamp.
+    Use temporal_transform: {kind:"SHIFT_WITH_GUARD_AND_FALLBACK",delta_minutes,
+    guard:{not_after_local_time:"HH:MM"},fallback:{relative_day:"NEXT_MORNING",
+    preferred_local_time:"HH:MM",precision:"EXACT"|"APPROXIMATE"}}. For an unguarded
+    shift use {kind:"RELATIVE_SHIFT",delta_minutes}. The server resolves it against the
+    current entity, timezone and duration.
   SNOOZE {obligation_id|reminder_id, until} — "напомни про X через час"
   LOG_PROGRESS {obligation_id, minutes? | count?} — "поработал над X 30 минут", "сделал 3 задачи"
   COMPLETE_OBLIGATION {obligation_id|reminder_id}; CANCEL_OBLIGATION {obligation_id|reminder_id}
@@ -87,6 +124,48 @@ context.now in context.timezone and output instants with that zone's offset. "к
 (actionable_from/target_at). If effort or deadline of a new task is not stated, leave it
 out and list "estimated_total_effort_minutes" / "actual_cutoff" in unresolved_fields.
 Do not invent identifiers, versions, dates, or locations."""
+
+_TOP_LEVEL_SCHEMA = {
+    "name": "botay_assistant_proposal",
+    "strict": False,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["message", "actions"],
+        "properties": {
+            "message": {"type": "string"},
+            "read_query": {"type": ["object", "null"], "additionalProperties": True},
+            "actions": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["command", "payload", "confidence", "unresolved_fields", "expected_version", "requires_confirmation"],
+                    "properties": {
+                        "command": {"type": "string", "enum": [command for command in (
+                            "CREATE_TASK", "CREATE_EVENT", "CREATE_REMINDER", "CREATE_NOTE", "UPDATE_TASK",
+                            "UPDATE_EVENT", "UPDATE_REMINDER", "RESCHEDULE", "SNOOZE", "LOG_PROGRESS",
+                            "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
+                            "CREATE_TIME_CONSTRAINT", "UNDO_LAST",
+                        )]},
+                        "payload": {"type": "object", "additionalProperties": True},
+                        "client_ref": {"type": "string", "maxLength": 64},
+                        "depends_on": {"type": "array", "items": {"type": "string", "maxLength": 64}},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "unresolved_fields": {"type": "array", "items": {"type": "string"}},
+                        "expected_version": {"type": ["integer", "null"]},
+                        "requires_confirmation": {"type": "boolean"},
+                        "field_provenance": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string", "enum": ["MODEL_EXPLICIT", "MODEL_INFERRED"]},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 
 
 class ProviderUnavailable(ValidationError):
@@ -494,9 +573,11 @@ def _send(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         else:
             response = httpx.post(url, headers=headers, json=body, timeout=timeout,
                                   follow_redirects=False, trust_env=False)
-    except httpx.TimeoutException:
-        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "NETWORK",
+    except httpx.ConnectTimeout:
+        raise ProviderUnavailable(f"assistant provider {name} could not be reached in time", "NETWORK",
                                   route=route) from None
+    except httpx.TimeoutException:
+        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "TIMEOUT", route=route) from None
     except (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL, UnicodeError):
         # Refused by httpx before anything was sent: a bug here, not the network.
         raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST",
@@ -537,18 +618,37 @@ class OpenAICompatibleProvider:
         finally:
             self.last_route = observed.get("route")
 
-    def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
+    def _complete(self, text: str, context: dict[str, object], *, repair_feedback: str | None = None) -> dict[str, Any]:
         # No temperature: OpenAI reasoning models reject a non-default one, and Groq's
         # gpt-oss fails JSON mode at temperature 0 on some inputs every time. The output
         # is validated field by field anyway, so determinism is not relied upon there.
         self.last_usage = None
-        extra: dict[str, Any] = {"response_format": {"type": "json_object"}}
+        extra: dict[str, Any] = {}
         if self.max_output_tokens is not None:
             extra["max_tokens"] = self.max_output_tokens
-        response = self._chat([
+        messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _user_message(text, context)},
-        ], **extra)
+        ]
+        if repair_feedback:
+            messages.append({"role": "system", "content": (
+                "The previous proposal was rejected by deterministic validation with code "
+                f"{repair_feedback}. Return one complete replacement proposal; never alter authority or scope."
+            )})
+        json_mode = {"type": "json_object"}
+        if self.name != "openai":
+            response = self._chat(messages, response_format=json_mode, **extra)
+        else:
+            try:
+                response = self._chat(messages, response_format={"type": "json_schema", "json_schema": _TOP_LEVEL_SCHEMA},
+                                      **extra)
+            except ProviderUnavailable as exc:
+                # Not every OpenAI model accepts json_schema. A request-level FORMAT
+                # refusal gets exactly one downgrade to JSON mode, which the server
+                # validates the same way; anything else is a real failure.
+                if exc.reason != "FORMAT":
+                    raise
+                response = self._chat(messages, response_format=json_mode, **extra)
         self.last_usage = _openai_usage(response)
         content = _field(response, ("choices", 0, "message", "content"), self.name)
         if not isinstance(content, str):
@@ -561,6 +661,9 @@ class OpenAICompatibleProvider:
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         return self._complete(text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str) -> dict[str, Any]:
+        return self._complete(text, context, repair_feedback=feedback)
 
 
 @dataclass
@@ -587,10 +690,14 @@ class AnthropicProvider:
         finally:
             self.last_route = observed.get("route")
 
-    def _complete(self, text: str, context: dict[str, object]) -> dict[str, Any]:
+    def _complete(self, text: str, context: dict[str, object], *, repair_feedback: str | None = None) -> dict[str, Any]:
         self.last_usage = None
+        system = SYSTEM_PROMPT
+        if repair_feedback:
+            system += ("\nThe previous proposal was rejected by deterministic validation with code "
+                       f"{repair_feedback}. Return one complete replacement proposal; never alter authority or scope.")
         response = self._messages({
-            "max_tokens": self.max_output_tokens, "temperature": 0, "system": SYSTEM_PROMPT,
+            "max_tokens": self.max_output_tokens, "temperature": 0, "system": system,
             "messages": [{"role": "user", "content": _user_message(text, context)}],
         })
         self.last_usage = _anthropic_usage(response)
@@ -606,6 +713,9 @@ class AnthropicProvider:
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         return self._complete(text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str) -> dict[str, Any]:
+        return self._complete(text, context, repair_feedback=feedback)
 
 
 PROVIDERS = {
@@ -693,9 +803,11 @@ class PlatformProviderPool:
         self.last_usage: dict[str, int] | None = None
         self.last_route: str | None = None
         self.last_credential: str | None = None  # "primary" or "standby" (diagnostics)
+        self._last_index = 0
 
     def _attempt(self, index: int, text: str, context: dict[str, object]):
         provider = self._providers[index]
+        self._last_index = index
         self.last_credential = "primary" if index == 0 else "standby"
         try:
             return provider.interpret(text, context)
@@ -711,6 +823,17 @@ class PlatformProviderPool:
             if len(self._providers) == 1 or primary.reason not in self._ALTERNATE_REASONS:
                 raise
         return self._attempt(1, text, context)
+
+    def repair(self, text: str, context: dict[str, object], feedback: str):
+        provider = self._providers[self._last_index]
+        repair = getattr(provider, "repair", None)
+        if not callable(repair):
+            raise ProviderUnavailable("assistant provider cannot repair structured output", "FORMAT")
+        try:
+            return repair(text, context, feedback)
+        finally:
+            self.last_usage = provider.last_usage
+            self.last_route = getattr(provider, "last_route", None)
 
 
 def _platform_keys_from_environment() -> list[str]:
