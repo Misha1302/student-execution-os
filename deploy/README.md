@@ -397,7 +397,9 @@ bearer session token returned by registration/login.
 ### Releasing an exact revision (Topology B)
 
 Releases are immutable `git archive` trees in `/opt/student-execution-os/releases/<full-sha>`;
-`/opt/student-execution-os/current` points at the running one (the backup unit uses it).
+`/opt/student-execution-os/current` should point at the running one (the backup unit uses it),
+but the source of truth for what runs is the Compose project itself (step 0): the symlink is
+only updated by step 6 and can lag behind a release done another way.
 The environment file and the secrets stay outside the release, so every release reuses
 them; never copy secret values into a release tree, and never print them.
 
@@ -405,11 +407,13 @@ them; never copy secret values into a release tree, and never print them.
 SHA=<full 40-character release sha>            # e.g. the merged main commit
 REL=/opt/student-execution-os/releases/$SHA
 ENV=/etc/student-execution-os/student-execution-os.env
-PREV=$(readlink -f /opt/student-execution-os/current)   # record this: it is the rollback target
 
-# 0. Which Compose files does the running project use? Release with the same set
-#    (e.g. with or without deploy/docker-compose.tor.yml); a release does not change topology.
-docker compose ls --filter name=student-execution-os
+# 0. What runs now? Record it: it is the rollback target. Release with the same Compose file
+#    set (with or without deploy/docker-compose.tor.yml); a release does not change topology.
+docker compose ls --filter name=student-execution-os          # CONFIG FILES = $PREV/deploy/...
+docker inspect --format '{{.Config.Image}}' student-execution-os-api-1   # previous image tag
+PREV=/opt/student-execution-os/releases/<sha from CONFIG FILES>
+curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health   # previous revision and schema_version
 
 # 1. Release tree from the exact commit (no .git, nothing else in it).
 sudo install -d -m 0755 "$REL"
@@ -424,15 +428,20 @@ sudo test -r /etc/student-execution-os/secrets/worker/fcm-service-account.json  
 # as seen from the host (default dir /etc/student-execution-os/secrets/api/)
 
 # 3. Verified backup with the RUNNING release, before the new image migrates the schema.
-sudo "$PREV/deploy/backup.sh"
-ls -l /var/backups/student-execution-os | tail -2   # .db and .db.manifest.json
+#    (backup.sh uses the compose file under `current`; call the CLI directly so it is the
+#    running container regardless of where the symlink points.)
+B=/backups/student-execution-os-$(date -u +%Y-%m-%dT%H%M%SZ)-pre-${SHA:0:7}.db
+docker exec student-execution-os-api-1 python -m student_execution_os backup \
+  --database /data/student-execution-os.db --output "$B"
+sudo cat "/var/backups/student-execution-os/$(basename "$B").manifest.json"   # schema_version, sha256, integrity_check "ok"
 
 # 4. Pin the revision for both services: api and reminder-worker read SEOS_REVISION
-#    (health "revision"); SEOS_IMAGE_TAG names the image so the previous one stays available.
+#    (health "revision"); SEOS_IMAGE_TAG (the full SHA) names the image, so the previous
+#    image stays available for a rollback without a build.
 sudo cp -p "$ENV" "$ENV.bak-pre-${SHA:0:7}"
-sudo sed -i -e "s/^SEOS_REVISION=.*/SEOS_REVISION=$SHA/" -e "s/^SEOS_IMAGE_TAG=.*/SEOS_IMAGE_TAG=${SHA:0:7}/" "$ENV"
+sudo sed -i -e "s/^SEOS_REVISION=.*/SEOS_REVISION=$SHA/" -e "s/^SEOS_IMAGE_TAG=.*/SEOS_IMAGE_TAG=$SHA/" "$ENV"
 sudo grep -q "^SEOS_REVISION=$SHA$" "$ENV" || echo "SEOS_REVISION=$SHA" | sudo tee -a "$ENV" >/dev/null
-sudo grep -q "^SEOS_IMAGE_TAG=${SHA:0:7}$" "$ENV" || echo "SEOS_IMAGE_TAG=${SHA:0:7}" | sudo tee -a "$ENV" >/dev/null
+sudo grep -q "^SEOS_IMAGE_TAG=$SHA$" "$ENV" || echo "SEOS_IMAGE_TAG=$SHA" | sudo tee -a "$ENV" >/dev/null
 
 # 5. Review the resolved configuration without printing the environment.
 cd "$REL"
