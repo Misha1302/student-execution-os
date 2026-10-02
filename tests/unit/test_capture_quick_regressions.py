@@ -47,6 +47,13 @@ console.log(JSON.stringify({{ omitted, conflicting, manual }}));
         self.assertEqual(out["omitted"]["delivery"], "ALARM")
         self.assertEqual(out["manual"]["delivery"], "PUSH")
 
+    def test_assistant_interpret_timeout_covers_the_server_retry_budget(self):
+        source = (JS / "capture.js").read_text(encoding="utf-8")
+        call = source.split("api('/api/v1/assistant/interpret'", 1)[1].split("});", 1)[0]
+        self.assertIn("timeoutMs: 50000", call)
+        self.assertIn("const AI_ENRICH_DEBOUNCE_MS = 800", source)
+        self.assertIn("setTimeout(enrich, AI_ENRICH_DEBOUNCE_MS)", source)
+
     def test_android_like_long_press_sequence_opens_once_and_eats_followups(self):
         out = run_node(f"""
 const {{ installQuickActions, singleFlightQuickAction }} = await import('file://{JS}/quick.js');

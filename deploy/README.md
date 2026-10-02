@@ -115,8 +115,12 @@ reservation is released only when the provider certainly generated nothing (HTTP
 `SERVER_BLOCKED` outage does not drain student token budgets; timeouts, network errors
 after connect, 5xx and 400 answers stay fully charged (fail closed). Groq 429s
 (`rate_limit_exceeded`, even with the billing upsell link) are `RATE_LIMITED`, never
-`QUOTA`: no standby failover, no sticky key status, and `retry_after_seconds` is passed
-to the client from `Retry-After`.
+`QUOTA`: no standby failover and no sticky key status. When the provider supplies an
+explicit `Retry-After` of at most 30 seconds and the 45-second Assistant operation
+budget can still fit another call, the same credential is retried exactly once; otherwise
+the request degrades to the local parser and exposes `retry_after_seconds`. Every actual
+provider attempt is still counted as one STARTER request; a 429 reconciles with zero
+tokens.
 
 Egress is chosen per request and is deterministic: `RELAY` or `PROXY` only for exact
 hosts listed by the operator, otherwise `DIRECT`; ambient `HTTPS_PROXY`/`ALL_PROXY`

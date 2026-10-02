@@ -33,7 +33,10 @@ not missing subsystems:
   `RATE_LIMITED`; `decommissioned` models are `NOT_FOUND`. `Retry-After` is parsed
   (seconds or HTTP-date, bounded to 1 h) into `ProviderUnavailable.retry_after` and
   returned as `retry_after_seconds` by interpret and the connection test.
-- Standby failover stays exactly `AUTH`/`QUOTA` (credential-specific); no generic retry.
+- Standby failover stays exactly `AUTH`/`QUOTA` (credential-specific). Transient
+  reliability retries stay on the same credential and remain bounded: at most one retry
+  for a request operation, and a `RATE_LIMITED` response is retried only when it carries
+  an explicit `Retry-After` of at most 30 seconds that fits the 45-second operation budget.
 - STARTER: the request counter is never refunded; the token charge is released only
   when the provider certainly generated nothing (401/402/403/404/405/413/415/429, or a
   `REQUEST`/`BLOCKED_URL` failure raised before sending). Timeouts, post-connect network

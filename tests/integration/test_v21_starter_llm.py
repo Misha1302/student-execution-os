@@ -330,22 +330,25 @@ class StarterLlmTest(unittest.TestCase):
                                         "WHERE account_id=? ORDER BY created_at,id", (account,)).fetchall()
         return usage, global_usage, reservations
 
-    def test_groq_rate_limit_is_not_quota_no_failover_retry_after_and_no_token_charge(self):
+    def test_groq_rate_limit_retries_primary_once_no_failover_and_no_token_charge(self):
         with self.env():
             client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
             headers, account = self.register(client, "rate-limited")
             self.fake.status[PRIMARY] = 429
             self.fake.error[PRIMARY] = self.GROQ_TPM_429
-            self.fake.headers[PRIMARY] = {"retry-after": "7"}
+            # Unit coverage verifies the actual provider-advised wait; use zero here so
+            # this integration contract exercises retry/failover/accounting without sleeping.
+            self.fake.headers[PRIMARY] = {"retry-after": "0"}
             result = self.interpret(client, headers)
-        # Degraded, labelled as local, never as AI success; the billing upsell link in
-        # Groq's message does not make a transient limit an exhausted account.
+        # A provider-advised wait gets one bounded retry on the same credential. If the
+        # limit is still active we degrade locally; the billing upsell link does not turn
+        # a transient TPM limit into QUOTA and standby is never used for rate limiting.
         self.assertEqual((result["engine"], result["fallback"], result["model"]), ("LOCAL", True, None))
-        self.assertEqual((result["fallback_reason"], result["retry_after_seconds"]), ("RATE_LIMITED", 7))
-        self.assertEqual(self.fake.calls, [PRIMARY])  # no standby failover on a rate limit
+        self.assertEqual((result["fallback_reason"], result["retry_after_seconds"]), ("RATE_LIMITED", 0))
+        self.assertEqual(self.fake.calls, [PRIMARY, PRIMARY])
         usage, global_usage, reservations = self.usage_rows(account)
-        self.assertEqual((usage, global_usage), ((1, 0), (1, 0)))
-        self.assertEqual(reservations, [(0, "RECONCILED")])
+        self.assertEqual((usage, global_usage), ((2, 0), (2, 0)))
+        self.assertEqual(reservations, [(0, "RECONCILED"), (0, "RECONCILED")])
 
     def test_server_blocked_does_not_fail_over_or_drain_tokens(self):
         with self.env():
