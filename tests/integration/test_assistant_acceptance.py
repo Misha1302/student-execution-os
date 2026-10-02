@@ -196,6 +196,35 @@ class ConversationAcceptanceTest(AcceptanceBase):
         self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-02 10:30")
 
 
+class SourceOwnedEventTest(AcceptanceBase):
+    def setUp(self):
+        super().setUp()
+        self.repository.connection.execute(
+            "INSERT INTO external_identities(account_id,source_system_id,external_uid,local_kind,local_id,"
+            "first_seen_at,last_seen_at) VALUES ('account','ical:hse','uid-ariadne','EVENT','ariadne',?,?)",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        self.repository.connection.commit()
+
+    def test_imported_event_move_is_blocked_in_preview_and_refused_at_apply(self):
+        service = self.service(ConversationProvider())
+        preview = service.interpret("Перенеси встречу с Ариадной на три часа позже, иначе утром",
+                                    {"timezone": "Europe/Moscow"})
+        action = preview["actions"][0]
+        self.assertEqual(action["blocked"]["code"], "IMPORTED_EVENT_SOURCE_OWNED")
+        with self.assertRaises(ValidationError):
+            service.apply({"batch_id": preview["batch_id"], "action_ids": [action["id"]], "idempotency_key": "move"})
+        self.assertEqual(self.local(self.meeting().interval.starts_at), "2026-10-01 20:00")
+
+    def test_a_personal_reminder_on_an_imported_event_is_allowed(self):
+        service = self.service(ConversationProvider())
+        preview = service.interpret("И напомни за полчаса")
+        self.assertNotIn("blocked", preview["actions"][0])
+        service.apply({"batch_id": preview["batch_id"], "action_ids": [preview["actions"][0]["id"]],
+                       "idempotency_key": "remind"})
+        self.assertEqual(self.lead(), 30)
+
+
 class MultiActionAcceptanceTest(AcceptanceBase):
     def test_dependent_time_is_derived_from_the_earlier_action_and_follows_its_correction(self):
         service = self.service(PlanProvider())

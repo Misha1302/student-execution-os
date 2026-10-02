@@ -817,6 +817,9 @@ class SQLiteAssistantService:
             if derived:
                 actions[-1]["provenance"]["fields"].update({field: "DERIVED" for field in derived})
                 actions[-1]["resolution"] = self._relative_resolution(actions[-1], actions)
+            blocked = self._source_owned_block(actions[-1])
+            if blocked:
+                actions[-1]["blocked"] = blocked
             actions[-1]["provenance"]["input"] = (
                 "voice-transcript" if context.get("source") == "VOICE" else "user-authored-text"
             )
@@ -887,6 +890,31 @@ class SQLiteAssistantService:
         provenance = {key: value for key, value in provenance.items() if key not in fields} \
             if isinstance(provenance, dict) else provenance
         return {**raw, "payload": payload, "unresolved_fields": unresolved, "field_provenance": provenance}, fields
+
+    # Time and wording of an imported calendar event belong to its source; only the
+    # personal reminder lead (and cancelling it for oneself) is the user's —
+    # sync/handlers/events.py enforces the same at apply.
+    _SOURCE_OWNED_COMMANDS = {AgentCommand.RESCHEDULE.value, AgentCommand.UPDATE_EVENT.value}
+
+    def _source_owned_block(self, action: dict[str, Any]) -> dict[str, str] | None:
+        """Why an action can never apply to a source-owned event, shown in the preview."""
+        if action["command"] not in self._SOURCE_OWNED_COMMANDS:
+            return None
+        payload = action["payload"]
+        if action["command"] == AgentCommand.UPDATE_EVENT.value \
+                and not set(payload) - _TARGET - {"remind_before_minutes"}:
+            return None
+        target = target_of(self.canonical, self.principal.account_id, payload)
+        if target is None or target[0] != "EVENT":
+            return None
+        imported = self.canonical.connection.execute(
+            "SELECT 1 FROM external_identities WHERE account_id=? AND local_kind='EVENT' AND local_id=? "
+            "AND external_recurrence_id=''", (self.principal.account_id, target[1]),
+        ).fetchone()
+        if imported is None:
+            return None
+        return {"code": "IMPORTED_EVENT_SOURCE_OWNED",
+                "message": "this event comes from an imported calendar; its time changes only at the source"}
 
     @staticmethod
     def _relative_values(command: str, payload: dict[str, Any], relative: RelativeToAction,
@@ -1120,6 +1148,10 @@ class SQLiteAssistantService:
             raise ValidationError("unresolved proposal fields must be refined before apply")
         if any(action["requires_confirmation"] and action["id"] not in confirmed for action in actions):
             raise AuthorizationDenied("destructive or ambiguous action requires explicit confirmation")
+        for action in actions:
+            blocked = self._source_owned_block(action)
+            if blocked:
+                raise ValidationError(blocked["message"])
         for action in actions:
             if action["command"] not in _TARGET_KINDS:
                 continue

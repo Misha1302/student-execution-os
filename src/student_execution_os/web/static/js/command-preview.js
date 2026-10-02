@@ -161,9 +161,12 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
           <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
         ${missingWhen ? `<small class="help">${esc(t('cmd.whenMissing'))}</small>` : ''}
         ${!isCommand(action) && blocking(action).length ? `<small class="help">${esc(t('cmd.needsDetails'))}</small>` : ''}
+        ${action.blocked ? `<small class="help" data-blocked="${esc(action.blocked.code)}">${esc(t('cmd.sourceOwned'))}</small>` : ''}
       </li>`;
     }).join('');
-    const ready = state.actions.every((a, i) => (isCommand(a)
+    // A change the server will refuse (e.g. moving an imported calendar event) is
+    // explained, never offered as if it could succeed.
+    const ready = state.actions.every((a, i) => !a.blocked && (isCommand(a)
       ? targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when')
       : !blocking(a).length));
     const destructive = state.actions.some((a) => DESTRUCTIVE.has(a.command));

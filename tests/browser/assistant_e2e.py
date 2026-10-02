@@ -5,7 +5,9 @@ intent. Previews, the follow-up session, apply, version checks and undo all run 
 the production endpoints and the canonical database.
 """
 import json
+import sqlite3
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -47,6 +49,11 @@ class BrowserFixtureProvider:
             meeting = items['Встреча с Ариадной']
             return {'message': 'corrected', 'actions': [_action(
                 'RESCHEDULE', {'obligation_id': meeting['id'], 'when': when.isoformat()}, meeting['version'])]}
+        if text.startswith('Перенеси пару'):
+            lecture = items['Пара по физике']
+            return {'message': 'move', 'actions': [_action(
+                'RESCHEDULE', {'obligation_id': lecture['id'], 'when': (TODAY + timedelta(hours=21)).isoformat()},
+                lecture['version'])]}
         if text.startswith('Перенеси встречу с Димой'):
             meeting = items['Встреча с Димой']
             return {'message': 'plan', 'actions': [
@@ -77,10 +84,15 @@ class AssistantBrowserTest(unittest.TestCase):
             'ends_at': (TODAY + timedelta(hours=start + 1)).isoformat()}}
             for index, (entity, title, start) in enumerate((
                 ('event-ariadne', 'Встреча с Ариадной', 20), ('event-dima', 'Встреча с Димой', 15),
-                ('event-seminar', 'Семинар', 19)))]
+                ('event-seminar', 'Семинар', 19), ('event-lecture', 'Пара по физике', 11)))]
         seeded = cls.http.post('/api/v1/sync', headers=cls.headers, json={'operations': operations})
         seeded.raise_for_status()
         assert all(result['status'] == 'APPLIED' for result in seeded.json()['results']), seeded.text
+        with closing(sqlite3.connect(cls.database)) as connection, connection:  # an imported-schedule lecture
+            connection.execute(
+                "INSERT INTO external_identities(account_id,source_system_id,external_uid,local_kind,local_id,"
+                "first_seen_at,last_seen_at) VALUES (?, 'ical:hse', 'uid-lecture', 'EVENT', 'event-lecture', ?, ?)",
+                (cls.auth['user']['account_id'], TODAY.isoformat(), TODAY.isoformat()))
         cls.model = patch.object(LlmCredentialStore, 'resolve', lambda self, account_id: ResolvedLlm(
             source=CredentialSource.PLATFORM_MANAGED, provider=BrowserFixtureProvider()))
         cls.model.start()
@@ -145,6 +157,15 @@ class AssistantBrowserTest(unittest.TestCase):
         page.locator('.toast-action').click()
         expect(page.locator('.toast').filter(has_text='Отменено')).to_be_visible()
         self.assertEqual(self.starts('event-ariadne'), '28 20:00')
+        self.assertEqual(self.errors, [])
+
+    def test_imported_event_move_is_explained_not_offered(self):
+        page = self.page()
+        sheet = self.say(page, 'Перенеси пару по физике на вечер')
+        card = sheet.locator('.command-card')
+        expect(card.locator('[data-blocked="IMPORTED_EVENT_SOURCE_OWNED"]')).to_be_visible()
+        expect(card.locator('[data-run]')).to_be_disabled()
+        self.assertEqual(self.starts('event-lecture'), '28 11:00')
         self.assertEqual(self.errors, [])
 
     def test_dependent_plan_is_previewed_applied_and_undone_as_one(self):
