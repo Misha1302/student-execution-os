@@ -18,6 +18,7 @@ from student_execution_os.planning import (
     build_planning_snapshot,
 )
 from student_execution_os.planning.model import PlanningPolicy
+from student_execution_os.planning.preference_store import derived_preference_windows
 from student_execution_os.planning.outlook import (
     OFF_HOURS_PREFIX,
     SQLitePlanningProfileRepository,
@@ -88,6 +89,7 @@ class PlanningQueries(ApplicationService):
                     optional_event_policy=profile.optional_event_policy,
                 ),
                 derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
+                derived_preferences=derived_preference_windows(repo, profile, self.account_id),
                 assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
             )
             outcome = PlanningService().build(snapshot, now=self._now())
@@ -383,6 +385,11 @@ class PlanningQueries(ApplicationService):
             "feasibility_status": plan.feasibility_status.value,
             "generated_at": _jsonify(plan.generated_at),
             "explanations": list(plan.explanations),
+            # Soft planning preferences: APPLIED / RELAXED / UNSATISFIABLE, from the planner.
+            "preference_status": {
+                item.split(":", 1)[1]: item.split(":", 1)[0].removeprefix("PREFERENCE_")
+                for item in plan.explanations if item.startswith("PREFERENCE_")
+            },
             "blocks": blocks,
             "canonical_events": events,
             "constraints": [{
@@ -489,6 +496,14 @@ class PlanningQueries(ApplicationService):
                 self._constraint(item)
                 for item in SQLitePlanningStateSource(repo).list_time_constraints(self.account_id)
             ]
+
+    def plan_preferences(self) -> list[dict[str, Any]]:
+        from zoneinfo import ZoneInfo
+        from student_execution_os.planning.preference_store import SQLitePlanningPreferenceRepository
+        with self._repo() as repo:
+            profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
+            today = self._now().astimezone(ZoneInfo(profile.timezone_name)).date()
+            return [item.payload() for item in SQLitePlanningPreferenceRepository(repo).list(self.account_id, current_on=today)]
 
     def plan_control_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         operation = payload.get("operation")

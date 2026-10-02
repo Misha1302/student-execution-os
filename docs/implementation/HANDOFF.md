@@ -4,9 +4,13 @@
 
 ## Current architecture
 
-- Schema: v29 (`persistence/sqlite.py::SCHEMA_VERSION`); what each version added is in
+- Schema: v30 (`persistence/sqlite.py::SCHEMA_VERSION`); what each version added is in
   [docs/SCHEMA_HISTORY.md](../SCHEMA_HISTORY.md). v28 persists login/IP abuse limits; v29
-  stores Assistant action history (inverse + committed version) for safe undo.
+  stores Assistant action history (inverse + committed version) for safe undo; v30 stores
+  canonical planning preferences.
+- Planning preferences: `planning/preferences.py` (model, expansion, placement filter) and
+  `planning/preference_store.py`; `Planner._honour_preferences` re-places work only after the
+  hard model is FEASIBLE and relaxes preferences one by one; feasibility never reads them.
 - Write ownership: `sync/commands.py::SyncService` owns the operation envelope, op_id replay,
   request hashing, the savepoint and result persistence; `Commands` routes each operation type
   to exactly one domain handler in `sync/handlers/` (explicit registration, fail-closed).
@@ -16,8 +20,17 @@
   `relative_to` anchors deterministically, applies plans atomically in declared order, and
   undoes the last apply against stored versions; the client side of a turn is
   `web/static/js/assistant-turn.js` + `command-preview.js`.
+- Assistant targets: `agent/disambiguation.py` — the server decides whether the model's pick
+  is materially unique (authorized candidate set, the user's words, kind words, explicit
+  dates/times, previous turn); otherwise the target becomes a user choice. With no
+  distinguishing evidence ("перенеси её") the pick continues only if it is the one target the
+  previous turn established or the only candidate of a fitting kind.
+- Provider reliability: `agent/reliability.py` — delivery-aware retry matrix (NOT_SENT /
+  ANSWERED / UNKNOWN), total latency budget via `providers.CALL_DEADLINE`, attempt cap.
 - Device storage: `web/static/js/device-storage.js` (`OfflineOperationStore`,
-  `ReadModelCache`, `CredentialStore`); backing stores are unchanged (see mobile/README.md).
+  `ReadModelCache`, `CredentialStore`); on Android the queue is native SQLite and the token is
+  Keystore-backed through the `SeosStorage` plugin (`mobile/android/.../storage/`); see
+  mobile/README.md for the migration and rollback rules.
 - Earlier schema notes, kept for context: v13 explicit `remind_at` reminder requests, device
   capabilities, retention indexes; v14 per-account encrypted LLM credentials and the
   platform-managed entitlement seam; v15 delete tombstones, event reminder leads, counted

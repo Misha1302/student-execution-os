@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, NamedTuple
 from datetime import datetime
 
 from student_execution_os.domain.model import (
@@ -22,6 +22,14 @@ from student_execution_os.planning.model import (
 )
 from student_execution_os.planning.search import BoundedSearch, merge_intervals
 from student_execution_os.planning.witness import validate_witness
+
+class _Prepared(NamedTuple):
+    ordered_tasks: list
+    deps: tuple
+    deadlines: dict
+    occupied: list
+    pinned_by_task: dict
+
 
 @dataclass(frozen=True)
 class FeasibilityEngine:
@@ -49,6 +57,59 @@ class FeasibilityEngine:
                 explored_nodes=0,
             )
 
+        prepared = self._prepare(snapshot)
+        if isinstance(prepared, FeasibilityResult):
+            return prepared
+        ordered_tasks, deps, effective_deadlines, occupied, pinned_by_task = prepared
+
+        search = BoundedSearch(self.node_limit, self.timeout_seconds)
+        greedy = search.greedy(
+            snapshot, ordered_tasks, deps, effective_deadlines, occupied, pinned_by_task
+        )
+        if greedy is not None:
+            candidate = tuple(sorted(greedy))
+            validation = validate_witness(snapshot, candidate)
+            if validation:
+                return self._unknown(snapshot, "INTERNAL_WITNESS_VALIDATION_FAILED:" + validation[0])
+            return FeasibilityResult(
+                FeasibilityStatus.FEASIBLE, snapshot.input_hash, witness=candidate,
+                reasons=("CONSTRUCTIVE_WITNESS",), explored_nodes=0,
+            )
+        if not self.exact_search_enabled:
+            return self._unknown(snapshot, "CONSTRUCTIVE_SEARCH_FAILED_WITHOUT_PROOF")
+
+        witness, state = search.exact(
+            snapshot, ordered_tasks, deps, effective_deadlines, occupied, pinned_by_task
+        )
+        if witness is not None:
+            candidate = tuple(sorted(witness))
+            validation = validate_witness(snapshot, candidate)
+            if validation:
+                return self._unknown(
+                    snapshot, "INTERNAL_WITNESS_VALIDATION_FAILED:" + validation[0], state.nodes
+                )
+            return FeasibilityResult(
+                FeasibilityStatus.FEASIBLE,
+                snapshot.input_hash,
+                witness=candidate,
+                reasons=("EXACT_WITNESS",),
+                explored_nodes=state.nodes,
+            )
+        if state.timed_out:
+            return self._unknown(snapshot, "EXACT_SEARCH_BUDGET_EXHAUSTED", state.nodes)
+        if any(task.actual_cutoff.state is CutoffState.ABSENT for task in ordered_tasks):
+            return self._unknown(
+                snapshot, "NO_HARD_CUTOFF_EXHAUSTED_DISPLAYED_ANALYSIS_HORIZON", state.nodes
+            )
+        return FeasibilityResult(
+            FeasibilityStatus.INFEASIBLE,
+            snapshot.input_hash,
+            reasons=("EXACT_SEARCH_EXHAUSTED_NO_LEGAL_WITNESS",),
+            explored_nodes=state.nodes,
+        )
+
+    def _prepare(self, snapshot: PlanningSnapshot):
+        """Hard occupancy, deadlines and task order — or the terminal result that makes search moot."""
         required_events = [
             e for e in snapshot.events
             if e.attendance_policy is AttendancePolicy.REQUIRED
@@ -130,52 +191,31 @@ class FeasibilityEngine:
         if isinstance(order_or_error, str):
             return self._unknown(snapshot, order_or_error)
         ordered_tasks = order_or_error
+        return _Prepared(ordered_tasks, deps, effective_deadlines, occupied, pinned_by_task)
 
-        search = BoundedSearch(self.node_limit, self.timeout_seconds)
-        greedy = search.greedy(
-            snapshot, ordered_tasks, deps, effective_deadlines, occupied, pinned_by_task
-        )
-        if greedy is not None:
-            candidate = tuple(sorted(greedy))
-            validation = validate_witness(snapshot, candidate)
-            if validation:
-                return self._unknown(snapshot, "INTERNAL_WITNESS_VALIDATION_FAILED:" + validation[0])
-            return FeasibilityResult(
-                FeasibilityStatus.FEASIBLE, snapshot.input_hash, witness=candidate,
-                reasons=("CONSTRUCTIVE_WITNESS",), explored_nodes=0,
-            )
-        if not self.exact_search_enabled:
-            return self._unknown(snapshot, "CONSTRUCTIVE_SEARCH_FAILED_WITHOUT_PROOF")
+    def preferred_witness(self, snapshot: PlanningSnapshot, admissible) -> tuple[WorkPlacement, ...] | None:
+        """A hard-valid constructive witness whose placements also satisfy ``admissible``.
 
-        witness, state = search.exact(
-            snapshot, ordered_tasks, deps, effective_deadlines, occupied, pinned_by_task
+        Used only after the hard model has proven FEASIBLE; ``None`` means "no
+        preference-honouring constructive placement found", never "infeasible".
+        """
+        prepared = self._prepare(snapshot)
+        if isinstance(prepared, FeasibilityResult):
+            return None
+        ordered_tasks, deps, deadlines, occupied, pinned_by_task = prepared
+        greedy = BoundedSearch(self.node_limit, self.timeout_seconds).greedy(
+            snapshot, ordered_tasks, deps, deadlines, occupied, pinned_by_task, admissible=admissible
         )
-        if witness is not None:
-            candidate = tuple(sorted(witness))
-            validation = validate_witness(snapshot, candidate)
-            if validation:
-                return self._unknown(
-                    snapshot, "INTERNAL_WITNESS_VALIDATION_FAILED:" + validation[0], state.nodes
-                )
-            return FeasibilityResult(
-                FeasibilityStatus.FEASIBLE,
-                snapshot.input_hash,
-                witness=candidate,
-                reasons=("EXACT_WITNESS",),
-                explored_nodes=state.nodes,
-            )
-        if state.timed_out:
-            return self._unknown(snapshot, "EXACT_SEARCH_BUDGET_EXHAUSTED", state.nodes)
-        if any(task.actual_cutoff.state is CutoffState.ABSENT for task in ordered_tasks):
-            return self._unknown(
-                snapshot, "NO_HARD_CUTOFF_EXHAUSTED_DISPLAYED_ANALYSIS_HORIZON", state.nodes
-            )
-        return FeasibilityResult(
-            FeasibilityStatus.INFEASIBLE,
-            snapshot.input_hash,
-            reasons=("EXACT_SEARCH_EXHAUSTED_NO_LEGAL_WITNESS",),
-            explored_nodes=state.nodes,
-        )
+        if greedy is None:
+            return None
+        candidate = tuple(sorted(greedy))
+        return None if validate_witness(snapshot, candidate) else candidate
+
+    def hard_occupancy(self, snapshot: PlanningSnapshot):
+        prepared = self._prepare(snapshot)
+        if isinstance(prepared, FeasibilityResult):
+            return None
+        return prepared.occupied, [p for items in prepared.pinned_by_task.values() for p in items]
 
     def _unsupported_reason(self, snapshot: PlanningSnapshot) -> str | None:
         for event in snapshot.events:

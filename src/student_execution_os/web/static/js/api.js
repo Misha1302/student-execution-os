@@ -57,8 +57,15 @@ export async function setAuth(token, user) {
   const ownershipChanged = Boolean(session.token && (!token || session.user?.account_id !== user?.account_id));
   session.token = token;
   session.user = user;
-  await credentialStore.set(KEYS.token, token);
-  await credentialStore.set(KEYS.user, user ? JSON.stringify(user) : null);
+  // Signed-in state is "user, then token"; signing out removes the token first. Native
+  // background work treats a token without a user as signed out (SessionCredentials).
+  if (token) {
+    await credentialStore.set(KEYS.user, user ? JSON.stringify(user) : null);
+    await credentialStore.set(KEYS.token, token);
+  } else {
+    await credentialStore.set(KEYS.token, token);
+    await credentialStore.set(KEYS.user, user ? JSON.stringify(user) : null);
+  }
   if (ownershipChanged) {
     clearCaptureDrafts(localStorage);
     await clearDeviceAlarms();

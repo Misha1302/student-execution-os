@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from time import monotonic
+from dataclasses import dataclass, replace
 
 from student_execution_os.domain.clock import Clock, SystemClock
 from student_execution_os.domain.model import AttendancePolicy, CutoffState, Importance, LifecycleStatus, UserTimeConstraintType
 from student_execution_os.planning.feasibility import FeasibilityEngine
+from student_execution_os.planning.preferences import PreferenceGuide, relaxation_order
 from student_execution_os.planning.model import (
     FeasibilityStatus,
     PlanBlock,
@@ -20,6 +22,14 @@ _IMPORTANCE_RANK = {
     Importance.NORMAL: 2,
     Importance.LOW: 3,
 }
+
+
+# Wall-clock budget of the preference pass; past it the hard plan is kept as is.
+PREFERENCE_BUDGET_SECONDS = 0.75
+
+
+class _PreferenceBudgetExhausted(Exception):
+    pass
 
 
 def _block_id(*parts: object) -> str:
@@ -46,12 +56,16 @@ class Planner:
             # input. Creation time remains the deterministic fallback.
             return (2, intent, task.obligation.created_at, _IMPORTANCE_RANK[task.obligation.importance], task.obligation.id)
 
-        feasibility = FeasibilityEngine(
+        engine = FeasibilityEngine(
             exact_search_enabled=self.exact_search_enabled,
             node_limit=self.node_limit,
             timeout_seconds=self.timeout_seconds,
             task_tie_break=priority,
-        ).evaluate(snapshot)
+        )
+        feasibility = engine.evaluate(snapshot)
+        preference_notes: tuple[str, ...] = ()
+        if feasibility.status is FeasibilityStatus.FEASIBLE and snapshot.preference_windows and feasibility.witness:
+            feasibility, preference_notes = self._honour_preferences(engine, snapshot, feasibility)
 
         blocks: list[PlanBlock] = []
         for event in snapshot.events:
@@ -143,7 +157,7 @@ class Planner:
                 ))
 
         plan_id = hashlib.sha256(("plan|" + snapshot.input_hash).encode("utf-8")).hexdigest()[:32]
-        explanations = list(feasibility.reasons)
+        explanations = list(feasibility.reasons) + list(preference_notes)
         for event in snapshot.events:
             if event.attendance_policy is AttendancePolicy.OPTIONAL and snapshot.policy.optional_event_policy in {
                 "OMIT_OPTIONAL", "OMIT_OPTIONAL_AND_PREFERRED"
@@ -166,3 +180,52 @@ class Planner:
             blocks=tuple(sorted(blocks)),
             explanations=tuple(explanations),
         )
+
+    @staticmethod
+    def _honour_preferences(engine, snapshot, feasibility):
+        """Re-place work so that soft preferences hold, relaxing them one by one if needed.
+
+        The hard result's status is never changed: a preference can only pick a
+        different legal witness. Every preference is reported as APPLIED, RELAXED or
+        UNSATISFIABLE (hard facts already break it, e.g. an event fills the evening).
+        """
+        guide = PreferenceGuide(tuple(snapshot.preference_windows))
+        if "EXACT_WITNESS" in feasibility.reasons:
+            # Only the exact search found a legal plan: a constructive placement that is
+            # even more constrained cannot exist, so nothing is honoured — say so.
+            return feasibility, tuple(f"PREFERENCE_RELAXED:{pid}" for pid in guide.preference_ids)
+        hard = engine.hard_occupancy(snapshot)
+        if hard is None:
+            return feasibility, ()
+        occupied, pinned = hard
+        broken = guide.unsatisfiable(occupied, pinned)
+        active = guide.without(broken)
+        relaxed: list[str] = []
+        order = list(relaxation_order(active.windows))
+        witness = None
+        deadline = monotonic() + PREFERENCE_BUDGET_SECONDS
+
+        def admissible(task, candidate, occupancy, placements):
+            if monotonic() > deadline:
+                raise _PreferenceBudgetExhausted
+            return current.admissible(task, candidate, occupancy, placements)
+
+        try:
+            while True:
+                current = active
+                witness = engine.preferred_witness(snapshot, admissible) if active.windows else None
+                if witness is not None or not order:
+                    break
+                dropped = order.pop(0)
+                relaxed.append(dropped)
+                active = active.without([dropped])
+        except _PreferenceBudgetExhausted:
+            # Placement preferences must never make planning slow: keep the hard plan.
+            witness = None
+            relaxed = [pid for pid in guide.preference_ids if pid not in broken]
+        notes = [f"PREFERENCE_UNSATISFIABLE:{pid}" for pid in broken]
+        notes += [f"PREFERENCE_RELAXED:{pid}" for pid in relaxed]
+        if witness is None:
+            return feasibility, tuple(notes)
+        notes += [f"PREFERENCE_APPLIED:{pid}" for pid in active.preference_ids]
+        return replace(feasibility, witness=witness), tuple(notes)

@@ -39,6 +39,7 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
     """Open tasks with the planner's risk and latest-safe-start where available."""
     from student_execution_os.planning import PlanningService, SQLitePlanningStateSource, build_planning_snapshot
     from student_execution_os.planning.model import PlanningPolicy
+    from student_execution_os.planning.preference_store import derived_preference_windows
     from student_execution_os.planning.outlook import SQLitePlanningProfileRepository, off_hours_constraints
 
     source = SQLitePlanningStateSource(repo)
@@ -54,6 +55,7 @@ def task_facts(repo: SQLiteCanonicalRepository, account_id: str, now: datetime) 
             policy=PlanningPolicy(version=f"reminders-v1:{profile.version}:{profile.optional_event_policy}",
                                   optional_event_policy=profile.optional_event_policy),
             derived_constraints=lambda start, end: off_hours_constraints(profile, account_id, start, end),
+            derived_preferences=derived_preference_windows(repo, profile, account_id),
             assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
         risks = {risk.task_id: risk for risk in PlanningService().build(snapshot, now=minute).risks}

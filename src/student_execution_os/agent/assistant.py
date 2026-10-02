@@ -24,10 +24,13 @@ from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
+from .disambiguation import judge
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
 from .read import SQLiteAssistantReadService
 from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
+from student_execution_os.planning.preferences import LIGHT_DAY_WORK_MINUTES, PreferenceKind, preference_from_payload
+
 from .semantic import RelativeToAction, TemporalPrecision, parse_relative_to, resolve_temporal_transform
 
 
@@ -155,6 +158,8 @@ _RELATIVE_FIELDS = {
     AgentCommand.CREATE_TASK.value: ("actionable_from",),
     AgentCommand.CREATE_REMINDER.value: ("remind_at",),
 }
+_PREFERENCE_FIELDS = {"kind", "anchor", "target", "date_from", "date_until", "window_start", "window_end", "minutes",
+                      "reason"}
 _PAYLOAD_KEYS = {
     AgentCommand.CREATE_NOTE.value: {"content"},
     AgentCommand.CREATE_TASK.value: _CREATE_TASK_FIELDS | {_RELATIVE},
@@ -176,6 +181,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.RESCHEDULE.value: {"when", "keep_time", "temporal_transform"} | _TARGET,
     AgentCommand.SNOOZE.value: {"until"} | _TARGET,
     AgentCommand.CREATE_TIME_CONSTRAINT.value: {"type", "starts_at", "ends_at", "reason"},
+    AgentCommand.CREATE_PLANNING_PREFERENCE.value: _PREFERENCE_FIELDS,
     AgentCommand.UNDO_LAST.value: set(),
 }
 _REQUIRED = {
@@ -186,6 +192,7 @@ _REQUIRED = {
     AgentCommand.REFINE_TASK.value: ("obligation_id", "estimated_total_effort_minutes"),
     AgentCommand.SNOOZE.value: ("until",),
     AgentCommand.CREATE_TIME_CONSTRAINT.value: ("type", "starts_at", "ends_at"),
+    AgentCommand.CREATE_PLANNING_PREFERENCE.value: ("kind", "date_from"),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -345,6 +352,13 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if payload.get("reason") is not None and (
                 not isinstance(payload["reason"], str) or len(payload["reason"]) > 5000):
             raise ValidationError("assistant time constraint reason must be text up to 5000 characters")
+    if command == AgentCommand.CREATE_PLANNING_PREFERENCE.value and not unresolved:
+        if payload.get("kind") == PreferenceKind.WORK_LIMIT.value and payload.get("minutes") is None:
+            # «сделай день полегче» without a number: the documented light-day budget.
+            payload["minutes"] = LIGHT_DAY_WORK_MINUTES
+            field_provenance["minutes"] = "MODEL_INFERRED"
+        # The one preference parser (shared with preference.create) decides validity.
+        preference_from_payload("assistant-preview", account_id, payload)
     if payload.get("target_text") is not None and (not isinstance(payload["target_text"], str) or len(payload["target_text"]) > 300):
         raise ValidationError("assistant target_text must be short text")
     if _RELATIVE in payload:
@@ -623,6 +637,7 @@ class SQLiteAssistantService:
                     "retries": self.reliability_trace.retries,
                     "repair_attempted": self.reliability_trace.repair_attempted,
                     "repair_succeeded": self.reliability_trace.repair_succeeded,
+                    "retry_stop": self.reliability_trace.stop_reason,
                 },
                 "message": message,
                 "actions": [],
@@ -656,6 +671,7 @@ class SQLiteAssistantService:
                     "retries": self.reliability_trace.retries,
                     "repair_attempted": self.reliability_trace.repair_attempted,
                     "repair_succeeded": self.reliability_trace.repair_succeeded,
+                    "retry_stop": self.reliability_trace.stop_reason,
                 },
                 "message": message, "actions": actions,
                 "created_at": _iso(now), "expires_at": _iso(now + timedelta(minutes=30)), "mutated_canonical_state": False}
@@ -710,6 +726,20 @@ class SQLiteAssistantService:
                 account_id=self.principal.account_id,
                 dimensions={"provider": provider, "reason": structured_reason},
             )
+        if self.reliability_trace.retries:
+            metrics.record(
+                "assistant_provider_retry_count",
+                self.reliability_trace.retries,
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider},
+            )
+        if self.reliability_trace.stop_reason:
+            # Why a failed provider call was not retried (UNKNOWN_OUTCOME, BUDGET_EXHAUSTED, ...).
+            metrics.record(
+                "assistant_retry_stop_count",
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider, "decision": self.reliability_trace.stop_reason},
+            )
         if self.reliability_trace.repair_attempted:
             metrics.record(
                 "assistant_repair_attempt_count",
@@ -739,9 +769,13 @@ class SQLiteAssistantService:
                  context: dict[str, object]) -> tuple[str, str, list[dict[str, Any]], dict[str, Any] | None]:
         """Ask one provider and validate every action it proposes (nothing is stored)."""
         try:
-            interpretation = self.reliability_policy.run(
-                lambda: provider.interpret(text, context), trace=self.reliability_trace,
-            )
+            if isinstance(provider, DeterministicAssistantParser):
+                # The local parser is not a provider call: no retry, no budget, no attempt.
+                interpretation = provider.interpret(text, context)
+            else:
+                interpretation = self.reliability_policy.run(
+                    lambda: provider.interpret(text, context), trace=self.reliability_trace,
+                )
             return self._validate_interpretation(provider, interpretation, text, context)
         except (ProviderUnavailable, ValidationError) as exc:
             repair = getattr(provider, "repair", None)
@@ -795,6 +829,7 @@ class SQLiteAssistantService:
             derived: tuple[str, ...] = ()
             if isinstance(raw, dict) and isinstance(raw.get("payload"), dict) and _RELATIVE in raw["payload"]:
                 raw, derived = self._relative_from_model(raw, action_ids, dependencies[index], actions)
+            raw, guard = self._guard_target(raw, text, context)
             clean = validate_proposal(raw, self.canonical, self.principal.account_id,
                                       timezone_name=str(context.get("timezone") or "UTC"))
             field_provenance = clean.pop("field_provenance")
@@ -814,6 +849,10 @@ class SQLiteAssistantService:
                 # destructive command merely by emitting a false flag.
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
             })
+            if guard is not None:
+                # The server, not the model, decided this target is not unique.
+                actions[-1]["target_guard"] = guard.reason
+                actions[-1]["target_candidates"] = [c.payload() for c in guard.candidates]
             if derived:
                 actions[-1]["provenance"]["fields"].update({field: "DERIVED" for field in derived})
                 actions[-1]["resolution"] = self._relative_resolution(actions[-1], actions)
@@ -828,6 +867,54 @@ class SQLiteAssistantService:
             )
         self._attach_conflicts(actions)
         return provider.name, assistant_message, actions, None
+
+    def _guard_target(self, raw: object, text: str, context: dict[str, object]):
+        """Server authority over the model's target pick (agent.disambiguation).
+
+        Returns the (possibly unresolved) raw action and the ambiguity verdict, if any.
+        A pick outside the authorized context is rejected like an invented id.
+        """
+        if not isinstance(raw, dict) or raw.get("command") not in _TARGET_KINDS:
+            return raw, None
+        payload = raw.get("payload")
+        unresolved = raw.get("unresolved_fields")
+        if not isinstance(payload, dict) or not isinstance(unresolved, list) or _target_unresolved(unresolved):
+            return raw, None
+        chosen = payload.get("reminder_id") or payload.get("obligation_id")
+        if not chosen or (payload.get("reminder_id") and payload.get("obligation_id")):
+            return raw, None  # validate_proposal rejects these shapes
+        destination = None
+        for field in ("when", "until"):
+            if isinstance(payload.get(field), str):
+                try:
+                    destination = _instant(payload[field], field)
+                except ValidationError:
+                    destination = None
+                break
+        try:
+            zone = ZoneInfo(str(context.get("timezone") or "UTC"))
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        verdict = judge(
+            chosen_id=str(chosen), allowed_kinds=_TARGET_KINDS[raw["command"]], text=text,
+            target_text=payload.get("target_text"), context=context,
+            now=self.canonical.clock.now(), zone=zone, destination=destination,
+        )
+        if verdict.decision == "OUT_OF_SCOPE":
+            raise ValidationError("assistant proposal references an item outside its authorized context")
+        if verdict.decision == "CONTINUE":
+            return raw, None
+        unresolved_payload = {k: v for k, v in payload.items() if k not in {"obligation_id", "reminder_id"}}
+        provenance = raw.get("field_provenance")
+        guarded = {
+            **raw,
+            "payload": unresolved_payload,
+            "unresolved_fields": [*unresolved, "target"],
+            "expected_version": None,
+        }
+        if isinstance(provenance, dict):
+            guarded["field_provenance"] = {k: v for k, v in provenance.items() if k in unresolved_payload}
+        return guarded, verdict
 
     @staticmethod
     def _action_dependencies(raw_actions: list[object]) -> tuple[list[str], list[list[str]]]:
@@ -1411,6 +1498,8 @@ class SQLiteAssistantService:
             return "reminder.create", f"reminder-{uuid4()}", fields | ({"obligation_id": data["obligation_id"]} if data.get("obligation_id") else {})
         if command is AgentCommand.CREATE_TIME_CONSTRAINT:
             return "constraint.create", f"constraint-{uuid4()}", fields
+        if command is AgentCommand.CREATE_PLANNING_PREFERENCE:
+            return "preference.create", f"preference-{uuid4()}", fields
         if command is AgentCommand.UPDATE_TASK:
             return "task.update", entity, fields
         if command is AgentCommand.UPDATE_EVENT:
@@ -1516,7 +1605,8 @@ class SQLiteAssistantService:
 
     # Where each inverse's entity keeps its optimistic version.
     _VERSION_TABLES = {"reminder": ("reminders", "id"), "note": ("notes", "id"),
-                       "constraint": ("user_time_constraints", "id")}
+                       "constraint": ("user_time_constraints", "id"),
+                       "preference": ("planning_preferences", "id")}
 
     def _current_version(self, operation: str, entity_id: str) -> int | None:
         table, key = self._VERSION_TABLES.get(operation.split(".", 1)[0], ("obligations", "id"))
@@ -1533,6 +1623,7 @@ class SQLiteAssistantService:
             AgentCommand.CREATE_TASK.value: "task.delete", AgentCommand.CREATE_EVENT.value: "event.delete",
             AgentCommand.CREATE_REMINDER.value: "reminder.delete", AgentCommand.CREATE_NOTE.value: "note.delete",
             AgentCommand.CREATE_TIME_CONSTRAINT.value: "constraint.delete",
+            AgentCommand.CREATE_PLANNING_PREFERENCE.value: "preference.delete",
         }.get(action["command"])
         return None if operation is None else {"operation": operation, "payload": {}}
 

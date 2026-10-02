@@ -15,6 +15,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import io.github.misha1302.seos.storage.SessionCredentials;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.After;
@@ -59,6 +60,7 @@ public class WakeAlarmDeviceTest {
         AlarmStore.setOwner(context, null);
         AlarmScheduler.rescheduleAll(context);
         context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE).edit().clear().commit();
+        SessionCredentials.of(context).clear();
     }
 
     private static void shell(String command) throws IOException {
@@ -121,8 +123,8 @@ public class WakeAlarmDeviceTest {
         withTest.add(local);
         AlarmStore.save(context, withTest);
 
-        // Logout: credentials go first, then the page clears the alarms.
-        context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE).edit().remove("seos.token").commit();
+        // Logout: credentials go first (secure and legacy locations), then the page clears the alarms.
+        SessionCredentials.of(context).clear();
         AlarmStore.clearAccountAlarms(context);
         assertNull(AlarmStore.get(context, "reminder-account-a"));
         assertTrue("the local test alarm stays", AlarmStore.get(context, "seos-test-alarm") != null);

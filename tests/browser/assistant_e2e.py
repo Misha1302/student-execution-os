@@ -66,6 +66,16 @@ class BrowserFixtureProvider:
                                          'relative_to': {'action': 'move', 'anchor': 'END', 'offset_minutes': 0}},
                         client_ref='report', depends_on=['move']),
             ]}
+        if text.startswith('Перенеси созвон'):
+            # The model confidently picks one of two identical items; the server must not trust it.
+            first = next(item for item in context['obligations'] if item['id'] == 'event-call-noon')
+            return {'message': 'move', 'actions': [_action(
+                'RESCHEDULE', {'obligation_id': first['id'], 'when': (TODAY + timedelta(hours=21)).isoformat(),
+                               'target_text': 'созвон'}, first['version'])]}
+        if text.startswith('Оставь вечером'):
+            return {'message': 'preference', 'actions': [_action('CREATE_PLANNING_PREFERENCE', {
+                'kind': 'KEEP_FREE', 'window_start': '18:00', 'window_end': '23:00', 'minutes': 60,
+                'date_from': TODAY.date().isoformat(), 'date_until': TODAY.date().isoformat()})]}
         raise ValueError('fixture does not understand this text')
 
 
@@ -84,7 +94,8 @@ class AssistantBrowserTest(unittest.TestCase):
             'ends_at': (TODAY + timedelta(hours=start + 1)).isoformat()}}
             for index, (entity, title, start) in enumerate((
                 ('event-ariadne', 'Встреча с Ариадной', 20), ('event-dima', 'Встреча с Димой', 15),
-                ('event-seminar', 'Семинар', 19), ('event-lecture', 'Пара по физике', 11)))]
+                ('event-seminar', 'Семинар', 19), ('event-lecture', 'Пара по физике', 11),
+                ('event-call-noon', 'Созвон', 12), ('event-call-four', 'Созвон', 16)))]
         seeded = cls.http.post('/api/v1/sync', headers=cls.headers, json={'operations': operations})
         seeded.raise_for_status()
         assert all(result['status'] == 'APPLIED' for result in seeded.json()['results']), seeded.text
@@ -189,6 +200,42 @@ class AssistantBrowserTest(unittest.TestCase):
         expect(page.locator('.toast').filter(has_text='Отменено')).to_be_visible()
         self.assertEqual(self.starts('event-dima'), '28 15:00')
         self.assertEqual(self.rows("SELECT count(*) FROM obligations WHERE title='Отчёт' AND lifecycle_status='ACTIVE'")[0][0], 0)
+        self.assertEqual(self.errors, [])
+
+    def test_two_identical_items_become_a_choice_with_times(self):
+        page = self.page()
+        sheet = self.say(page, 'Перенеси созвон на девять вечера')
+        card = sheet.locator('.command-card')
+        # The local card comes first and is then replaced by the server's: wait for the server
+        # card (only it can be refined), so the choice tested is the server's target guard and
+        # the apply is the server's (committed before the sheet closes).
+        expect(card.locator('[data-refine]')).to_be_visible()
+        chips = card.locator('[data-pick]')
+        expect(chips).to_have_count(2)
+        expect(chips.nth(0)).to_contain_text('Созвон')
+        expect(card.locator('[data-run]')).to_be_disabled()  # nothing moves until the user picks
+        card.locator('[data-pid="event-call-four"]').click()
+        sheet.locator('.command-card [data-run]').click()
+        sheet.wait_for(state='detached')
+        self.assertEqual(self.starts('event-call-four'), '28 21:00')
+        self.assertEqual(self.starts('event-call-noon'), '28 12:00')
+        self.assertEqual(self.errors, [])
+
+    def test_soft_planning_wish_is_stored_shown_on_the_plan_and_removable(self):
+        page = self.page()
+        sheet = self.say(page, 'Оставь вечером хотя бы час свободным')
+        card = sheet.locator('.command-card')
+        expect(card).to_contain_text('Пожелание к плану')
+        card.locator('[data-run]').click()
+        sheet.wait_for(state='detached')
+        stored = self.rows("SELECT id,kind,minutes FROM planning_preferences")
+        self.assertEqual([(kind, minutes) for _id, kind, minutes in stored], [('KEEP_FREE', 60)])
+        page.goto(self.origin + '/#/plan')
+        section = page.locator('[data-plan-preferences]')
+        expect(section).to_contain_text('Оставить свободными хотя бы')
+        section.locator('[data-action="pref-remove"]').click()
+        expect(page.locator('[data-plan-preferences]')).to_have_count(0, timeout=10000)
+        self.assertEqual(self.rows('SELECT count(*) FROM planning_preferences')[0][0], 0)
         self.assertEqual(self.errors, [])
 
 

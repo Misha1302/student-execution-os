@@ -21,6 +21,8 @@ class PlanningCommandHandler(CommandHandler):
             "constraint.create": self.constraint_create,
             "constraint.update": self.constraint_update,
             "constraint.delete": self.constraint_delete,
+            "preference.create": self.preference_create,
+            "preference.delete": self.preference_delete,
             "intent.set": self.intent_set,
             "intent.close": self.intent_close,
             "calibration.set": self.calibration_set,
@@ -150,3 +152,34 @@ class PlanningCommandHandler(CommandHandler):
             actor=self.actor,
         )
         return Outcome(APPLIED, {"kind": "USER_TIME_CONSTRAINT", "id": constraint_id, "deleted": True})
+
+    def _local_today(self):
+        from zoneinfo import ZoneInfo
+        from student_execution_os.planning.outlook import SQLitePlanningProfileRepository
+        zone = ZoneInfo(SQLitePlanningProfileRepository(self.repo).get(self.account_id).timezone_name)
+        return self.now.astimezone(zone).date()
+
+    def preference_create(self, preference_id: str, payload: dict[str, Any]) -> Outcome:
+        from student_execution_os.planning.preference_store import SQLitePlanningPreferenceRepository
+        from student_execution_os.planning.preferences import preference_from_payload
+        if not _ID.match(preference_id):
+            raise ValidationError("preference id must be a client-generated identifier (8-128 safe characters)")
+        store = SQLitePlanningPreferenceRepository(self.repo)
+        owner = store.owner_of(preference_id)
+        if owner is not None:
+            if owner != self.account_id:
+                raise ValidationError("preference id is already in use")
+            return Outcome(NOOP, store.get(self.account_id, preference_id).payload(), "ALREADY_EXISTS")
+        preference = preference_from_payload(preference_id, self.account_id, payload)
+        created = store.create(preference, today=self._local_today(), actor=self.actor)
+        return Outcome(APPLIED, created.payload())
+
+    def preference_delete(self, preference_id: str, payload: dict[str, Any]) -> Outcome:
+        from student_execution_os.planning.preference_store import SQLitePlanningPreferenceRepository
+        if set(payload) - {"expected_version"}:
+            raise ValidationError("preference.delete only accepts expected_version")
+        store = SQLitePlanningPreferenceRepository(self.repo)
+        current = store.get(self.account_id, preference_id)
+        expected = int(payload.get("expected_version") or current.version)
+        store.delete(self.account_id, preference_id, expected_version=expected, actor=self.actor)
+        return Outcome(APPLIED, {"kind": "PLANNING_PREFERENCE", "id": preference_id, "deleted": True})

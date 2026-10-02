@@ -205,6 +205,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "assistant_batches",
     "assistant_apply_records",
     "assistant_action_history",
+    "planning_preferences",
     "attachment_blobs",
     "attachment_links",
     "saved_task_views",

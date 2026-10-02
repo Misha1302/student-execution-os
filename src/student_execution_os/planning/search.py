@@ -37,7 +37,9 @@ class BoundedSearch:
                     floor = end
         return floor
 
-    def greedy(self, snapshot, tasks, deps, deadlines, occupied, pinned_by_task):
+    def greedy(self, snapshot, tasks, deps, deadlines, occupied, pinned_by_task, admissible=None):
+        """Earliest-legal-placement construction. ``admissible`` (soft preferences) may only
+        skip candidates; with ``None`` the construction is the plain hard-model greedy."""
         placements = {key: list(value) for key, value in pinned_by_task.items()}
         completion = {
             task_id: max(placement.ends_at for placement in task_placements)
@@ -66,10 +68,11 @@ class BoundedSearch:
             deadline, boundary = deadlines[task_id]
             chosen = []
             for duration in self.greedy_chunks(task, remaining):
-                candidate = next(
-                    self.candidate_blocks(task, duration, earliest, deadline, boundary, occupancy),
-                    None,
-                )
+                candidates = self.candidate_blocks(task, duration, earliest, deadline, boundary, occupancy)
+                if admissible is not None:
+                    placed = [p for items in placements.values() for p in items] + chosen
+                    candidates = (c for c in candidates if admissible(task, c, occupancy, placed))
+                candidate = next(candidates, None)
                 if candidate is None:
                     return None
                 chosen.append(candidate)

@@ -19,7 +19,7 @@ export const UPSTREAM_PATH = "/chat/completions";
 export const MAX_BODY_BYTES = 1 * 1024 * 1024;
 export const RELAY_ERROR_HEADER = "X-SEOS-Relay-Error";
 // Only these upstream response headers are passed back; everything else is dropped.
-const FORWARDED_RESPONSE_HEADERS = ["content-type", "retry-after", "x-request-id"];
+const FORWARDED_RESPONSE_HEADERS = ["content-type", "retry-after", "x-request-id", "x-should-retry"];
 const MIN_TOKEN_LENGTH = 32;
 
 function relayError(status, code, extra = {}) {

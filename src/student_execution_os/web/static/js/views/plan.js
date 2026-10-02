@@ -1,7 +1,9 @@
-import { load } from '../store.js';
+import { load, invalidate } from '../store.js';
 import { t, code, fmtTime, fmtDay, fmtDuration, fmtDateTime, dayKey, now, setServerNow } from '../i18n.js';
-import { esc, icon, chip, kv, empty, openSheet, chipGroup } from '../ui.js';
+import { esc, icon, chip, kv, empty, openSheet, chipGroup, toast, errorMessage } from '../ui.js';
 import { heroStatus, explainReason } from './today.js';
+import { describePreference, preferenceStatus, deletePreferenceOperation } from '../preferences.js';
+import { queueOperation } from '../sync.js';
 import { previewPlanControl, pinOperation, avoidOperation, moveConstraintOperation, deleteConstraintOperation, moveWorkSheet, shiftItem, controlSummary } from '../plan-control.js';
 
 const BLOCK_CLASS = {
@@ -139,6 +141,23 @@ function dayBounds(key) {
   return [new Date(y, m - 1, d), new Date(y, m - 1, d + 1)];
 }
 
+function preferencesSection(plan) {
+  const list = plan.preferences || [];
+  if (!list.length) return '';
+  return `<section class="section" data-plan-preferences>
+    <div class="section-head"><div><h3>${esc(t('plan.preferences'))}</h3></div></div>
+    <p class="help pad">${esc(t('plan.preferencesHelp'))}</p>
+    <div class="list">${list.map((p) => {
+      const status = preferenceStatus(plan, p.id);
+      return `<article class="row">
+        <span class="row-main"><strong>${esc(describePreference(p))}</strong>${p.reason ? `<small>${esc(p.reason)}</small>` : ''}</span>
+        ${status ? chip(status, plan.preference_status[p.id] === 'APPLIED' ? '' : 'warn') : ''}
+        <button type="button" class="button ghost" data-action="pref-remove" data-id="${esc(p.id)}">${esc(t('plan.removePreference'))}</button>
+      </article>`;
+    }).join('')}</div>
+  </section>`;
+}
+
 function moveDay(ctx, step) {
   const days = ctx.view._days || [];
   const next = days[days.indexOf(selectedDay) + step];
@@ -155,15 +174,16 @@ export default {
     const range = query?.step;
     if (range === 'week' || range === 'month') return load(`/api/v1/outlook?range=${range}`, { fresh });
     const reminders = (await load('/api/v1/reminders', { fresh }).catch(() => ({ data: [] }))).data || [];
+    const preferences = (await load('/api/v1/plan/preferences', { fresh }).catch(() => ({ data: [] }))).data || [];
     try {
       const result = await load('/api/v1/plan/agenda?days=7', { fresh });
       setServerNow(result.data.now);
-      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: result.data.days, reminders } };
+      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: result.data.days, reminders, preferences } };
     } catch (err) {
       // Offline with only Today cached (or an older server): show what Today knows.
       const result = await load('/api/v1/today', { fresh });
       setServerNow(result.data.now);
-      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: 2, reminders } };
+      return { ...result, data: { ...result.data.plan, tasks: result.data.tasks || [], agendaDays: 2, reminders, preferences } };
     }
   },
   render(plan) {
@@ -216,7 +236,8 @@ export default {
         </div>
         <div class="agenda mobile-agenda" data-swipe-days>${rows || empty(t('plan.emptyDay'), t('plan.emptyDayHint'), 'plan')}${!nowPlaced ? `<div class="now-line"><span>${esc(t('plan.now', { time: fmtTime(cur) }))}</span></div>` : ''}</div>
         <p class="help pad">${esc(t('plan.swipeHint'))}</p>
-      </section>`;
+      </section>
+      ${preferencesSection(plan)}`;
   },
   mount(root, _data, ctx) {
     root.addEventListener('chipchange', (e) => {
@@ -270,6 +291,19 @@ export default {
       if (el.dataset.dragged) return;
       const item = ctx.view._visible?.[Number(el.dataset.index)];
       if (item) openItem(item);
+    },
+    async 'pref-remove'(el, ctx) {
+      const preference = (ctx.data.preferences || []).find((p) => p.id === el.dataset.id);
+      if (!preference) return;
+      const op = deletePreferenceOperation(preference);
+      try {
+        await queueOperation(op.type, op.entity_id, op.payload).durable;
+      } catch (err) {
+        toast(errorMessage(err), { error: true });
+        return;
+      }
+      invalidate();
+      ctx.refresh();
     },
     'plan-prev'(_el, ctx) { moveDay(ctx, -1); },
     'plan-next'(_el, ctx) { moveDay(ctx, 1); },

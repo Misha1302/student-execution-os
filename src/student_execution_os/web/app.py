@@ -320,6 +320,10 @@ def create_app(
     async def plan_constraints(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.planning.plan_constraints()
 
+    @app.get("/api/v1/plan/preferences")
+    async def plan_preferences(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.planning.plan_preferences()
+
     @app.post("/api/v1/plan/control/preview")
     async def plan_control_preview(payload: dict[str, Any] = Body(...), service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.planning.plan_control_preview(payload)

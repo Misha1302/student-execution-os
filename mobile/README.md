@@ -85,8 +85,9 @@ its install confirmation; the app does not attempt silent installation.
 - `resources/*.svg` + `scripts/icons.sh` — icon/splash artwork (needs `rsvg-convert` and
   ImageMagick); the generated PNGs are committed.
 
-Native features used through `window.Capacitor.Plugins` (no bundler needed): Preferences
-(session token/server storage), App (Android back button, resume refresh), StatusBar,
+Native features used through `window.Capacitor.Plugins` (no bundler needed): SeosStorage (offline queue in
+SQLite, session token in the Android Keystore), Preferences
+(server URL and user), App (Android back button, resume refresh), StatusBar,
 SplashScreen, Haptics, Filesystem + Share (account export).
 PushNotifications registers/rotates the FCM token with the authenticated server and
 opens Task/Today deep links; SpeechRecognition supplies text only and then uses the
@@ -119,14 +120,37 @@ tokens and pending operations are never reused across server scopes.
 
 Device storage goes through three roles in `web/static/js/device-storage.js`:
 
-| Role | Used by | Current backing (browser and Android) |
-| --- | --- | --- |
-| `OfflineOperationStore` | `sync.js` | WebView `localStorage`, `seos.ops.<server>\|<account>` |
-| `ReadModelCache` | `store.js` | WebView `localStorage`, `seos.cache.<path>` (scope-checked on read) |
-| `CredentialStore` | `api.js` | Capacitor Preferences on Android, `localStorage` in the browser |
+| Role | Used by | Browser | Android |
+| --- | --- | --- | --- |
+| `OfflineOperationStore` | `sync.js` | `localStorage`, `seos.ops.<server>\|<account>` | native SQLite (`seos_offline.db`, `storage/OfflineQueueDb.java`), committed before a change is reported as saved; the `localStorage` copy is still written as a rollback mirror |
+| `ReadModelCache` | `store.js` | `localStorage`, `seos.cache.<path>` (scope-checked on read) | same (disposable by design) |
+| `CredentialStore` | `api.js` | `localStorage` | bearer token: AES-256-GCM with a non-exportable Android Keystore key (`storage/KeystoreVault.java`); server URL and user: Capacitor Preferences (not secrets) |
 
-The keys are unchanged from earlier releases, so updating the app needs no data migration.
-Capacitor Preferences is app-private SharedPreferences, **not** an Android Keystore-backed
-secret store, and the queue is not yet in a native database. Moving the queue to native
-SQLite and the bearer token to keystore-backed storage is planned follow-up work; such a
-change must import the existing keys, verify the copy, and only then remove the old entries.
+`SeosStorage` (`storage/SeosStoragePlugin.java`) is the bridge; `SessionCredentials` is the one
+owner of the token, also for the background workers (alarm sync, notification buttons).
+
+Migration from earlier releases runs at every start (`initDeviceStorage()`), before the session
+is read:
+
+- token: read the plain `CapacitorStorage/seos.token` → write it to the Keystore vault → read it
+  back and compare → mark migrated → only then remove the plain copy.
+- a failed migration (`SECURE_STORE_UNAVAILABLE` / `VERIFY_FAILED`) is reported and keeps the
+  existing plain token where it is: that session keeps working from the legacy copy (it is not
+  silently destroyed), and every later start retries the migration. Until one succeeds, that
+  pre-upgrade token remains in plain app storage.
+- a new credential (any login after the upgrade) is never persisted in plain storage. If the
+  Keystore cannot store it, it is kept in memory for that run only, and any legacy plain copy is
+  removed so an older session cannot come back after a restart.
+- queue: every `seos.ops.*` list is imported into SQLite by `op_id` (idempotent: a re-run or a
+  run interrupted half-way never duplicates), verified, and only then marked done. op_ids are
+  never rewritten, so the server's exactly-once replay still applies.
+- rollback: Android refuses a lower versionCode, so a client rollback is a newer build from
+  older source. That build still finds its pending operations in the `localStorage` mirror (a
+  resend is a server-side replay), and finds no plain token, so the user signs in again. A
+  token it writes later is newer than the vault copy and wins on the next upgrade; its sign-out
+  (user record removed) also signs out the vault copy.
+
+Evidence: `tests/js/native_storage_cases.mjs` (web side: migration, restart, durable commit,
+lost response, account/server isolation, logout, Keystore failure), `storage/*Test.java`
+(JVM unit tests), `androidTest/.../storage/NativeStorageDeviceTest.java` (real SQLite and Keystore
+on an emulator).

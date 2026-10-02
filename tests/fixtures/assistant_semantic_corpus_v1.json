@@ -202,6 +202,61 @@
         "text": "Переведи деньги преподавателю",
         "expected": {"output_subset": {"intent": "UNSUPPORTED"}}
       }]
+    },
+    {
+      "id": "ru-target-explicit-date",
+      "capability": "target_ambiguity",
+      "locale": "ru",
+      "context": {"obligations": [{"id": "event-a", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 1, "starts_at": "2026-10-02T18:00:00+03:00"}, {"id": "event-b", "kind": "EVENT", "title": "Встреча с Ариадной", "version": 2, "starts_at": "2026-10-04T16:00:00+03:00"}]},
+      "turns": [{
+        "text": "Воскресную встречу с Ариадной перенеси на семь вечера",
+        "expected": {"kind": "ACTION", "command": "RESCHEDULE", "target": {"obligation_id": "event-b"}}
+      }]
+    },
+    {
+      "id": "ru-pref-evening-free-hour",
+      "capability": "planner_preference",
+      "locale": "ru",
+      "turns": [{
+        "text": "Оставь вечером хотя бы час свободным",
+        "expected": {"kind": "ACTION", "command": "CREATE_PLANNING_PREFERENCE", "payload_subset": {"kind": "KEEP_FREE", "minutes": 60}}
+      }]
+    },
+    {
+      "id": "ru-pref-lighter-day",
+      "capability": "planner_preference",
+      "locale": "ru",
+      "turns": [{
+        "text": "Завтра сделай день полегче",
+        "expected": {"kind": "ACTION", "command": "CREATE_PLANNING_PREFERENCE", "payload_subset": {"kind": "WORK_LIMIT"}}
+      }]
+    },
+    {
+      "id": "ru-pref-nothing-hard-after-waking",
+      "capability": "planner_preference",
+      "locale": "ru",
+      "turns": [{
+        "text": "Не ставь сложное сразу после подъёма",
+        "expected": {"kind": "ACTION", "command": "CREATE_PLANNING_PREFERENCE", "payload_subset": {"kind": "AVOID_WORK", "anchor": "WAKE", "target": "DEMANDING"}}
+      }]
+    },
+    {
+      "id": "ru-pref-rest-after-class",
+      "capability": "planner_preference",
+      "locale": "ru",
+      "turns": [{
+        "text": "После пары дай мне полчаса передохнуть",
+        "expected": {"kind": "ACTION", "command": "CREATE_PLANNING_PREFERENCE", "payload_subset": {"kind": "REST_AFTER_EVENTS", "minutes": 30}}
+      }]
+    },
+    {
+      "id": "ru-pref-study-cutoff",
+      "capability": "planner_preference",
+      "locale": "ru",
+      "turns": [{
+        "text": "Учёбу желательно закончить до девяти",
+        "expected": {"kind": "ACTION", "command": "CREATE_PLANNING_PREFERENCE", "payload_subset": {"kind": "AVOID_WORK", "target": "STUDY", "window_start": "21:00"}}
+      }]
     }
   ]
 }

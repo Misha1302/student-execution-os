@@ -1,0 +1,46 @@
+# Host-level Cloudflare WARP egress for allowlisted LLM provider hosts (Groq).
+#
+# A Compose project of its own, separate from the application, so an application
+# release or rollback (`--remove-orphans`) never stops it. The application joins its
+# internal `egress` network through deploy/docker-compose.warp-egress.yml.
+#
+#   docker volume create seos-warp-state          # once per host; keeps the WARP registration
+#   docker compose -f deploy/llm-egress/warp/compose.yml up -d --build
+#
+# The proxy (SOCKS5 and HTTP CONNECT on :40001) publishes no host port and is reachable
+# only from containers attached to `seos-g9-egress_egress` (internal: no route out except
+# through WARP). It sees TLS-encrypted traffic only. The names are those already in use
+# on production, so adopting this file changes no network, volume or container name.
+name: seos-g9-egress
+
+services:
+  warp:
+    build:
+      context: .
+    container_name: seos-groq-warp
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - warp_state:/var/lib/cloudflare-warp
+    networks:
+      egress:
+      uplink:
+    healthcheck:
+      test: ["CMD-SHELL", "warp-cli --accept-tos status | grep -q 'Status update: Connected' && curl --max-time 10 -fsS --socks5-hostname 127.0.0.1:40001 https://www.cloudflare.com/cdn-cgi/trace | grep -q '^warp=on$'"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  egress:
+    internal: true
+  uplink:
+
+volumes:
+  warp_state:
+    external: true
+    name: seos-warp-state

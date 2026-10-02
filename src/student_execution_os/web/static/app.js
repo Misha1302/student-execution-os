@@ -1,4 +1,5 @@
 import { api, session, restoreSession, refreshHealth, onUnauthenticated } from './js/api.js';
+import { initDeviceStorage } from './js/device-storage.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
 import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, prefGet, onAppLink, alarmsSupported } from './js/native.js';
@@ -452,6 +453,9 @@ function openRoute(path) {
 async function boot() {
   applyTheme();
   relabel();
+  // Native storage first: the Keystore credential migration and the queue import must
+  // finish before the session and the offline queue are read.
+  await initDeviceStorage();
   await restoreSession();
   $('#back-button').addEventListener('click', handleBack);
   $('#refresh-button').addEventListener('click', () => render({ fresh: true }));

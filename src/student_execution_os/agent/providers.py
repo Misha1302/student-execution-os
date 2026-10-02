@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from pathlib import Path
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -35,7 +36,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|UNDO_LAST","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
+{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
@@ -53,8 +54,23 @@ write SQL or include an identifier that is absent from context.
 Planner-control language becomes canonical constraints, never plan blocks:
   CREATE_TIME_CONSTRAINT {type:"UNAVAILABLE"|"FIXED_PERSONAL_BLOCK",starts_at,ends_at,reason?}.
 Use it for explicit protected/unavailable windows such as "завтра ничего до 12" or
-"оставь этот час свободным". Do not use it for vague preferences that need a new
-domain concept, and never claim that a derived plan block was edited.
+"оставь этот час свободным" (a fixed, known interval).
+Soft wishes about how the plan should look become a planning preference (the planner
+honours it when the hard schedule allows and reports when it cannot):
+  CREATE_PLANNING_PREFERENCE {kind,date_from:"YYYY-MM-DD",date_until?:"YYYY-MM-DD"|null,
+    anchor?:"CLOCK"|"WAKE",target?,window_start?:"HH:MM",window_end?:"HH:MM",minutes?,reason?}
+  kind KEEP_FREE: keep at least `minutes` contiguous free inside window_start-window_end
+    ("вечером" = 18:00-23:00 unless the user says otherwise).
+  kind WORK_LIMIT: plan at most `minutes` of work that local day; omit minutes for a
+    plain "полегче" day (the server uses its light-day budget).
+  kind AVOID_WORK: no work of target ALL|DEMANDING|STUDY in window_start-window_end
+    (window_end omitted = until the end of the day); with anchor WAKE use minutes
+    (the window then starts when the user's day starts) and no clock times.
+  kind REST_AFTER_EVENTS: no work for `minutes` after each event of target
+    CLASSES|ALL_EVENTS ("после пары" = CLASSES).
+  date_from/date_until are local dates; one day = both equal; "каждый день"/"обычно" =
+  date_from today and date_until null. Do not encode preferences as constraints, and
+  never claim that a derived plan block was edited.
 UNDO_LAST payload is {}. Use it only for an explicit request to undo the most recent
 Assistant change; the server reverts every reversible action of that last apply (a created
 item is removed). It checks each item's current version before applying a stored inverse;
@@ -115,8 +131,10 @@ reminder_id (from context.reminders) and expected_version (that item's "version"
   COMPLETE_OBLIGATION {obligation_id|reminder_id}; CANCEL_OBLIGATION {obligation_id|reminder_id}
     ("не буду делать", "отмени"); ARCHIVE_OBLIGATION {obligation_id} ("в архив")
   REFINE_TASK {obligation_id, estimated_total_effort_minutes}
-  When you cannot tell which item is meant, set payload.target_text to the words the user
-  used and list "target" in unresolved_fields; the user will pick it.
+  Always set payload.target_text to the user's own words for the item ("встречу с Ариадной").
+  When you cannot tell which item is meant, also list "target" in unresolved_fields; the
+  user will pick it. The server re-checks every pick: when several items fit the user's
+  words equally, it asks the user instead of trusting your choice.
 COMPLETE_OBLIGATION, CANCEL_OBLIGATION and ARCHIVE_OBLIGATION always set requires_confirmation=true.
 Resolve relative dates and times ("в пятницу к шести", "завтра вечером") against
 context.now in context.timezone and output instants with that zone's offset. "к"/"до"/
@@ -147,7 +165,7 @@ _TOP_LEVEL_SCHEMA = {
                             "CREATE_TASK", "CREATE_EVENT", "CREATE_REMINDER", "CREATE_NOTE", "UPDATE_TASK",
                             "UPDATE_EVENT", "UPDATE_REMINDER", "RESCHEDULE", "SNOOZE", "LOG_PROGRESS",
                             "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
-                            "CREATE_TIME_CONSTRAINT", "UNDO_LAST",
+                            "CREATE_TIME_CONSTRAINT", "CREATE_PLANNING_PREFERENCE", "UNDO_LAST",
                         )]},
                         "payload": {"type": "object", "additionalProperties": True},
                         "client_ref": {"type": "string", "maxLength": 64},
@@ -197,17 +215,28 @@ class ProviderUnavailable(ValidationError):
     ========== =============================================================
 
     ``retry_after`` is the provider's Retry-After in whole seconds (429/503), if any.
+    ``delivery`` / ``should_retry`` feed the retry policy (agent.reliability).
     ``route`` is the egress path taken (DIRECT, DIRECT_PINNED, PROXY, RELAY) or None
     when the request never left the server.
     """
 
     def __init__(self, message: str, reason: str = "NETWORK", http_status: int | None = None,
-                 *, retry_after: int | None = None, route: str | None = None) -> None:
+                 *, retry_after: int | None = None, route: str | None = None,
+                 delivery: str | None = None, should_retry: bool | None = None) -> None:
         super().__init__(message)
         self.reason = reason
         self.http_status = http_status
         self.retry_after = retry_after
         self.route = route
+        # Whether the provider can have started (and billed) a generation:
+        #   NOT_SENT  the request never reached the provider (connect/pool/write failure)
+        #   ANSWERED  the provider itself answered with an error status
+        #   UNKNOWN   the request was delivered but no answer arrived (read timeout,
+        #             dropped connection, a gateway 502/504): a generation may have run
+        #   None      the request was never attempted (local refusal)
+        self.delivery = delivery
+        # The provider's explicit retry advice (``x-should-retry``), when it gave one.
+        self.should_retry = should_retry
 
 
 def _error_fields(response: httpx.Response) -> tuple[bool, str]:
@@ -496,11 +525,36 @@ def _log_request(name: str, route: str | None, started: float, result: str, http
              round((time.monotonic() - started) * 1000))
 
 
+# Monotonic deadline of the current Assistant operation (agent.reliability sets it), so
+# no single provider call can outlive the operation's total latency budget.
+CALL_DEADLINE: ContextVar[float | None] = ContextVar("seos_llm_call_deadline", default=None)
+
+
+def _bounded_timeout(timeout: float) -> float:
+    deadline = CALL_DEADLINE.get()
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ProviderUnavailable("the assistant latency budget is exhausted", "TIMEOUT", delivery="NOT_SENT")
+    return min(timeout, remaining)
+
+
+def _should_retry(response: httpx.Response) -> bool | None:
+    raw = (response.headers.get("x-should-retry") or "").strip().lower()
+    return True if raw == "true" else False if raw == "false" else None
+
+
+# Gateway answers that do not tell whether the provider generated anything.
+_UNKNOWN_OUTCOME_STATUSES = {502, 504}
+
+
 def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: float, name: str,
           public_only: bool = False, custom_address: bool = False,
           observed: dict[str, Any] | None = None) -> httpx.Response:
     started = time.monotonic()
     route: str | None = None
+    timeout = _bounded_timeout(timeout)
     try:
         response, route, relayed = _send(url, headers=headers, body=body, timeout=timeout, name=name,
                                          public_only=public_only)
@@ -514,6 +568,8 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
                 f"the LLM egress relay for assistant provider {name} answered HTTP {response.status_code}",
                 _RELAY_ERRORS.get(relay_error.strip().lower(), "REQUEST"),
                 response.status_code, route=route,
+                # The relay answered by itself unless it lost the upstream mid-request.
+                delivery="UNKNOWN" if response.status_code in _UNKNOWN_OUTCOME_STATUSES else "NOT_SENT",
             )
         if response.status_code >= 300:
             # The provider's body is not echoed: some providers quote part of the key.
@@ -521,6 +577,8 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
                 f"assistant provider {name} answered HTTP {response.status_code}",
                 _reason(response.status_code, response, custom_address=custom_address),
                 response.status_code, retry_after=_retry_after(response), route=route,
+                delivery="UNKNOWN" if response.status_code in _UNKNOWN_OUTCOME_STATUSES else "ANSWERED",
+                should_retry=_should_retry(response),
             )
     except ProviderUnavailable as exc:
         if exc.route is None:
@@ -573,17 +631,25 @@ def _send(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
         else:
             response = httpx.post(url, headers=headers, json=body, timeout=timeout,
                                   follow_redirects=False, trust_env=False)
-    except httpx.ConnectTimeout:
+    except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.WriteTimeout):
+        # The request was never (completely) delivered: no generation can have started.
         raise ProviderUnavailable(f"assistant provider {name} could not be reached in time", "NETWORK",
-                                  route=route) from None
+                                  route=route, delivery="NOT_SENT") from None
     except httpx.TimeoutException:
-        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "TIMEOUT", route=route) from None
+        # Read timeout: the provider has the request and may be generating (and billing).
+        raise ProviderUnavailable(f"assistant provider {name} did not answer in time", "TIMEOUT", route=route,
+                                  delivery="UNKNOWN") from None
     except (httpx.LocalProtocolError, httpx.UnsupportedProtocol, httpx.InvalidURL, UnicodeError):
         # Refused by httpx before anything was sent: a bug here, not the network.
         raise ProviderUnavailable(f"the request to assistant provider {name} could not be built", "REQUEST",
                                   route=route) from None
+    except (httpx.ConnectError, httpx.ProxyError):
+        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route,
+                                  delivery="NOT_SENT") from None
     except httpx.HTTPError:
-        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route) from None
+        # Dropped after sending (read error, protocol error): the outcome is unknown.
+        raise ProviderUnavailable(f"assistant provider {name} is unavailable", "NETWORK", route=route,
+                                  delivery="UNKNOWN") from None
     return response, route, bool(relay)
 
 
