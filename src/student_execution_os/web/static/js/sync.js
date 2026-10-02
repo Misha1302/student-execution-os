@@ -97,8 +97,16 @@ export function queueOperation(type, entityId, payload = {}) {
   if (!readQueue().some((x) => x.operation?.op_id === operation.op_id)) {
     throw new ApiError('Unable to save the change on this device', { code: 'LOCAL_STORAGE' });
   }
+  // On Android the queue is also committed to the native database; `durable` settles
+  // when that commit is done. A failed commit takes the change back out, so a caller
+  // that awaits it never tells the user a change was saved when it was not.
+  const durable = Promise.resolve(offlineOperationStore.durable?.()).catch(() => {
+    try { write(readQueue().filter((x) => x.operation?.op_id !== operation.op_id)); } catch { /* best effort */ }
+    throw new ApiError('Unable to save the change on this device', { code: 'LOCAL_STORAGE' });
+  });
+  durable.catch(() => {}); // observed by callers that care; never an unhandled rejection
   scheduleFlush(0);
-  return { op_id: operation.op_id, status: 'PENDING' };
+  return { op_id: operation.op_id, status: 'PENDING', durable };
 }
 
 export function scheduleFlush(delay) {

@@ -37,6 +37,7 @@ export async function change(type, entityId, payload = {}, { success, undo } = {
   let result;
   try {
     result = queueOperation(type, entityId, payload);
+    await result.durable; // committed on the device before it is reported as saved
   } catch (err) {
     toast(errorMessage(err), { error: true });
     return null;

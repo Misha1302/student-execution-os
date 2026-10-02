@@ -1,10 +1,9 @@
-import { load } from '../store.js';
+import { load, invalidate } from '../store.js';
 import { t, code, fmtTime, fmtDay, fmtDuration, fmtDateTime, dayKey, now, setServerNow } from '../i18n.js';
-import { esc, icon, chip, kv, empty, openSheet, chipGroup } from '../ui.js';
+import { esc, icon, chip, kv, empty, openSheet, chipGroup, toast, errorMessage } from '../ui.js';
 import { heroStatus, explainReason } from './today.js';
 import { describePreference, preferenceStatus, deletePreferenceOperation } from '../preferences.js';
 import { queueOperation } from '../sync.js';
-import { invalidate } from '../store.js';
 import { previewPlanControl, pinOperation, avoidOperation, moveConstraintOperation, deleteConstraintOperation, moveWorkSheet, shiftItem, controlSummary } from '../plan-control.js';
 
 const BLOCK_CLASS = {
@@ -293,11 +292,16 @@ export default {
       const item = ctx.view._visible?.[Number(el.dataset.index)];
       if (item) openItem(item);
     },
-    'pref-remove'(el, ctx) {
+    async 'pref-remove'(el, ctx) {
       const preference = (ctx.data.preferences || []).find((p) => p.id === el.dataset.id);
       if (!preference) return;
       const op = deletePreferenceOperation(preference);
-      queueOperation(op.type, op.entity_id, op.payload);
+      try {
+        await queueOperation(op.type, op.entity_id, op.payload).durable;
+      } catch (err) {
+        toast(errorMessage(err), { error: true });
+        return;
+      }
       invalidate();
       ctx.refresh();
     },

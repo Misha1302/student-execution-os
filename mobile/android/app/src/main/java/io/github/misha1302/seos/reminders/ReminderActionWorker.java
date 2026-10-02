@@ -24,6 +24,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONArray;
+import io.github.misha1302.seos.storage.SessionCredentials;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -72,7 +73,7 @@ public class ReminderActionWorker extends Worker {
     public Result doWork() {
         SharedPreferences prefs = getApplicationContext().getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE);
         String server = prefs.getString("seos.server", null);
-        String token = prefs.getString("seos.token", null);
+        String token = SessionCredentials.of(getApplicationContext()).token();
         String operations = getInputData().getString(KEY_OPERATIONS);
         if (server == null || server.isEmpty() || token == null || token.isEmpty() || operations == null) {
             return failed();  // signed out on this device: the action cannot be attributed

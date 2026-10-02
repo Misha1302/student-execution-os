@@ -52,7 +52,8 @@ public class ReminderNotificationEndToEndTest {
         Context context = ApplicationProvider.getApplicationContext();
         shell("pm grant " + context.getPackageName() + " android.permission.POST_NOTIFICATIONS");
         context.getSharedPreferences(ReminderActionWorker.PREFERENCES, Context.MODE_PRIVATE).edit()
-                .putString("seos.server", server).putString("seos.token", token).commit();
+                .putString("seos.server", server).putString("seos.user", "{}")
+                .putString("seos.token", token).commit();  // a signed-in session as the web client writes it
 
         Map<String, String> data = new HashMap<>();
         JSONObject json = new JSONObject(new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8));

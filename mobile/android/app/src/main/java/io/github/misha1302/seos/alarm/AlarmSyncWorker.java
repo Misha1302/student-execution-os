@@ -20,6 +20,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import io.github.misha1302.seos.storage.SessionCredentials;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -46,7 +47,7 @@ public class AlarmSyncWorker extends Worker {
     public Result doWork() {
         SharedPreferences prefs = getApplicationContext().getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         String server = prefs.getString("seos.server", null);
-        String token = prefs.getString("seos.token", null);
+        String token = SessionCredentials.of(getApplicationContext()).token();
         String owner = sessionOwner(getApplicationContext());
         if (owner == null) return Result.success();  // signed out
         try {
@@ -135,7 +136,7 @@ public class AlarmSyncWorker extends Worker {
     static String sessionOwner(Context context) {
         SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         String server = prefs.getString("seos.server", "");
-        String token = prefs.getString("seos.token", "");
+        String token = SessionCredentials.of(context).token();
         if (server == null || server.isEmpty() || token == null || token.isEmpty()) return null;
         String account = sessionAccount(prefs);
         String who = account == null ? "token:" + sha256(token) : "account:" + account;
