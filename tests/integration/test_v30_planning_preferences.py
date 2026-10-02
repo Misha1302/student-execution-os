@@ -64,6 +64,38 @@ class PlanningPreferenceMigrationTest(unittest.TestCase):
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
 
+    def test_an_application_rollback_runs_on_a_newer_schema_and_fails_closed_on_lifecycle(self):
+        """The application-rollback contract (deploy/README.md, "Rollback"): a build runs on a
+        database a newer build has migrated — it starts, reads and writes — while account
+        export/deletion refuse tables it cannot classify instead of silently skipping them.
+        Simulated here with this build and a migration 31 it does not know."""
+        from student_execution_os.domain.errors import ValidationError
+        from student_execution_os.reliability import SQLiteDataLifecycle
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "newer.sqlite"
+            with SQLiteCanonicalRepository(database) as repo:
+                repo.initialize()
+                repo.create_account("account")
+                repo.connection.executescript(
+                    "CREATE TABLE future_rows(id TEXT PRIMARY KEY, "
+                    "account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE);"
+                    "INSERT INTO future_rows VALUES ('f-1','account');"
+                )
+                repo.connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES (31,?)",
+                                        (NOW.isoformat(),))
+                repo.connection.commit()
+
+            with SQLiteCanonicalRepository(database) as repo:
+                repo.initialize()  # no refusal and no re-run of known migrations
+                self.assertEqual(repo.schema_version(), 31)
+                repo.create_account("second")
+                repo.connection.commit()
+            with self.assertRaisesRegex(ValidationError, "does not classify database tables: future_rows"):
+                SQLiteDataLifecycle(database).export_account("account")
+            with sqlite3.connect(database) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM future_rows").fetchone()[0], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

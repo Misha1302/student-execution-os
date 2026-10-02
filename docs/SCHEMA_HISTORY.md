@@ -145,4 +145,10 @@ for progress or effort:
   WORK_LIMIT, AVOID_WORK, REST_AFTER_EVENTS) with daily windows and date ranges. The
   planner expands them into the snapshot and uses them only to choose among legal
   placements once the hard model is FEASIBLE; each is reported APPLIED / RELAXED /
-  UNSATISFIABLE. Rollback script drops the table.
+  UNSATISFIABLE. Rollback script drops the table (and the preferences in it).
+
+Rolling back across v28–v30 is normally an **application** rollback only: v28–v30 add
+tables, and an older build starts on the newer database and ignores them. While it runs,
+its account export/deletion refuse the tables it cannot classify (422) rather than
+skipping them; the rollback scripts are needed only if those must work on the old build.
+See deploy/README.md, "Rollback".
