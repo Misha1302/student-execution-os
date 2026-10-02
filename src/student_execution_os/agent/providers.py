@@ -131,8 +131,10 @@ reminder_id (from context.reminders) and expected_version (that item's "version"
   COMPLETE_OBLIGATION {obligation_id|reminder_id}; CANCEL_OBLIGATION {obligation_id|reminder_id}
     ("не буду делать", "отмени"); ARCHIVE_OBLIGATION {obligation_id} ("в архив")
   REFINE_TASK {obligation_id, estimated_total_effort_minutes}
-  When you cannot tell which item is meant, set payload.target_text to the words the user
-  used and list "target" in unresolved_fields; the user will pick it.
+  Always set payload.target_text to the user's own words for the item ("встречу с Ариадной").
+  When you cannot tell which item is meant, also list "target" in unresolved_fields; the
+  user will pick it. The server re-checks every pick: when several items fit the user's
+  words equally, it asks the user instead of trusting your choice.
 COMPLETE_OBLIGATION, CANCEL_OBLIGATION and ARCHIVE_OBLIGATION always set requires_confirmation=true.
 Resolve relative dates and times ("в пятницу к шести", "завтра вечером") against
 context.now in context.timezone and output instants with that zone's offset. "к"/"до"/

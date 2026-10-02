@@ -148,6 +148,8 @@ export function operationFor(action, item) {
 }
 
 function candidatesFor(action) {
+  // The server found several items that fit the user's words equally: offer exactly those.
+  if (action.target_candidates?.length) return action.target_candidates;
   const items = knownItems();
   const open = ['ACTIVE', 'DRAFT', 'SCHEDULED', 'FIRED'];
   const statuses = action.command === 'ARCHIVE_OBLIGATION' ? null : open;
@@ -168,7 +170,7 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
       return `<li class="command-row ${DESTRUCTIVE.has(action.command) ? 'destructive' : ''}">
         <span>${esc(describe(action, item))}</span>
         ${choosing ? `<div class="command-pick"><small class="help">${esc(t('cmd.which'))}</small>
-          <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
+          <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.when ? `${x.title} · ${fmtDateTime(x.when)}` : x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
         ${missingWhen ? `<small class="help">${esc(t('cmd.whenMissing'))}</small>` : ''}
         ${!isCommand(action) && blocking(action).length ? `<small class="help">${esc(t('cmd.needsDetails'))}</small>` : ''}
         ${conflictsHtml(action)}
@@ -191,7 +193,10 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
     </article>`;
     box.hidden = false;
     box.querySelectorAll('[data-pick]').forEach((b) => b.addEventListener('click', () => {
-      picks[Number(b.dataset.pick)] = knownItems().find((x) => x.id === b.dataset.pid && x.kind === b.dataset.kind) || null;
+      const index = Number(b.dataset.pick);
+      const offered = state.actions[index]?.target_candidates || [];
+      picks[index] = knownItems().find((x) => x.id === b.dataset.pid && x.kind === b.dataset.kind)
+        || offered.find((x) => x.id === b.dataset.pid && x.kind === b.dataset.kind) || null;
       draw();
     }));
     box.querySelector('[data-refine]')?.addEventListener('click', () => onRefine(state));

@@ -24,6 +24,7 @@ from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
+from .disambiguation import judge
 from .nlparse import parse_task
 from .providers import ProviderUnavailable
 from .read import SQLiteAssistantReadService
@@ -828,6 +829,7 @@ class SQLiteAssistantService:
             derived: tuple[str, ...] = ()
             if isinstance(raw, dict) and isinstance(raw.get("payload"), dict) and _RELATIVE in raw["payload"]:
                 raw, derived = self._relative_from_model(raw, action_ids, dependencies[index], actions)
+            raw, guard = self._guard_target(raw, text, context)
             clean = validate_proposal(raw, self.canonical, self.principal.account_id,
                                       timezone_name=str(context.get("timezone") or "UTC"))
             field_provenance = clean.pop("field_provenance")
@@ -847,6 +849,10 @@ class SQLiteAssistantService:
                 # destructive command merely by emitting a false flag.
                 "requires_confirmation": clean["command"] in DESTRUCTIVE or clean["requires_confirmation"],
             })
+            if guard is not None:
+                # The server, not the model, decided this target is not unique.
+                actions[-1]["target_guard"] = guard.reason
+                actions[-1]["target_candidates"] = [c.payload() for c in guard.candidates]
             if derived:
                 actions[-1]["provenance"]["fields"].update({field: "DERIVED" for field in derived})
                 actions[-1]["resolution"] = self._relative_resolution(actions[-1], actions)
@@ -861,6 +867,54 @@ class SQLiteAssistantService:
             )
         self._attach_conflicts(actions)
         return provider.name, assistant_message, actions, None
+
+    def _guard_target(self, raw: object, text: str, context: dict[str, object]):
+        """Server authority over the model's target pick (agent.disambiguation).
+
+        Returns the (possibly unresolved) raw action and the ambiguity verdict, if any.
+        A pick outside the authorized context is rejected like an invented id.
+        """
+        if not isinstance(raw, dict) or raw.get("command") not in _TARGET_KINDS:
+            return raw, None
+        payload = raw.get("payload")
+        unresolved = raw.get("unresolved_fields")
+        if not isinstance(payload, dict) or not isinstance(unresolved, list) or _target_unresolved(unresolved):
+            return raw, None
+        chosen = payload.get("reminder_id") or payload.get("obligation_id")
+        if not chosen or (payload.get("reminder_id") and payload.get("obligation_id")):
+            return raw, None  # validate_proposal rejects these shapes
+        destination = None
+        for field in ("when", "until"):
+            if isinstance(payload.get(field), str):
+                try:
+                    destination = _instant(payload[field], field)
+                except ValidationError:
+                    destination = None
+                break
+        try:
+            zone = ZoneInfo(str(context.get("timezone") or "UTC"))
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        verdict = judge(
+            chosen_id=str(chosen), allowed_kinds=_TARGET_KINDS[raw["command"]], text=text,
+            target_text=payload.get("target_text"), context=context,
+            now=self.canonical.clock.now(), zone=zone, destination=destination,
+        )
+        if verdict.decision == "OUT_OF_SCOPE":
+            raise ValidationError("assistant proposal references an item outside its authorized context")
+        if verdict.decision == "CONTINUE":
+            return raw, None
+        unresolved_payload = {k: v for k, v in payload.items() if k not in {"obligation_id", "reminder_id"}}
+        provenance = raw.get("field_provenance")
+        guarded = {
+            **raw,
+            "payload": unresolved_payload,
+            "unresolved_fields": [*unresolved, "target"],
+            "expected_version": None,
+        }
+        if isinstance(provenance, dict):
+            guarded["field_provenance"] = {k: v for k, v in provenance.items() if k in unresolved_payload}
+        return guarded, verdict
 
     @staticmethod
     def _action_dependencies(raw_actions: list[object]) -> tuple[list[str], list[list[str]]]:
