@@ -49,7 +49,6 @@ shrinks proportionally). Planned:
 ### Offline and events
 
 - Offline creation of recurring series and offline attachments (today online-only).
-- A native (SQLite) store for the Android queue instead of WebView localStorage.
 - Event location/travel choices and hybrid selection offline.
 
 ### Other open items

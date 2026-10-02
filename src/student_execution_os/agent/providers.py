@@ -216,13 +216,19 @@ class ProviderUnavailable(ValidationError):
 
     ``retry_after`` is the provider's Retry-After in whole seconds (429/503), if any.
     ``delivery`` / ``should_retry`` feed the retry policy (agent.reliability).
+    ``output_invalid``: a FORMAT answer that says the model *generated* output which did
+    not match the requested JSON format (Groq ``json_validate_failed``), as opposed to a
+    refusal of the request shape itself.
+    ``format_downgraded``: the endpoint refused ``json_schema`` before generating; the
+    provider has switched itself to JSON mode, so exactly one re-send can succeed.
     ``route`` is the egress path taken (DIRECT, DIRECT_PINNED, PROXY, RELAY) or None
     when the request never left the server.
     """
 
     def __init__(self, message: str, reason: str = "NETWORK", http_status: int | None = None,
                  *, retry_after: int | None = None, route: str | None = None,
-                 delivery: str | None = None, should_retry: bool | None = None) -> None:
+                 delivery: str | None = None, should_retry: bool | None = None,
+                 output_invalid: bool = False, format_downgraded: bool = False) -> None:
         super().__init__(message)
         self.reason = reason
         self.http_status = http_status
@@ -237,6 +243,8 @@ class ProviderUnavailable(ValidationError):
         self.delivery = delivery
         # The provider's explicit retry advice (``x-should-retry``), when it gave one.
         self.should_retry = should_retry
+        self.output_invalid = output_invalid
+        self.format_downgraded = format_downgraded
 
 
 def _error_fields(response: httpx.Response) -> tuple[bool, str]:
@@ -573,12 +581,13 @@ def _post(url: str, *, headers: dict[str, str], body: dict[str, Any], timeout: f
             )
         if response.status_code >= 300:
             # The provider's body is not echoed: some providers quote part of the key.
+            reason = _reason(response.status_code, response, custom_address=custom_address)
             raise ProviderUnavailable(
                 f"assistant provider {name} answered HTTP {response.status_code}",
-                _reason(response.status_code, response, custom_address=custom_address),
-                response.status_code, retry_after=_retry_after(response), route=route,
+                reason, response.status_code, retry_after=_retry_after(response), route=route,
                 delivery="UNKNOWN" if response.status_code in _UNKNOWN_OUTCOME_STATUSES else "ANSWERED",
                 should_retry=_should_retry(response),
+                output_invalid=reason == "FORMAT" and "json_validate" in _error_fields(response)[1],
             )
     except ProviderUnavailable as exc:
         if exc.route is None:
@@ -667,6 +676,9 @@ class OpenAICompatibleProvider:
     timeout: float = 30.0
     public_only: bool = False  # user-supplied base URL: refuse non-public hosts
     max_output_tokens: int | None = None
+    # The endpoint/model accepts response_format json_schema (see supports_json_schema).
+    # Cleared for good by the first request-level refusal of that format.
+    json_schema: bool = False
     last_usage: dict[str, int] | None = field(default=None, init=False, repr=False)
     # Egress route of the last request that got an HTTP answer (diagnostics only).
     last_route: str | None = field(default=None, init=False, repr=False)
@@ -701,20 +713,21 @@ class OpenAICompatibleProvider:
                 "The previous proposal was rejected by deterministic validation with code "
                 f"{repair_feedback}. Return one complete replacement proposal; never alter authority or scope."
             )})
-        json_mode = {"type": "json_object"}
-        if self.name != "openai":
-            response = self._chat(messages, response_format=json_mode, **extra)
+        if not self.json_schema:
+            response = self._chat(messages, response_format={"type": "json_object"}, **extra)
         else:
             try:
                 response = self._chat(messages, response_format={"type": "json_schema", "json_schema": _TOP_LEVEL_SCHEMA},
                                       **extra)
             except ProviderUnavailable as exc:
-                # Not every OpenAI model accepts json_schema. A request-level FORMAT
-                # refusal gets exactly one downgrade to JSON mode, which the server
-                # validates the same way; anything else is a real failure.
-                if exc.reason != "FORMAT":
-                    raise
-                response = self._chat(messages, response_format=json_mode, **extra)
+                # A request-level FORMAT refusal (not a generated answer that failed
+                # validation) means this endpoint does not take json_schema: switch to
+                # JSON mode for good. The re-send is the caller's, so that it is its own
+                # metered, budgeted attempt (agent.reliability, MeteredStarterProvider).
+                if exc.reason == "FORMAT" and not exc.output_invalid:
+                    self.json_schema = False
+                    exc.format_downgraded = True
+                raise
         self.last_usage = _openai_usage(response)
         content = _field(response, ("choices", 0, "message", "content"), self.name)
         if not isinstance(content, str):
@@ -723,7 +736,7 @@ class OpenAICompatibleProvider:
 
     def check(self, now: str = "2026-01-01T09:00:00+00:00") -> None:
         """A real interpret() round trip: key, address, model and the JSON contract."""
-        check_probe_answer(self._complete(PROBE_TEXT, probe_context(now)))
+        check_probe_answer(with_format_downgrade(lambda: self._complete(PROBE_TEXT, probe_context(now))))
 
     def interpret(self, text: str, context: dict[str, object]) -> dict[str, Any]:
         return self._complete(text, context)
@@ -784,6 +797,36 @@ class AnthropicProvider:
         return self._complete(text, context, repair_feedback=feedback)
 
 
+# OpenAI-compatible endpoints whose listed models are documented to accept
+# response_format json_schema (structured outputs). OpenAI itself is covered by its
+# provider kind. Any other compatible server keeps JSON mode: an unknown server may
+# answer an unsupported response_format with something other than a clean refusal.
+_JSON_SCHEMA_MODELS: dict[str, frozenset[str]] = {
+    # https://console.groq.com/docs/structured-outputs
+    "api.groq.com": frozenset({"openai/gpt-oss-20b", "openai/gpt-oss-120b"}),
+}
+
+
+def supports_json_schema(kind: str, base_url: str, model: str) -> bool:
+    if kind == "openai":
+        return True
+    if kind != "openai-compatible":
+        return False
+    host = (urlsplit(base_url).hostname or "").lower().rstrip(".")
+    return model in _JSON_SCHEMA_MODELS.get(host, frozenset())
+
+
+def with_format_downgrade(call):
+    """Run ``call`` and re-send once after a json_schema refusal, for callers outside an
+    Assistant operation (connection test, operator smoke); agent.reliability owns it there."""
+    try:
+        return call()
+    except ProviderUnavailable as exc:
+        if not exc.format_downgraded:
+            raise
+    return call()
+
+
 PROVIDERS = {
     # id: (label, default base URL or None when the user must supply one)
     "openai": ("OpenAI", "https://api.openai.com/v1"),
@@ -817,7 +860,8 @@ def build_provider(kind: str, *, api_key: str, model: str, base_url: str | None 
         return AnthropicProvider(api_key, model, base, public_only=public_only,
                                  max_output_tokens=max_output_tokens or 1200)
     return OpenAICompatibleProvider(api_key, model, base, name=kind, public_only=public_only,
-                                    max_output_tokens=max_output_tokens)
+                                    max_output_tokens=max_output_tokens,
+                                    json_schema=supports_json_schema(kind, base, model))
 
 
 def _usage_int(value: Any) -> int | None:

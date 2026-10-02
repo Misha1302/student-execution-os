@@ -213,8 +213,10 @@ Architecture decisions:
 - [ADR 0021 — Actual execution sessions and feedback loop (schema v18)](docs/adr/0021-execution-feedback-loop.md)
 - [ADR 0022 — Plan control is canonical constraints, not mutable PlanBlocks](docs/adr/0022-plan-control-canonical-constraints.md)
 - [ADR 0023 — Projects are containers over existing obligations](docs/adr/0023-projects-as-containers.md)
-- [ADR 0024 — Recurring work materializes canonical Tasks](docs/adr/0024-recurring-work-materialized-tasks.md)
-- [ADR 0024 — Recurring work materializes canonical Tasks](docs/adr/0024-recurring-work.md)
+- ADR 0024 — Recurring work materializes canonical Tasks (schema v19). One decision recorded
+  in two files by parallel branches; both are kept so existing links stay valid:
+  [task ownership and occurrence identity](docs/adr/0024-recurring-work-materialized-tasks.md),
+  [offline semantics and schema rollback](docs/adr/0024-recurring-work.md)
 - [ADR 0025 — Reflection is derived; calibration is explicit and planning-only](docs/adr/0025-reflection-calibration.md)
 - [ADR 0026 — botay! Notes, Capture provenance, and original-audio ownership](docs/adr/0026-botay-notes-capture.md)
 - [ADR 0027 — Class series exceptions and stable external identity (schema v23)](docs/adr/0027-series-exceptions-and-external-identity.md)

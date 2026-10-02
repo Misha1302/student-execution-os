@@ -733,6 +733,14 @@ class SQLiteAssistantService:
                 account_id=self.principal.account_id,
                 dimensions={"provider": provider},
             )
+        if self.reliability_trace.format_downgrades:
+            # The endpoint refused json_schema and the call was re-sent in JSON mode.
+            metrics.record(
+                "assistant_format_downgrade_count",
+                self.reliability_trace.format_downgrades,
+                account_id=self.principal.account_id,
+                dimensions={"provider": provider},
+            )
         if self.reliability_trace.stop_reason:
             # Why a failed provider call was not retried (UNKNOWN_OUTCOME, BUDGET_EXHAUSTED, ...).
             metrics.record(

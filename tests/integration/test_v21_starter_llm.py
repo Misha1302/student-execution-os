@@ -43,6 +43,7 @@ def _proposal(title: str) -> str:
 class FakeProvider:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.formats: list[str | None] = []
         self.status: dict[str, int] = {}
         self.error: dict[str, object] = {}
         self.raise_for: dict[str, Exception] = {}
@@ -53,6 +54,7 @@ class FakeProvider:
         assert trust_env is False, "platform egress must not use ambient proxy variables"
         key = headers.get("x-api-key") or headers.get("Authorization", "").removeprefix("Bearer ")
         self.calls.append(key)
+        self.formats.append((json.get("response_format") or {}).get("type"))
         if key in self.raise_for:
             raise self.raise_for[key]
         response = Mock()
@@ -299,7 +301,8 @@ class StarterLlmTest(unittest.TestCase):
             self.fake.error[PRIMARY] = {"error": {"message": "response_format is unsupported"}}
             semantic = self.interpret(client, headers)
             self.assertEqual((semantic["engine"], semantic["fallback_reason"]), ("LOCAL", "FORMAT"))
-            self.assertEqual(self.fake.calls, [PRIMARY, PRIMARY])  # one controlled repair attempt
+            # json_schema refused -> one JSON-mode re-send -> one controlled repair attempt
+            self.assertEqual(self.fake.calls, [PRIMARY, PRIMARY, PRIMARY])
             for status, reason in ((429, "RATE_LIMITED"), (503, "UPSTREAM")):
                 self.fake.calls.clear()
                 self.fake.status[PRIMARY] = status
@@ -426,6 +429,91 @@ class StarterLlmTest(unittest.TestCase):
         usage, global_usage, reservations = self.usage_rows(account)
         self.assertEqual((usage, global_usage), ((1, 0), (1, 0)))
         self.assertEqual(reservations, [(0, "RECONCILED")])
+
+    def test_groq_gpt_oss_uses_json_schema_and_keeps_rate_limit_retry_semantics(self):
+        with self.env():
+            client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
+            headers, account = self.register(client, "schema-429")
+            ok = self.interpret(client, headers)
+            self.assertEqual((ok["engine"], self.fake.formats), ("AI", ["json_schema"]))
+            self.fake.calls.clear()
+            self.fake.formats.clear()
+            self.fake.status[PRIMARY] = 429
+            self.fake.error[PRIMARY] = self.GROQ_TPM_429
+            self.fake.headers[PRIMARY] = {"retry-after": "0"}
+            limited = self.interpret(client, headers)
+        # A rate limit is not a format refusal: one provider-advised retry on the same
+        # credential, still json_schema, no standby, no downgrade, no repair.
+        self.assertEqual((limited["engine"], limited["fallback_reason"]), ("LOCAL", "RATE_LIMITED"))
+        self.assertEqual(limited["reliability"]["retries"], 1)
+        self.assertFalse(limited["reliability"]["repair_attempted"])
+        self.assertEqual(self.fake.calls, [PRIMARY, PRIMARY])
+        self.assertEqual(self.fake.formats, ["json_schema", "json_schema"])
+        usage, _global, reservations = self.usage_rows(account)
+        self.assertEqual(usage, (3, 15))
+        self.assertEqual(len(reservations), 3)
+
+    SCHEMA_REFUSED = {"error": {"message": "response_format `json_schema` is not supported with this model",
+                                "type": "invalid_request_error", "param": "response_format"}}
+
+    def test_json_schema_refusal_downgrades_once_as_its_own_metered_attempt(self):
+        with self.env():
+            client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
+            headers, account = self.register(client, "schema-refused")
+            original = self.fake.__call__
+
+            def refuse_schema(url, *, headers, json, timeout, follow_redirects, trust_env=True):
+                if (json.get("response_format") or {}).get("type") == "json_schema":
+                    self.fake.calls.append("refused")
+                    self.fake.formats.append("json_schema")
+                    refused = Mock()
+                    refused.headers, refused.status_code = {}, 400
+                    refused.json.return_value = self.SCHEMA_REFUSED
+                    return refused
+                return original(url, headers=headers, json=json, timeout=timeout,
+                                follow_redirects=follow_redirects, trust_env=trust_env)
+
+            with patch("student_execution_os.agent.providers.httpx.post", side_effect=refuse_schema):
+                result = self.interpret(client, headers)
+        self.assertEqual((result["engine"], result["fallback"]), ("AI", False))
+        self.assertEqual(self.fake.formats, ["json_schema", "json_object"])
+        self.assertEqual(result["reliability"]["attempts"], 2)
+        self.assertEqual(result["reliability"]["retries"], 0)  # a downgrade is not a transient retry
+        self.assertFalse(result["reliability"]["repair_attempted"])  # nor a repair
+        usage, _global, reservations = self.usage_rows(account)
+        self.assertEqual(usage[0], 2)  # each outbound call took its own reservation
+        self.assertEqual([status for _total, status in reservations], ["RECONCILED", "RECONCILED"])
+
+    def test_json_schema_downgrade_is_gated_by_starter_request_quota(self):
+        with self.env(SEOS_STARTER_LLM_ACCOUNT_REQUEST_LIMIT="1"):
+            client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
+            headers, account = self.register(client, "schema-quota")
+            self.fake.status[PRIMARY] = 400
+            self.fake.error[PRIMARY] = self.SCHEMA_REFUSED
+            result = self.interpret(client, headers)
+        self.assertEqual((result["engine"], result["fallback_reason"]), ("LOCAL", "STARTER_QUOTA"))
+        self.assertEqual(self.fake.calls, [PRIMARY])
+        self.assertEqual(self.fake.formats, ["json_schema"])
+        usage, _global, _reservations = self.usage_rows(account)
+        self.assertEqual(usage[0], 1)
+
+    def test_schema_valid_but_domain_invalid_proposal_is_rejected_by_the_validator(self):
+        invalid = json.dumps({"message": "ok", "actions": [{
+            "command": "CREATE_TASK", "payload": {"title": "x", "owner_account_id": "someone-else"},
+            "confidence": 0.9, "unresolved_fields": [], "expected_version": None, "requires_confirmation": False,
+        }]})
+        with self.env():
+            client = TestClient(create_app(self.db, auth=AuthConfig(password_scrypt_n=2**10), now=lambda: NOW))
+            headers, account = self.register(client, "schema-invalid")
+            with patch(f"{__name__}._proposal", return_value=invalid):
+                result = self.interpret(client, headers)
+        # Valid JSON in json_schema mode is still only a proposal: the deterministic
+        # validator refuses it, the one repair is spent, and capture degrades locally.
+        self.assertEqual((result["engine"], result["fallback_reason"]), ("LOCAL", "INVALID_PROPOSAL"))
+        self.assertTrue(result["reliability"]["repair_attempted"])
+        self.assertFalse(result["reliability"]["repair_succeeded"])
+        self.assertEqual(self.fake.formats, ["json_schema", "json_schema"])
+        self.assertEqual(self.usage_rows(account)[0][0], 2)
 
     def test_invalid_or_revoked_byok_degrades_locally_and_never_spends_starter(self):
         with self.env():

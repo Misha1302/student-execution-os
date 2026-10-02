@@ -18,6 +18,8 @@ class ReliabilityTrace:
     repair_attempted: bool = False
     repair_succeeded: bool = False
     repair_reason: str | None = None
+    # Re-sends after an endpoint refused json_schema (never counted as transient retries).
+    format_downgrades: int = 0
     # Monotonic deadline of the whole operation (set on the first attempt).
     deadline: float | None = None
     # Why the last failure was not retried (see ``retry_decision``), for metrics.
@@ -26,6 +28,7 @@ class ReliabilityTrace:
 
 # Retry decisions. Every failed attempt gets exactly one of these codes.
 RETRY = "RETRY"
+FORMAT_DOWNGRADE = "FORMAT_DOWNGRADE"     # json_schema refused before generating: re-send once in JSON mode
 NOT_TRANSIENT = "NOT_TRANSIENT"            # auth, quota, format, model missing, ... — retrying cannot help
 UNKNOWN_OUTCOME = "UNKNOWN_OUTCOME"        # delivered, no answer: a paid generation may already have run
 PROVIDER_SAID_NO = "PROVIDER_SAID_NO"      # explicit x-should-retry: false
@@ -52,6 +55,10 @@ class ReliabilityPolicy:
       a retry is skipped when less than ``min_attempt_seconds`` remain.
     * A Retry-After is honoured only up to ``max_retry_after_seconds`` and only
       when it fits the remaining budget.
+    * An endpoint that refuses the json_schema response format (before generating)
+      gets at most ``max_format_downgrades`` re-sends in JSON mode. That is neither a
+      transient retry nor a structured-output repair, but it is a provider call: it
+      counts against ``max_attempts`` and the budget, and a metered credential meters it.
     * httpx does no retries of its own and the egress relay does not retry, so
       there is no nested retry amplification. A BYOK failure never switches to the
       managed provider (SQLiteAssistantService only falls back to the local parser).
@@ -65,12 +72,21 @@ class ReliabilityPolicy:
     max_retry_after_seconds: int = 30
     base_delay_seconds: float = 0.05
     max_attempts: int = 3
+    max_format_downgrades: int = 1
     total_budget_seconds: float = 45.0
     min_attempt_seconds: float = 3.0
 
     def retry_decision(self, exc: ProviderUnavailable, trace: ReliabilityTrace, remaining: float) -> str:
         if exc.reason == "TIMEOUT" and exc.delivery == "NOT_SENT":
             return BUDGET_EXHAUSTED  # refused locally: no time left for another call
+        if exc.format_downgraded:
+            if trace.format_downgrades >= self.max_format_downgrades:
+                return RETRIES_EXHAUSTED
+            if trace.attempts >= self.max_attempts:
+                return ATTEMPTS_EXHAUSTED
+            if remaining < self.min_attempt_seconds:
+                return BUDGET_EXHAUSTED
+            return FORMAT_DOWNGRADE
         if exc.should_retry is False:
             return PROVIDER_SAID_NO
         if exc.delivery == "UNKNOWN" or exc.reason == "TIMEOUT":
@@ -117,6 +133,9 @@ class ReliabilityPolicy:
                 return result
             except ProviderUnavailable as exc:
                 decision = self.retry_decision(exc, trace, trace.deadline - clock())
+                if decision == FORMAT_DOWNGRADE:
+                    trace.format_downgrades += 1
+                    continue
                 if decision != RETRY:
                     trace.stop_reason = decision
                     raise

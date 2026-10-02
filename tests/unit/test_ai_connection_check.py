@@ -72,6 +72,50 @@ class ConnectionCheckTest(unittest.TestCase):
         self.assertEqual(reason, "OK")
         self.assertEqual(post.call_args.kwargs["json"]["response_format"], {"type": "json_object"})
 
+    def test_json_schema_is_a_declared_endpoint_model_capability(self):
+        cases = [
+            ("openai", None, "gpt-5-mini", "json_schema"),
+            ("openai-compatible", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b", "json_schema"),
+            ("openai-compatible", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b", "json_schema"),
+            # Same endpoint, a model not declared to support it; or an unknown server.
+            ("openai-compatible", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant", "json_object"),
+            ("openai-compatible", "https://llm.example.com/v1", "openai/gpt-oss-20b", "json_object"),
+        ]
+        for kind, base_url, model, expected in cases:
+            with self.subTest(kind=kind, base_url=base_url, model=model):
+                provider = build_provider(kind, api_key="sk-secret-000011112222", model=model, base_url=base_url)
+                with patch("student_execution_os.agent.providers.httpx.post",
+                           return_value=response(200, openai_body(GOOD))) as post:
+                    provider.check()
+                self.assertEqual(post.call_args.kwargs["json"]["response_format"]["type"], expected)
+
+    def test_generated_answer_that_fails_json_schema_is_not_a_capability_refusal(self):
+        # Groq's json_validate_failed comes after a generation: the format is supported,
+        # the answer was not. That is for the structured-output repair, not a downgrade.
+        provider = build_provider("openai-compatible", api_key="sk-secret-000011112222",
+                                  model="openai/gpt-oss-20b", base_url="https://api.groq.com/openai/v1")
+        invalid = response(400, {"error": {"message": "Failed to validate JSON", "code": "json_validate_failed"}})
+        with patch("student_execution_os.agent.providers.httpx.post", return_value=invalid):
+            with self.assertRaises(ProviderUnavailable) as caught:
+                provider.interpret("x", {})
+        self.assertEqual(caught.exception.reason, "FORMAT")
+        self.assertTrue(caught.exception.output_invalid)
+        self.assertFalse(caught.exception.format_downgraded)
+        self.assertTrue(provider.json_schema)
+
+    def test_schema_refusal_switches_the_provider_and_leaves_the_resend_to_the_caller(self):
+        provider = build_provider("openai-compatible", api_key="sk-secret-000011112222",
+                                  model="openai/gpt-oss-20b", base_url="https://api.groq.com/openai/v1")
+        refused = response(400, {"error": {"message": "json_schema is not supported", "param": "response_format"}})
+        with patch("student_execution_os.agent.providers.httpx.post", return_value=refused) as post:
+            with self.assertRaises(ProviderUnavailable) as caught:
+                provider.interpret("x", {})
+        # One outbound request per interpret(): the re-send must be a separate attempt
+        # so a metered credential can gate and count it.
+        self.assertEqual(post.call_count, 1)
+        self.assertTrue(caught.exception.format_downgraded)
+        self.assertFalse(provider.json_schema)
+
     def test_model_without_json_schema_is_downgraded_once_to_json_mode(self):
         refused = response(400, {"error": {"message": "Invalid parameter", "param": "response_format"}})
         reason, post = self.check("openai", [refused, response(200, openai_body(GOOD))])
