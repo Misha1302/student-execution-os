@@ -189,14 +189,8 @@ public class SeosUpdatePlugin extends Plugin {
         int id = installer.createSession(params);
         boolean committed = false;
         try (PackageInstaller.Session session = installer.openSession(id)) {
-            try (InputStream input = new BufferedInputStream(new java.io.FileInputStream(apk));
-                 OutputStream sessionOutput = session.openWrite("base.apk", 0, size);
-                 BufferedOutputStream output = new BufferedOutputStream(sessionOutput)) {
-                byte[] buffer = new byte[128 * 1024]; int count;
-                while ((count = input.read(buffer)) >= 0) if (count > 0) output.write(buffer, 0, count);
-                // PackageInstaller requires the exact stream returned by
-                // openWrite(), not the buffering wrapper, for fsync().
-                output.flush(); session.fsync(sessionOutput);
+            try (InputStream input = new BufferedInputStream(new java.io.FileInputStream(apk))) {
+                writeSession(input, session.openWrite("base.apk", 0, size), session::fsync);
             }
             Intent callback = new Intent(getContext(), UpdateInstallReceiver.class).setAction("io.github.misha1302.seos.UPDATE_RESULT");
             int flags = PendingIntent.FLAG_UPDATE_CURRENT;
@@ -208,6 +202,23 @@ public class SeosUpdatePlugin extends Plugin {
             state.apply();
             session.commit(pending.getIntentSender()); committed = true;
         } finally { if (!committed) installer.abandonSession(id); }
+    }
+
+    interface SessionSync { void fsync(OutputStream sessionOutput) throws IOException; }
+
+    /**
+     * Copies the APK into the stream returned by {@code Session.openWrite()}, syncs that
+     * exact stream and closes it exactly once. The platform stream (FileBridge) is not
+     * idempotent on close: a second close writes to the already-closed descriptor and
+     * fails with "write failed: EBADF", so it must never sit under a wrapper that closes
+     * it again.
+     */
+    static void writeSession(InputStream input, OutputStream sessionOutput, SessionSync sync) throws IOException {
+        try (OutputStream output = sessionOutput) {
+            byte[] buffer = new byte[128 * 1024]; int count;
+            while ((count = input.read(buffer)) >= 0) if (count > 0) output.write(buffer, 0, count);
+            output.flush(); sync.fsync(output);
+        }
     }
 
     private void fetch(URL initial, File partial, long expectedSize, String expectedHash) throws Exception {
