@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Device/account ownership must not migrate to another Android device. -->
+    <exclude domain="sharedpref" path="CapacitorStorage.xml" />
+    <exclude domain="sharedpref" path="seos-update-installer.xml" />
+    <exclude domain="sharedpref" path="seos_secure_credentials.xml" />
+    <exclude domain="sharedpref" path="seos_credential_state.xml" />
+    <exclude domain="database" path="seos_offline.db" />
+    <exclude domain="database" path="seos_offline.db-shm" />
+    <exclude domain="database" path="seos_offline.db-wal" />
+</full-backup-content>
