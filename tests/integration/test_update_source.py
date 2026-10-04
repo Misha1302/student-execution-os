@@ -112,7 +112,7 @@ class UpdateSourceIntegrationTests(unittest.TestCase):
         trust = self.root / "trust.json"
         trust.write_text(json.dumps(self.trust))
         result = subprocess.run([
-            "python", str(ROOT / "tools/update_policy.py"), "verify", "--policy", str(policy_path),
+            "python", str(ROOT / "tools/update_policy.py"), "verify-client-policy", "--policy", str(policy_path),
             "--trusted-keys-file", str(trust),
         ], cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT / "src")}, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)

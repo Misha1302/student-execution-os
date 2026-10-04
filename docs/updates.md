@@ -41,10 +41,45 @@ Run **update-release-control** to move rollout 5 → 25 → 50 → 100, or set s
 current policy. A bad release is paused and followed by a fixed higher version;
 installed clients are not downgraded.
 
+`update-policy-refresh` runs daily. Inside the 72-hour safety window it authenticates
+the current predecessor (schema plus configured Ed25519 key), increments `sequence`,
+renews the seven-day validity window without changing target/status/rollout/mandatory
+metadata, publishes with a compare-and-swap content SHA, then verifies both GitHub API
+and public raw bytes. Expiry is a client freshness failure, not a publisher authenticity
+failure: `verify-authenticity` accepts an expired but correctly signed predecessor;
+`verify-client-policy` never does. Invalid signatures, unknown keys and malformed
+metadata fail both paths.
+
+All three channel writers use the same `update-channel-<CHANNEL>` concurrency group.
+The release preflight authenticates existing channels, enforces global `versionCode`
+monotonicity and stable SemVer progression, validates signer/provenance, and generates
+and verifies the candidate policy before creating a release. If an earlier run already
+created the immutable release, a retry resumes promotion only after exact tag, source
+SHA, immutability, asset set, APK hash/size and byte-identical provenance comparison.
+In practice that means re-running the failed jobs of the same workflow run; a fresh
+dispatch rebuilds the APK, gets different provenance and fails closed (publish a new
+SemVer instead). Existing bytes are never uploaded again. Every policy writer reads the
+predecessor bytes and blob SHA from one GitHub API response, so its PUT is a true
+compare-and-swap against exactly the predecessor it authenticated.
+
+The protocol does not support same-SemVer binary revisions: both stable SemVer and
+Android `versionCode` must increase. `minimum_api_version` is not part of the signed
+schema because it had no stable runtime semantic owner. Reintroducing it requires an
+explicit client/server protocol-negotiation contract.
+
 For suspected signing-key compromise, stop promotion, protect hosting credentials,
 and follow two-phase key rotation: first ship a client trusting old+new public keys,
 then sign with the new key after adoption. Do not remotely introduce a new trust root
 using only a suspected key.
+
+## Manual recovery for 0.7.1 / 0.7.2
+
+Those binaries may fail before handing the APK to Android. Download the immutable APK
+from the official GitHub Release for the newest known-good higher `versionCode` and
+install it over the existing `io.github.misha1302.seos` application. Do **not**
+uninstall: Android's same-package/same-signer upgrade retains application data. Android
+must reject a foreign signer and a lower `versionCode`; never work around either
+protection and never use an unsigned replacement installer.
 
 ## Local 1.0.0 → 1.0.1 test
 

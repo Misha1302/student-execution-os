@@ -1,0 +1,83 @@
+name: update-policy-refresh
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    name: Refresh ${{ matrix.channel }} signed policy before expiry
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [STABLE, BETA]
+    concurrency:
+      group: update-channel-${{ matrix.channel }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: update-production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - run: python -m pip install -r requirements.txt
+      - name: Authenticate predecessor and refresh only inside the safety window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEOS_UPDATE_SIGNING_KEY_B64: ${{ secrets.SEOS_UPDATE_SIGNING_KEY_B64 }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          SEOS_UPDATE_SIGNING_KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          set -euo pipefail
+          test -n "$SEOS_UPDATE_SIGNING_KEY_B64"
+          test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
+          test -n "$SEOS_UPDATE_SIGNING_KEY_ID"
+          channel="${CHANNEL,,}"
+          branch="update-$channel"
+          repo="$GITHUB_REPOSITORY"
+          if ! gh api "repos/$repo/contents/policy.json?ref=$branch" > current-contents.json 2>/dev/null; then
+            echo "$branch has no policy; scheduled refresh is intentionally skipped"
+            exit 0
+          fi
+          # Bytes and blob SHA from one response: the PUT is a compare-and-swap
+          # against exactly the predecessor verified and incremented here.
+          python -c 'import base64,json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[2],"wb").write(base64.b64decode(d["content"]))' current-contents.json current-policy.json
+          current_sha="$(jq -er .sha current-contents.json)"
+          python tools/update_policy.py verify-authenticity --policy current-policy.json
+          refresh="$(python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          policy = json.load(open('current-policy.json'))
+          expiry = datetime.fromisoformat(policy['expires_at'].replace('Z', '+00:00'))
+          print('yes' if (expiry - datetime.now(timezone.utc)).total_seconds() < 72 * 3600 else 'no')
+          PY
+          )"
+          if test "$refresh" != yes; then
+            echo "$branch remains outside the 72-hour refresh window"
+            exit 0
+          fi
+          sequence="$(python -c 'import json; print(json.load(open("current-policy.json"))["sequence"] + 1)')"
+          python tools/update_policy.py control --policy current-policy.json --output policy.json \
+            --sequence "$sequence" --key-id "$SEOS_UPDATE_SIGNING_KEY_ID"
+          python tools/update_policy.py verify-client-policy --policy policy.json
+          gh api --method PUT "repos/$repo/contents/policy.json" \
+            -f message="Refresh $channel update policy sequence $sequence" \
+            -f content="$(base64 -w0 policy.json)" -f branch="$branch" -f sha="$current_sha" >/dev/null
+          mkdir published
+          gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/$repo/contents/policy.json?ref=$branch" > published/policy.json
+          cmp policy.json published/policy.json
+          python tools/update_policy.py verify-client-policy --policy published/policy.json
+          public_url="https://raw.githubusercontent.com/$repo/$branch/policy.json?run=$GITHUB_RUN_ID"
+          curl --fail --location --silent --show-error --header 'Cache-Control: no-cache' \
+            "$public_url" -o published/public-policy.json
+          cmp policy.json published/public-policy.json
+          python tools/update_policy.py verify-client-policy --policy published/public-policy.json

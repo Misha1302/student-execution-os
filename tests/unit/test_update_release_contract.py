@@ -26,14 +26,14 @@ class UpdateReleaseContractTests(unittest.TestCase):
         self.assertIn("gh release download", publish)
         self.assertIn("sha256sum", publish)
         self.assertIn("Publish channel metadata last", promote)
-        self.assertIn("update_policy.py verify", promote)
+        self.assertIn("update_policy.py verify-client-policy", promote)
         self.assertNotIn("pull_request:", workflow)
         self.assertIn("environment: update-production", workflow)
 
     def test_release_artifacts_are_immutable_and_named_by_version(self):
         workflow = (ROOT / ".github/workflows/android-release.yml").read_text()
         self.assertIn('student-execution-os-${VERSION}-android-universal.apk', workflow)
-        self.assertIn("immutable release tag already exists", workflow)
+        self.assertIn("Resume only an exact immutable publication", workflow)
         # Only mutable signed policy is clobbered; versioned APK upload is not.
         publish = workflow.split("name: PUBLISH_ARTIFACTS", 1)[1].split("name: PROMOTE_RELEASE", 1)[0]
         self.assertNotIn("--clobber", publish)
@@ -65,7 +65,7 @@ class UpdateReleaseContractTests(unittest.TestCase):
         self.assertIn("PAUSED", workflow)
         self.assertIn("WITHDRAWN", workflow)
         self.assertIn("--sequence", workflow)
-        self.assertIn("update_policy.py verify", workflow)
+        self.assertIn("update_policy.py verify-client-policy", workflow)
         self.assertIn('branch="update-$channel"', workflow)
         self.assertIn("repos/$repo/contents/policy.json", workflow)
         self.assertNotIn('gh release upload "$tag" policy.json', workflow)
