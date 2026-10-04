@@ -138,14 +138,25 @@ jobs:
           test -n "${{ secrets.SEOS_KEYSTORE_PASSWORD }}"
           test -n "${{ secrets.SEOS_KEY_PASSWORD }}"
           test -n "${{ secrets.SEOS_KEY_ALIAS }}"
-      - name: Restore Android keystore outside the repository
-        env:
-          KEYSTORE_B64: ${{ secrets.SEOS_ANDROID_KEYSTORE_B64 }}
-        run: printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/seos-release.jks"
+      - name: Install and audit npm graph before exposing signing material
+        run: |
+          npm ci --prefix mobile --ignore-scripts
+          python3 tools/audit_npm_lifecycle.py
       - name: Restore Firebase client config (push); gitignored, never committed
         env:
           GOOGLE_SERVICES_B64: ${{ secrets.SEOS_GOOGLE_SERVICES_JSON_B64 }}
         run: printf '%s' "$GOOGLE_SERVICES_B64" | base64 --decode > mobile/android/app/google-services.json
+      - name: Sync audited application sources before restoring the keystore
+        env:
+          SEOS_SERVER_URL: ${{ vars.SEOS_SERVER_URL }}
+          SEOS_UPDATE_POLICY_URL_TEMPLATE: ${{ vars.SEOS_UPDATE_POLICY_URL_TEMPLATE }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          SEOS_UPDATE_BETA_AVAILABLE: 'false'
+        run: npm run sync --prefix mobile
+      - name: Restore Android keystore outside the repository
+        env:
+          KEYSTORE_B64: ${{ secrets.SEOS_ANDROID_KEYSTORE_B64 }}
+        run: printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/seos-release.jks"
       - name: Build signed release APK
         env:
           SEOS_VERSION_NAME: ${{ inputs.version }}
@@ -153,14 +164,12 @@ jobs:
           SEOS_SERVER_URL: ${{ vars.SEOS_SERVER_URL }}
           SEOS_UPDATE_POLICY_URL_TEMPLATE: ${{ vars.SEOS_UPDATE_POLICY_URL_TEMPLATE }}
           SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
-          SEOS_UPDATE_BETA_AVAILABLE: 'true'
+          SEOS_UPDATE_BETA_AVAILABLE: 'false'
           SEOS_KEYSTORE: ${{ runner.temp }}/seos-release.jks
           SEOS_KEY_ALIAS: ${{ secrets.SEOS_KEY_ALIAS }}
           SEOS_KEYSTORE_PASSWORD: ${{ secrets.SEOS_KEYSTORE_PASSWORD }}
           SEOS_KEY_PASSWORD: ${{ secrets.SEOS_KEY_PASSWORD }}
         run: |
-          npm ci --prefix mobile
-          npm run sync --prefix mobile
           cd mobile/android
           ./gradlew assembleRelease --no-daemon --console=plain
       - name: Verify final signed bytes, push config, credentials; write provenance
@@ -196,9 +205,114 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  preflight_release:
+    name: PREFLIGHT — deterministic release contract before publication
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: update-production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.sha }}' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - uses: actions/download-artifact@v4
+        with: { name: android-release-package }
+      - run: python -m pip install -r requirements.txt
+      - name: Authenticate predecessors and validate the complete candidate contract
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEOS_UPDATE_SIGNING_KEY_B64: ${{ secrets.SEOS_UPDATE_SIGNING_KEY_B64 }}
+          SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
+          KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          POLICY_SEQUENCE: ${{ inputs.policy_sequence }}
+          CHANNEL: ${{ inputs.channel }}
+          ROLLOUT: ${{ inputs.rollout }}
+          SEVERITY: ${{ inputs.severity }}
+          MANDATORY: ${{ inputs.mandatory }}
+          REQUIRED_AFTER: ${{ inputs.required_after }}
+          MINIMUM_SUPPORTED_VERSION: ${{ inputs.minimum_supported_version }}
+          SUMMARY_EN: ${{ inputs.summary_en }}
+          SUMMARY_RU: ${{ inputs.summary_ru }}
+          CHANGE_EN: ${{ inputs.change_en }}
+          CHANGE_RU: ${{ inputs.change_ru }}
+        run: |
+          set -euo pipefail
+          test -n "$SEOS_UPDATE_SIGNING_KEY_B64"
+          test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
+          test -n "$KEY_ID"
+          mkdir policies
+          policy_args=()
+          current_args=()
+          for name in stable beta; do
+            if gh api -H "Accept: application/vnd.github.raw+json" \
+              "repos/$GITHUB_REPOSITORY/contents/policy.json?ref=update-$name" > "policies/$name.json" 2>/dev/null; then
+              python tools/update_policy.py verify-authenticity --policy "policies/$name.json"
+              policy_args+=(--policy "policies/$name.json")
+              if test "${CHANNEL,,}" = "$name"; then current_args=(--current-channel-policy "policies/$name.json"); fi
+            else
+              rm -f "policies/$name.json"
+            fi
+          done
+          existing_args=()
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" > existing-release.json 2>/dev/null; then
+            mkdir existing
+            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern provenance.json --dir existing
+            existing_args=(--existing-release existing-release.json --existing-provenance existing/provenance.json)
+          fi
+          published_build_args=()
+          while IFS=$'\t' read -r tag provenance_url; do
+            test -n "$provenance_url" || continue
+            # A resumed release is authenticated byte-for-byte via --existing-provenance;
+            # it is not a competing predecessor build.
+            if test "$tag" = "v$VERSION" && test ${#existing_args[@]} -gt 0; then continue; fi
+            file="policies/provenance-${tag//\//_}.json"
+            curl --fail --location --silent --show-error "$provenance_url" -o "$file"
+            published_build="$(python -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["artifact"]["version_code"]))' "$file")"
+            published_build_args+=(--published-build "$published_build")
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name | startswith("v")) | [.tag_name, ([.assets[] | select(.name == "provenance.json") | .browser_download_url][0] // "")] | @tsv')
+          signer_args=()
+          if test -f policies/stable.json; then
+            stable_version="$(python -c 'import json; print(json.load(open("policies/stable.json"))["latest_version"])')"
+            mkdir established
+            gh release download "v$stable_version" --repo "$GITHUB_REPOSITORY" \
+              --pattern provenance.json --dir established
+            expected_signer="$(python -c 'import json; print(json.load(open("established/provenance.json"))["signing"]["signers"][0]["certificate_sha256"])')"
+            signer_args=(--expected-signer-sha256 "$expected_signer")
+          fi
+          apk="student-execution-os-${VERSION}-android-universal.apk"
+          common=(--artifact "$apk" --provenance provenance.json --source-sha "$SOURCE_SHA"
+            --version "$VERSION" --build-number "$BUILD_NUMBER" --channel "$CHANNEL"
+            --policy-sequence "$POLICY_SEQUENCE" --key-id "$KEY_ID" --mandatory "$MANDATORY"
+            --summary-en "$SUMMARY_EN" --summary-ru "$SUMMARY_RU"
+            --change-en "$CHANGE_EN" --change-ru "$CHANGE_RU")
+          if test -n "$REQUIRED_AFTER"; then common+=(--required-after "$REQUIRED_AFTER"); fi
+          if test -n "$MINIMUM_SUPPORTED_VERSION"; then common+=(--minimum-supported-version "$MINIMUM_SUPPORTED_VERSION"); fi
+          python tools/android_release_preflight.py "${common[@]}" "${policy_args[@]}" \
+            "${current_args[@]}" "${existing_args[@]}" "${signer_args[@]}" "${published_build_args[@]}"
+
+          artifact_url="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$apk"
+          create_extra=()
+          if test -n "$REQUIRED_AFTER"; then create_extra+=(--required-after "$REQUIRED_AFTER"); fi
+          if test -n "$MINIMUM_SUPPORTED_VERSION"; then create_extra+=(--minimum-supported-version "$MINIMUM_SUPPORTED_VERSION"); fi
+          python tools/update_policy.py create --artifact "$apk" --artifact-url "$artifact_url" \
+            --output candidate-policy.json --version "$VERSION" --build-number "$BUILD_NUMBER" \
+            --sequence "$POLICY_SEQUENCE" --channel "$CHANNEL" --rollout "$ROLLOUT" \
+            --severity "$SEVERITY" --mandatory "$MANDATORY" --key-id "$KEY_ID" \
+            --summary-en "$SUMMARY_EN" --summary-ru "$SUMMARY_RU" \
+            --change-en "$CHANGE_EN" --change-ru "$CHANGE_RU" "${create_extra[@]}"
+          python tools/update_policy.py verify-authenticity --policy candidate-policy.json
+          python tools/update_policy.py verify-client-policy --policy candidate-policy.json
+
   publish_artifacts:
     name: PUBLISH_ARTIFACTS — upload then byte-verify
-    needs: package
+    needs: [package, preflight_release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: update-production
@@ -220,12 +334,20 @@ jobs:
           tag="v${VERSION}"
           apk="student-execution-os-${VERSION}-android-universal.apk"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "immutable release tag already exists: $tag" >&2
-            exit 1
+            # Resume only an exact immutable publication. Never upload, clobber or
+            # replace an existing versioned asset.
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > existing-release.json
+            test "$(jq -r .target_commitish existing-release.json)" = "$GITHUB_SHA"
+            test "$(jq -r .immutable existing-release.json)" = "true"
+            test "$(jq -r '[.assets[].name] | sort | join(" ")' existing-release.json)" = "$(printf '%s\n' "$apk" provenance.json | sort | xargs)"
+            mkdir uploaded
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$apk" --pattern provenance.json --dir uploaded
+            cmp provenance.json uploaded/provenance.json
+          else
+            gh release create "$tag" "$apk" provenance.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Student Execution OS ${VERSION}" --notes "$NOTES"
+            mkdir uploaded
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$apk" --pattern provenance.json --dir uploaded
           fi
-          gh release create "$tag" "$apk" provenance.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Student Execution OS ${VERSION}" --notes "$NOTES"
-          mkdir uploaded
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$apk" --dir uploaded
           expected="$(cut -d' ' -f1 artifact.sha256)"
           actual="$(sha256sum "uploaded/$apk" | cut -d' ' -f1)"
           test "$expected" = "$actual"
@@ -287,28 +409,31 @@ jobs:
             --key-id "$KEY_ID" \
             --summary-en "$SUMMARY_EN" --summary-ru "$SUMMARY_RU" \
             --change-en "$CHANGE_EN" --change-ru "$CHANGE_RU" "${extra[@]}"
-          python tools/update_policy.py verify --policy policy.json
+          python tools/update_policy.py verify-client-policy --policy policy.json
       - name: Publish channel metadata last
         env:
           GH_TOKEN: ${{ github.token }}
           SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
           POLICY_SEQUENCE: ${{ inputs.policy_sequence }}
+          CHANNEL: ${{ inputs.channel }}
         run: |
-          channel="$(printf '%s' '${{ inputs.channel }}' | tr '[:upper:]' '[:lower:]')"
+          set -euo pipefail
+          channel="${CHANNEL,,}"
           branch="update-$channel"
           repo="$GITHUB_REPOSITORY"
           current_sha=""
 
           if gh api "repos/$repo/git/ref/heads/$branch" >/dev/null 2>&1; then
-            if gh api -H "Accept: application/vnd.github.raw+json" \
-              "repos/$repo/contents/policy.json?ref=$branch" > current-policy.json 2>/dev/null; then
-              python tools/update_policy.py verify --policy current-policy.json
+            if gh api "repos/$repo/contents/policy.json?ref=$branch" > current-contents.json 2>/dev/null; then
+              # One response gives the verified bytes and the CAS blob SHA.
+              python -c 'import base64,json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[2],"wb").write(base64.b64decode(d["content"]))' current-contents.json current-policy.json
+              current_sha="$(jq -er .sha current-contents.json)"
+              python tools/update_policy.py verify-authenticity --policy current-policy.json
               current_sequence="$(python -c 'import json; print(json.load(open("current-policy.json"))["sequence"])')"
               if test "$POLICY_SEQUENCE" -le "$current_sequence"; then
                 echo "policy sequence must increase: current=$current_sequence requested=$POLICY_SEQUENCE" >&2
                 exit 1
               fi
-              current_sha="$(gh api "repos/$repo/contents/policy.json?ref=$branch" --jq .sha)"
             fi
           else
             gh api --method POST "repos/$repo/git/refs" \
@@ -325,10 +450,10 @@ jobs:
           gh api -H "Accept: application/vnd.github.raw+json" \
             "repos/$repo/contents/policy.json?ref=$branch" > published/policy.json
           cmp policy.json published/policy.json
-          python tools/update_policy.py verify --policy published/policy.json
+          python tools/update_policy.py verify-client-policy --policy published/policy.json
 
           public_url="https://raw.githubusercontent.com/$repo/$branch/policy.json?run=$GITHUB_RUN_ID"
           curl --fail --location --silent --show-error --header 'Cache-Control: no-cache' \
             "$public_url" -o published/public-policy.json
           cmp policy.json published/public-policy.json
-          python tools/update_policy.py verify --policy published/public-policy.json
+          python tools/update_policy.py verify-client-policy --policy published/public-policy.json

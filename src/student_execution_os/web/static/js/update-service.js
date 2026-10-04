@@ -1,9 +1,10 @@
 import { prefGet, prefSet } from './native.js';
 import { AndroidUpdateAdapter } from './update-android.js';
 import {
-  MandatoryMode, SemVer, UpdateChannel, UpdateError, UpdatePolicy, UpdateState,
-  selectExactTarget, transition,
+  CompatibilityState, MandatoryMode, SemVer, UpdateChannel, UpdateError, UpdatePolicy, UpdateState,
+  canonicalPolicy, evaluateCompatibility, selectExactTarget, transition,
 } from './update-domain.js';
+import { setClientCompatibility } from './update-compatibility.js';
 
 const STORE_KEY = 'seos.update.state.v1';
 const SIX_HOURS = 6 * 60 * 60 * 1000;
@@ -19,6 +20,29 @@ function newInstallationId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+async function authenticatedPolicyHash(raw) {
+  const bytes = new TextEncoder().encode(canonicalPolicy(raw));
+  if (!globalThis.crypto?.subtle) throw new UpdateError('METADATA_INVALID', 'SHA-256 is unavailable');
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// Pre-0.7.4 clients stored only the accepted sequence per source. Keep that
+// rollback floor across the upgrade; the first newer policy then records its hash.
+function acceptedPolicies(saved) {
+  if (saved?.acceptedPolicies && typeof saved.acceptedPolicies === 'object') return saved.acceptedPolicies;
+  const legacy = saved?.sequences && typeof saved.sequences === 'object' ? saved.sequences : {};
+  return Object.fromEntries(Object.entries(legacy)
+    .filter(([, sequence]) => Number.isSafeInteger(Number(sequence)) && Number(sequence) > 0)
+    .map(([source, sequence]) => [source, { sequence: Number(sequence), hash: null }]));
+}
+
+// Health markers written before 0.7.4 carry no build number; the version alone
+// identifies them.
+function pendingBuildMatches(health, currentVersionCode) {
+  return health?.pendingBuild == null || Number(health.pendingBuild) === currentVersionCode;
+}
+
 class UpdateStateStore {
   constructor() { this.data = null; }
 
@@ -31,7 +55,7 @@ class UpdateStateStore {
       channel: saved?.channel === UpdateChannel.BETA ? UpdateChannel.BETA : UpdateChannel.STABLE,
       autoCheck: saved?.autoCheck !== false,
       autoDownload: saved?.autoDownload !== false,
-      sequences: saved?.sequences && typeof saved.sequences === 'object' ? saved.sequences : {},
+      acceptedPolicies: acceptedPolicies(saved),
       lastCheckAt: Number(saved?.lastCheckAt) || 0,
       pending: saved?.pending || null,
       pendingDownload: saved?.pendingDownload || null,
@@ -63,6 +87,8 @@ class StaticUpdatePolicyProvider {
     return url.toString();
   }
 
+  clearCache() { this.cache.clear(); }
+
   async getPolicy(channel, { bypassCache = false } = {}) {
     const source = this.source(channel);
     const cached = this.cache.get(source);
@@ -88,9 +114,14 @@ class StaticUpdatePolicyProvider {
     if (policy.channel !== channel) throw new UpdateError('METADATA_INVALID', 'Wrong update channel');
     if (policy.expiresAt <= new Date()) throw new UpdateError('METADATA_EXPIRED', 'Update metadata has expired');
     const state = await this.store.load();
-    const last = Number(state.sequences[source] || 0);
+    const accepted = state.acceptedPolicies[source] || null;
+    const last = Number(accepted?.sequence || 0);
+    const hash = await authenticatedPolicyHash(raw);
     if (policy.sequence < last) throw new UpdateError('METADATA_ROLLBACK', 'Older update metadata was rejected');
-    state.sequences[source] = Math.max(last, policy.sequence);
+    if (policy.sequence === last && accepted?.hash && accepted.hash !== hash) {
+      throw new UpdateError('METADATA_EQUIVOCATION', 'Different authenticated policy content reused an accepted sequence');
+    }
+    state.acceptedPolicies[source] = { sequence: policy.sequence, hash };
     await this.store.save();
     this.cache.set(source, { fetchedAt: Date.now(), policy });
     return policy;
@@ -104,14 +135,16 @@ export class AppUpdateService {
     this.configuration = null;
     this.provider = null;
     this.current = {
-      status: UpdateState.IDLE, enabled: false, currentVersion: null, target: null,
+      status: UpdateState.IDLE, enabled: false, currentVersion: null, currentVersionCode: null, target: null,
       progress: 0, error: null, downloaded: null, lastCheckAt: null,
+      compatibility: CompatibilityState.SUPPORTED, installerState: null,
     };
     this.operation = null;
     this.listeners = new Set();
     this.periodic = null;
     this.offlineAt = null;
     this.initializing = null;
+    this.launchRecorded = false;
   }
 
   subscribe(listener) { this.listeners.add(listener); listener(this.getState()); return () => this.listeners.delete(listener); }
@@ -146,9 +179,10 @@ export class AppUpdateService {
 
   async initializeOnce() {
     const saved = await this.store.load();
-    this.configuration = await this.adapter.configuration();
+    this.configuration ||= await this.adapter.configuration();
     this.current.enabled = Boolean(this.configuration.enabled && this.adapter.available);
     this.current.currentVersion = this.configuration.versionName || null;
+    this.current.currentVersionCode = Number(this.configuration.buildNumber) || null;
     this.current.lastCheckAt = saved.lastCheckAt ? new Date(saved.lastCheckAt) : null;
     this.provider = this.current.enabled ? new StaticUpdatePolicyProvider(this.adapter, this.store, this.configuration) : null;
     if (this.current.enabled && saved.pendingDownload?.policy && saved.pendingDownload?.downloaded) {
@@ -156,7 +190,8 @@ export class AppUpdateService {
         await this.adapter.verifyPolicy(saved.pendingDownload.policy);
         const policy = new UpdatePolicy(saved.pendingDownload.policy);
         const target = selectExactTarget(policy, {
-          currentVersion: this.current.currentVersion, platform: this.configuration.platform,
+          currentVersion: this.current.currentVersion, currentVersionCode: this.current.currentVersionCode,
+          platform: this.configuration.platform,
           architecture: this.configuration.architecture, sdk: this.configuration.sdk,
           installationId: saved.installationId,
         });
@@ -171,7 +206,18 @@ export class AppUpdateService {
         saved.pendingDownload = null; await this.store.save();
       }
     }
-    if (saved.health?.pendingVersion && saved.health.pendingVersion === this.current.currentVersion) {
+    this.emit();
+    return this.getState();
+  }
+
+  async recordUpdatedLaunch() {
+    if (this.launchRecorded) return this.getState();
+    const saved = await this.store.load();
+    this.configuration ||= await this.adapter.configuration();
+    this.current.currentVersion = this.configuration.versionName || null;
+    this.current.currentVersionCode = Number(this.configuration.buildNumber) || null;
+    if (saved.health?.pendingVersion === this.current.currentVersion
+        && pendingBuildMatches(saved.health, this.current.currentVersionCode)) {
       saved.health.launchAttempts = Number(saved.health.launchAttempts || 0) + 1;
       saved.health.startupHealth = 'pending';
       await this.store.save();
@@ -179,13 +225,15 @@ export class AppUpdateService {
         this.current.error = new UpdateError('STARTUP_UNHEALTHY', 'The updated version did not complete startup several times');
       }
     }
+    this.launchRecorded = true;
     this.emit();
     return this.getState();
   }
 
   async markHealthy() {
     const state = await this.store.load();
-    if (state.health?.pendingVersion === this.current.currentVersion) {
+    if (state.health?.pendingVersion === this.current.currentVersion
+        && pendingBuildMatches(state.health, this.current.currentVersionCode)) {
       state.health = { ...state.health, startupHealth: 'healthy', healthyAt: new Date().toISOString() };
       state.pending = null;
       state.pendingDownload = null;
@@ -197,10 +245,41 @@ export class AppUpdateService {
     if (!this.current.enabled || typeof this.adapter.nativeState !== 'function') return this.getState();
     let native;
     try { native = await this.adapter.nativeState(); } catch { return this.getState(); }
-    if (native?.state !== 'FAILED') return this.getState();
     const saved = await this.store.load();
+    const nativeState = String(native?.state || 'IDLE');
+    if (!saved.pending && ['PREPARING', 'SUBMITTING', 'COMMITTED', 'USER_ACTION_REQUIRED'].includes(nativeState)
+        && typeof native.targetVersion === 'string' && native.targetVersion
+        && Number.isSafeInteger(Number(native.targetBuild)) && Number(native.targetBuild) > 0
+        && /^[0-9a-f]{64}$/.test(String(native.targetSha256 || ''))) {
+      // Native durable storage is the final owner at the PackageInstaller
+      // boundary. Reconstruct the JS marker if its preference write was lost.
+      saved.pending = { version: native.targetVersion, buildNumber: Number(native.targetBuild), sha256: native.targetSha256 };
+      saved.health ||= { pendingVersion: native.targetVersion, pendingBuild: Number(native.targetBuild),
+        launchAttempts: 0, startupHealth: 'pending', appliedAt: null, rollbackCompatibility: 'BINARY_ONLY' };
+      await this.store.save();
+    }
     if (!saved.pending?.version || native.targetVersion !== saved.pending.version
-        || Number(native.targetBuild) !== Number(saved.pending.buildNumber)) return this.getState();
+        || Number(native.targetBuild) !== Number(saved.pending.buildNumber)
+        // Native records written by pre-0.7.4 builds have no digest; version and
+        // build still correlate them with the JS marker.
+        || (native.targetSha256 && String(native.targetSha256) !== String(saved.pending.sha256 || ''))) return this.getState();
+    this.current.installerState = nativeState;
+    if (['PREPARING', 'SUBMITTING', 'COMMITTED', 'USER_ACTION_REQUIRED'].includes(nativeState)) {
+      if ([UpdateState.IDLE, UpdateState.READY_TO_INSTALL, UpdateState.APPLYING].includes(this.current.status)) {
+        this.setStatus(UpdateState.RESTART_REQUIRED, { error: null });
+      } else this.emit();
+      return this.getState();
+    }
+    if (nativeState === 'INSTALLED') {
+      if (this.current.currentVersionCode >= Number(saved.pending.buildNumber)) {
+        await this.markHealthy();
+        if (this.current.status === UpdateState.RESTART_REQUIRED) this.setStatus(UpdateState.IDLE, { error: null });
+      } else if ([UpdateState.IDLE, UpdateState.READY_TO_INSTALL, UpdateState.APPLYING].includes(this.current.status)) {
+        this.setStatus(UpdateState.RESTART_REQUIRED, { error: null });
+      }
+      return this.getState();
+    }
+    if (nativeState !== 'FAILED') return this.getState();
     saved.pending = null;
     saved.health = null;
     await this.store.save();
@@ -221,13 +300,24 @@ export class AppUpdateService {
 
   async setPreferences(patch) {
     const state = await this.store.load();
+    let channelChanged = false;
     if (patch.channel != null) {
       if (!VALUES_CHANNEL.has(patch.channel) || (patch.channel === UpdateChannel.BETA && !this.configuration?.betaChannelAvailable)) throw new UpdateError('INVALID_PREFERENCE', 'Channel is unavailable');
+      channelChanged = patch.channel !== state.channel;
       state.channel = patch.channel;
     }
     if (patch.autoCheck != null) state.autoCheck = Boolean(patch.autoCheck);
     if (patch.autoDownload != null) state.autoDownload = Boolean(patch.autoDownload);
+    if (channelChanged) {
+      state.pendingDownload = null;
+      this.provider?.clearCache();
+      this.current.target = null; this.current.downloaded = null; this.current.error = null;
+      this.current.progress = 0; this.current.status = UpdateState.IDLE;
+      setClientCompatibility(CompatibilityState.SUPPORTED);
+      this.current.compatibility = CompatibilityState.SUPPORTED;
+    }
     await this.store.save(); this.emit();
+    if (channelChanged && this.current.enabled) await this.checkForUpdates({ manual: true });
   }
 
   async withOperation(fn) {
@@ -245,15 +335,22 @@ export class AppUpdateService {
       try {
         const saved = await this.store.load();
         const policy = await this.provider.getPolicy(saved.channel, { bypassCache: manual });
+        const compatibility = evaluateCompatibility(policy, {
+          currentVersion: this.current.currentVersion, currentVersionCode: this.current.currentVersionCode,
+          now: new Date(),
+        });
         const target = selectExactTarget(policy, {
-          currentVersion: this.current.currentVersion, platform: this.configuration.platform,
+          currentVersion: this.current.currentVersion, currentVersionCode: this.current.currentVersionCode,
+          platform: this.configuration.platform,
           architecture: this.configuration.architecture, sdk: this.configuration.sdk,
           installationId: saved.installationId,
         });
+        this.current.compatibility = compatibility;
+        setClientCompatibility(compatibility);
         saved.lastCheckAt = Date.now(); await this.store.save();
         if (!target) {
           saved.pendingDownload = null; await this.store.save();
-          this.setStatus(UpdateState.UP_TO_DATE, { target: null, downloaded: null, lastCheckAt: new Date(saved.lastCheckAt) });
+          this.setStatus(UpdateState.UP_TO_DATE, { target: null, downloaded: null, compatibility, lastCheckAt: new Date(saved.lastCheckAt) });
           return null;
         }
         if (readyTarget?.release.releaseId === target.release.releaseId && readyTarget.artifact.sha256 === target.artifact.sha256 && readyDownload) {
@@ -263,8 +360,11 @@ export class AppUpdateService {
         if (saved.pendingDownload?.releaseId !== target.release.releaseId || saved.pendingDownload?.sha256 !== target.artifact.sha256) {
           saved.pendingDownload = null; await this.store.save();
         }
-        this.setStatus(UpdateState.AVAILABLE, { target, downloaded: null, lastCheckAt: new Date(saved.lastCheckAt) });
-        if (!manual && saved.autoDownload && target.release.channel === UpdateChannel.STABLE) setTimeout(() => this.download(target).catch(() => {}), 0);
+        this.setStatus(UpdateState.AVAILABLE, { target, downloaded: null, compatibility, lastCheckAt: new Date(saved.lastCheckAt) });
+        if (!manual && saved.autoDownload && target.release.channel === UpdateChannel.STABLE) {
+          const network = typeof this.adapter.networkStatus === 'function' ? await this.adapter.networkStatus().catch(() => ({ metered: true })) : { metered: true };
+          if (network?.metered === false) setTimeout(() => this.download(target).catch(() => {}), 0);
+        }
         return target;
       } catch (error) {
         const typed = error instanceof UpdateError ? error : new UpdateError('UNKNOWN', String(error?.message || error), { cause: error });
@@ -305,14 +405,24 @@ export class AppUpdateService {
 
   async apply(target = this.current.target) {
     if (!target || !this.current.downloaded) throw new UpdateError('INVALID_STATE', 'No verified update is ready');
+    if (![UpdateState.READY_TO_INSTALL, UpdateState.FAILED].includes(this.current.status)) {
+      throw new UpdateError('UPDATE_LOCKED', 'The update has already been handed to Android');
+    }
     return this.withOperation(async () => {
       try {
+        if (typeof this.adapter.nativeState === 'function') {
+          const native = await this.adapter.nativeState();
+          if (['PREPARING', 'SUBMITTING', 'COMMITTED', 'USER_ACTION_REQUIRED'].includes(native?.state)) {
+            throw new UpdateError('UPDATE_LOCKED', 'Android already owns this installer session');
+          }
+        }
         // A fresh signed policy is mandatory here: a downloaded release may have
         // been paused or withdrawn since discovery.
         const saved = await this.store.load();
         const policy = await this.provider.getPolicy(saved.channel, { bypassCache: true });
         const fresh = selectExactTarget(policy, {
-          currentVersion: this.current.currentVersion, platform: this.configuration.platform,
+          currentVersion: this.current.currentVersion, currentVersionCode: this.current.currentVersionCode,
+          platform: this.configuration.platform,
           architecture: this.configuration.architecture, sdk: this.configuration.sdk,
           installationId: saved.installationId,
         });
@@ -322,7 +432,8 @@ export class AppUpdateService {
         await this.adapter.verifyDownloaded(fresh, this.current.downloaded);
         this.setStatus(UpdateState.APPLYING, { target: fresh, error: null });
         saved.pending = { version: fresh.release.version.toString(), buildNumber: fresh.release.buildNumber, sha256: fresh.artifact.sha256 };
-        saved.health = { pendingVersion: fresh.release.version.toString(), launchAttempts: 0, startupHealth: 'pending', appliedAt: new Date().toISOString(), rollbackCompatibility: fresh.release.rollbackCompatibility };
+        saved.health = { pendingVersion: fresh.release.version.toString(), pendingBuild: fresh.release.buildNumber,
+          launchAttempts: 0, startupHealth: 'pending', appliedAt: new Date().toISOString(), rollbackCompatibility: fresh.release.rollbackCompatibility };
         await this.store.save();
         const result = await this.adapter.apply(fresh, this.current.downloaded);
         this.setStatus(UpdateState.RESTART_REQUIRED);
@@ -344,6 +455,16 @@ export class AppUpdateService {
   }
 
   async applyAndRestart(target = this.current.target) { return this.apply(target); }
+
+  async continueInstaller() {
+    try {
+      return await this.adapter.continueInstaller();
+    } finally {
+      // A prompt that cannot be reopened is abandoned natively and becomes a
+      // retryable FAILED state; surface it immediately.
+      await this.reconcileInstallerState();
+    }
+  }
 
   async startBackgroundChecks() {
     if (!this.current.enabled) return;
@@ -370,9 +491,6 @@ export async function startUpdateRuntime() {
     const state = await appUpdateService.initialize();
     if (!state.enabled) return state;
     await appUpdateService.reconcileInstallerState();
-    // Reaching this point means the main shell rendered and critical startup
-    // completed; late runtime crashes are not updater failures.
-    await appUpdateService.markHealthy();
     await appUpdateService.startBackgroundChecks();
     return appUpdateService.getState();
   } catch (error) {
@@ -381,4 +499,4 @@ export async function startUpdateRuntime() {
   }
 }
 
-export { MandatoryMode, SemVer, UpdateChannel, UpdateError, UpdateState };
+export { CompatibilityState, MandatoryMode, SemVer, UpdateChannel, UpdateError, UpdateState };

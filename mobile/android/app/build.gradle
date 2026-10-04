@@ -22,7 +22,7 @@ android {
     def javaString = { String value -> '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"' }
     def updatePolicyUrlTemplate = System.getenv("SEOS_UPDATE_POLICY_URL_TEMPLATE") ?: ""
     def updateTrustKeys = System.getenv("SEOS_UPDATE_TRUST_KEYS_JSON") ?: "{}"
-    def betaChannelAvailable = (System.getenv("SEOS_UPDATE_BETA_AVAILABLE") ?: "true").toBoolean()
+    def betaChannelAvailable = (System.getenv("SEOS_UPDATE_BETA_AVAILABLE") ?: "false").toBoolean()
     defaultConfig {
         buildConfigField "String", "SEOS_UPDATE_POLICY_URL_TEMPLATE", javaString(updatePolicyUrlTemplate)
         buildConfigField "String", "SEOS_UPDATE_TRUST_KEYS_JSON", javaString(updateTrustKeys)

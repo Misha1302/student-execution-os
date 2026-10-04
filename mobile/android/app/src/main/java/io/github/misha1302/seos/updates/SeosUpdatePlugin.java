@@ -2,8 +2,9 @@ package io.github.misha1302.seos.updates;
 
 import android.app.PendingIntent;
 import android.content.Intent;
-import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
+import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.storage.StorageManager;
@@ -38,6 +39,7 @@ import org.json.JSONObject;
 public class SeosUpdatePlugin extends Plugin {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private static final long MIB = 1024L * 1024L;
+    private volatile boolean installerOperationActive;
 
     @Override protected void handleOnDestroy() {
         worker.shutdownNow();
@@ -124,15 +126,26 @@ public class SeosUpdatePlugin extends Plugin {
     }
 
     @PluginMethod public void getState(PluginCall call) {
-        SharedPreferences state = getContext().getSharedPreferences(UpdateInstallReceiver.PREFS, android.content.Context.MODE_PRIVATE);
+        UpdateInstallerState installerState = new UpdateInstallerState(getContext());
+        UpdateInstallerState.Snapshot state = installerOperationActive
+                ? installerState.get() : reconcileInstallerState(installerState);
         JSObject out = new JSObject();
-        out.put("state", state.getString("state", "IDLE"));
-        out.put("code", state.getString("code", ""));
-        out.put("message", state.getString("message", ""));
-        out.put("targetVersion", state.getString("target_version", ""));
-        out.put("targetBuild", state.getLong("target_build", 0));
-        out.put("updatedAt", state.getLong("updated_at", 0));
+        out.put("sessionId", state.sessionId);
+        out.put("state", state.state);
+        out.put("code", state.code);
+        out.put("message", state.message);
+        out.put("targetVersion", state.targetVersion);
+        out.put("targetBuild", state.targetBuild);
+        out.put("targetSha256", state.targetSha256);
+        out.put("updatedAt", state.updatedAt);
         call.resolve(out);
+    }
+
+    @PluginMethod public void networkStatus(PluginCall call) {
+        ConnectivityManager manager = getContext().getSystemService(ConnectivityManager.class);
+        // Unknown is treated as metered by the JS owner, so automatic downloads
+        // remain conservative while manual downloads still work.
+        call.resolve(new JSObject().put("metered", manager == null || manager.isActiveNetworkMetered()));
     }
 
     @PluginMethod public void openInstallPermission(PluginCall call) {
@@ -148,7 +161,40 @@ public class SeosUpdatePlugin extends Plugin {
         call.resolve();
     }
 
+    @PluginMethod public void continueInstaller(PluginCall call) {
+        UpdateInstallerState state = new UpdateInstallerState(getContext());
+        UpdateInstallerState.Snapshot current = state.get();
+        if (!("USER_ACTION_REQUIRED".equals(current.state) || "COMMITTED".equals(current.state))) {
+            call.reject("No Android installer confirmation is pending", "INSTALLER_FAILED");
+            return;
+        }
+        PackageInstaller installer = getContext().getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionInfo info = installer.getSessionInfo(current.sessionId);
+        if (info == null) {
+            state.fail(current.sessionId, "INSTALLER_FAILED", "Android installer session is no longer available");
+            call.reject("Android installer session is no longer available", "INSTALLER_FAILED");
+            return;
+        }
+        // Prefer the exact OS confirmation intent PackageInstaller handed us; the
+        // session-details intent is the platform's own fallback after process death.
+        Intent confirmation = UpdateInstallReceiver.pendingConfirmation(current.sessionId);
+        Intent intent = confirmation != null ? new Intent(confirmation) : info.createDetailsIntent();
+        try {
+            if (intent == null) throw new IllegalStateException("No installer intent");
+            getContext().startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            call.resolve();
+        } catch (RuntimeException failure) {
+            // Never leave the user locked behind an OS prompt nobody can reopen:
+            // abandon this platform session (no install can follow it) and allow a
+            // fresh apply from the verified cached APK.
+            try { installer.abandonSession(current.sessionId); } catch (RuntimeException ignored) { }
+            state.fail(current.sessionId, "INSTALL_CANCELLED", "Android installer could not be reopened; start the installation again");
+            call.reject("Android installer could not be reopened", "INSTALL_CANCELLED", failure);
+        }
+    }
+
     private void verifyCall(PluginCall call, boolean install) {
+        if (install) installerOperationActive = true;
         try {
             File apk = new File(required(call, "path"));
             String version = safeVersion(required(call, "version"));
@@ -161,7 +207,7 @@ public class SeosUpdatePlugin extends Plugin {
             try (Lock ignored = lock(expectedRoot)) {
                 UpdateFiles.verify(getContext(), apk, version, build, size, hash, packageName);
                 if (!install) { call.resolve(downloadResult(apk)); return; }
-                commit(apk, packageName, size, version, build);
+                commit(apk, packageName, size, version, build, hash);
                 call.resolve(new JSObject().put("status", "COMMITTED").put("userActionMayBeRequired", true));
             }
         } catch (UpdateFailure failure) { call.reject(failure.getMessage(), failure.code, failure); }
@@ -169,13 +215,20 @@ public class SeosUpdatePlugin extends Plugin {
             String code = failure.getMessage() != null && failure.getMessage().contains("hash") ? "HASH_MISMATCH" : "PACKAGE_INVALID";
             call.reject(failure.getMessage(), code, failure);
         } catch (Exception failure) { call.reject("Package apply failed", "INSTALLER_FAILED", failure); }
+        finally { if (install) installerOperationActive = false; }
     }
 
-    private void commit(File apk, String packageName, long size, String version, long build) throws Exception {
+    private void commit(File apk, String packageName, long size, String version, long build, String sha256) throws Exception {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getContext().getPackageManager().canRequestPackageInstalls()) {
             throw new UpdateFailure("PERMISSION_REQUIRED", "Allow this app to install its signed update");
         }
         PackageInstaller installer = getContext().getPackageManager().getPackageInstaller();
+        UpdateInstallerState state = new UpdateInstallerState(getContext());
+        String durable = state.get().state;
+        if ("PREPARING".equals(durable) || "SUBMITTING".equals(durable)
+                || "COMMITTED".equals(durable) || "USER_ACTION_REQUIRED".equals(durable)) {
+            throw new UpdateFailure("UPDATE_LOCKED", "Android already owns an installer session");
+        }
         for (PackageInstaller.SessionInfo session : installer.getMySessions()) {
             // Finished sessions can remain visible briefly. Only an active session
             // competes with this process for the platform install boundary.
@@ -187,6 +240,10 @@ public class SeosUpdatePlugin extends Plugin {
         params.setAppPackageName(packageName); params.setSize(size);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED);
         int id = installer.createSession(params);
+        if (!state.begin(id, version, build, sha256)) {
+            installer.abandonSession(id);
+            throw new UpdateFailure("INSTALLER_FAILED", "Cannot persist Android installer session");
+        }
         boolean committed = false;
         try (PackageInstaller.Session session = installer.openSession(id)) {
             try (InputStream input = new BufferedInputStream(new java.io.FileInputStream(apk))) {
@@ -196,12 +253,59 @@ public class SeosUpdatePlugin extends Plugin {
             int flags = PendingIntent.FLAG_UPDATE_CURRENT;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_MUTABLE;
             PendingIntent pending = PendingIntent.getBroadcast(getContext(), id, callback, flags);
-            SharedPreferences.Editor state = getContext().getSharedPreferences(UpdateInstallReceiver.PREFS, android.content.Context.MODE_PRIVATE).edit()
-                    .putString("state", "COMMITTED").putString("target_version", version).putLong("target_build", build)
-                    .putLong("updated_at", System.currentTimeMillis());
-            state.apply();
-            session.commit(pending.getIntentSender()); committed = true;
+            if (!state.markSubmitting(id)) throw new UpdateFailure("INSTALLER_FAILED", "Cannot persist installer submission");
+            session.commit(pending.getIntentSender());
+            committed = true;
+            // A very fast callback may already have moved to a terminal state;
+            // markCommitted only advances SUBMITTING and never overwrites it.
+            state.markCommitted(id);
+        } catch (Exception failure) {
+            state.fail(id, "INSTALLER_FAILED", "Android installer submission failed");
+            throw failure;
         } finally { if (!committed) installer.abandonSession(id); }
+    }
+
+    private UpdateInstallerState.Snapshot reconcileInstallerState(UpdateInstallerState state) {
+        UpdateInstallerState.Snapshot current = state.get();
+        boolean pending = "PREPARING".equals(current.state) || "SUBMITTING".equals(current.state)
+                || "COMMITTED".equals(current.state) || "USER_ACTION_REQUIRED".equals(current.state);
+        if (!pending) return current;
+        if (current.targetBuild > 0 && runningBuild() >= current.targetBuild) {
+            state.callback(current.sessionId, "INSTALLED", "", "Installed build is running");
+            return state.get();
+        }
+        PackageInstaller installer = getContext().getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionInfo info = current.sessionId >= 0 ? installer.getSessionInfo(current.sessionId) : null;
+        boolean committed = false;
+        if (info != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) committed = info.isCommitted();
+            else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) committed = info.isSealed();
+            else {
+                // API 24/25 do not expose sealed/committed. SUBMITTING plus a
+                // surviving platform session is treated conservatively as
+                // committed so recovery can never create a duplicate install.
+                committed = "SUBMITTING".equals(current.state);
+            }
+        }
+        if (("PREPARING".equals(current.state) || "SUBMITTING".equals(current.state)) && committed) {
+            state.markCommitted(current.sessionId);
+        } else if ("PREPARING".equals(current.state) || "SUBMITTING".equals(current.state)) {
+            if (info != null) installer.abandonSession(current.sessionId);
+            state.fail(current.sessionId, "DOWNLOAD_INTERRUPTED", "Installer preparation was interrupted");
+        } else if (info == null) {
+            state.fail(current.sessionId, "INSTALLER_FAILED", "Android installer session ended without a result");
+        }
+        return state.get();
+    }
+
+    @SuppressWarnings("deprecation")
+    private long runningBuild() {
+        try {
+            PackageInfo info = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? info.getLongVersionCode() : info.versionCode;
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 
     interface SessionSync { void fsync(OutputStream sessionOutput) throws IOException; }

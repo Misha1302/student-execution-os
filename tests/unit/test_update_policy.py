@@ -44,7 +44,7 @@ def policy(*, channel=UpdateChannel.STABLE, version="1.0.1", status=ReleaseStatu
         status=status, severity=ReleaseSeverity.NORMAL,
         release_notes={"en": ReleaseNotes("Update", ("Safer updates",)),
                        "ru": ReleaseNotes("Обновление", ("Безопасные обновления",))},
-        minimum_os_versions=MinimumOsVersions(24), minimum_api_version=1,
+        minimum_os_versions=MinimumOsVersions(24),
         mandatory_policy=MandatoryPolicy(), rollback_compatibility=RollbackCompatibility.BINARY_ONLY,
         artifacts=(UpdateArtifact(
             "android", "universal", ArtifactKind.APK, "https://updates.example/app.apk", 4,
@@ -58,6 +58,16 @@ def policy(*, channel=UpdateChannel.STABLE, version="1.0.1", status=ReleaseStatu
 
 
 class SemVerTests(unittest.TestCase):
+    def test_shared_protocol_corpus(self):
+        corpus = json.loads((ROOT / "tests/fixtures/update_protocol_corpus.json").read_text())
+        ordered = [SemVer.parse(value) for value in corpus["semver_order"]]
+        self.assertEqual(sorted(ordered), ordered)
+        for left, right in corpus["semver_equal_precedence"]:
+            self.assertEqual(SemVer.parse(left), SemVer.parse(right))
+        for value in corpus["semver_invalid"]:
+            with self.assertRaises(ValueError):
+                SemVer.parse(value)
+
     def test_semver_2_ordering_and_build_precedence(self):
         ordered = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta",
                    "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"]
@@ -133,6 +143,22 @@ class SignedPolicyTests(unittest.TestCase):
             replace(original, releases=(original.releases[0], original.releases[0]))
         with self.assertRaises(ValueError):
             replace(original.releases[0], artifacts=(original.releases[0].artifacts[0],) * 2)
+
+    def test_expired_predecessor_authenticity_is_separate_from_client_freshness(self):
+        expired = sign_policy(policy(expires=NOW + timedelta(hours=1)), self.key)
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.json"
+            trust_path = Path(directory) / "trust.json"
+            policy_path.write_text(expired.signed_json(), encoding="utf-8")
+            trust_path.write_text(json.dumps(self.trusted), encoding="utf-8")
+            common = ["python", str(ROOT / "tools/update_policy.py")]
+            authentic = subprocess.run(common + ["verify-authenticity", "--policy", str(policy_path),
+                "--trusted-keys-file", str(trust_path)], cwd=ROOT, capture_output=True, text=True)
+            client = subprocess.run(common + ["verify-client-policy", "--policy", str(policy_path),
+                "--trusted-keys-file", str(trust_path)], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(authentic.returncode, 0, authentic.stderr)
+            self.assertNotEqual(client.returncode, 0)
+            self.assertIn("expired", client.stderr)
 
 
 class JavaScriptUpdateDomainTests(unittest.TestCase):

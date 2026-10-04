@@ -17,6 +17,9 @@ _SEMVER = re.compile(
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _KEY_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$")
+_MAX_VERSION_LENGTH = 80
+_MAX_URL_LENGTH = 2048
 
 
 def _aware(value: datetime, name: str) -> datetime:
@@ -30,7 +33,7 @@ def _iso(value: datetime) -> str:
 
 
 def _parse_time(value: Any, name: str) -> datetime:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not _INSTANT.fullmatch(value):
         raise ValueError(f"{name} must be an ISO timestamp")
     try:
         return _aware(datetime.fromisoformat(value.replace("Z", "+00:00")), name)
@@ -61,7 +64,10 @@ class SemVer:
 
     @classmethod
     def parse(cls, value: str) -> "SemVer":
-        match = _SEMVER.fullmatch(str(value))
+        text = str(value)
+        if len(text) > _MAX_VERSION_LENGTH:
+            raise ValueError(f"SemVer is longer than {_MAX_VERSION_LENGTH} characters")
+        match = _SEMVER.fullmatch(text)
         if not match:
             raise ValueError(f"invalid SemVer: {value!r}")
         pre = tuple(match.group(4).split(".")) if match.group(4) else ()
@@ -266,7 +272,7 @@ class UpdaterMetadata:
     min_sdk: int = 24
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", self.package_name):
+        if len(self.package_name) > 255 or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", self.package_name):
             raise ValueError("invalid Android package name")
         if self.version_code <= 0 or self.min_sdk < 24:
             raise ValueError("invalid updater metadata")
@@ -298,6 +304,8 @@ class UpdateArtifact:
     def __post_init__(self) -> None:
         if self.platform != "android" or self.architecture not in {"universal", "arm64", "x64"}:
             raise ValueError("unsupported artifact platform/architecture")
+        if len(self.url) > _MAX_URL_LENGTH:
+            raise ValueError(f"artifact URL is longer than {_MAX_URL_LENGTH} characters")
         parsed = urlparse(self.url)
         local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "10.0.2.2"}
         if (parsed.scheme != "https" and not local_http) or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
@@ -342,7 +350,6 @@ class UpdateRelease:
     severity: ReleaseSeverity
     release_notes: dict[str, ReleaseNotes]
     minimum_os_versions: MinimumOsVersions
-    minimum_api_version: int | None
     mandatory_policy: MandatoryPolicy
     rollback_compatibility: RollbackCompatibility
     artifacts: tuple[UpdateArtifact, ...]
@@ -359,8 +366,6 @@ class UpdateRelease:
             or not set(self.release_notes).issubset({"en", "ru"})
         ):
             raise ValueError("release notes must use en/ru locale keys")
-        if self.minimum_api_version is not None and self.minimum_api_version <= 0:
-            raise ValueError("minimum_api_version must be positive")
         if not self.artifacts:
             raise ValueError("release needs at least one artifact")
         identities = [artifact.identity for artifact in self.artifacts]
@@ -369,6 +374,8 @@ class UpdateRelease:
         for artifact in self.artifacts:
             if artifact.updater_metadata.version_code != self.build_number:
                 raise ValueError("artifact version_code must equal release build_number")
+            if artifact.updater_metadata.min_sdk != self.minimum_os_versions.android_sdk:
+                raise ValueError("artifact min_sdk must equal release minimum_os_versions.android_sdk")
 
     @property
     def release_id(self) -> str:
@@ -385,8 +392,6 @@ class UpdateRelease:
             "rollback_compatibility": self.rollback_compatibility.value,
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
         }
-        if self.minimum_api_version is not None:
-            out["minimum_api_version"] = self.minimum_api_version
         return out
 
     @classmethod
@@ -395,8 +400,7 @@ class UpdateRelease:
             "version", "build_number", "channel", "published_at", "status", "severity", "release_notes",
             "minimum_os_versions", "mandatory_policy", "rollback_compatibility", "artifacts",
         }
-        allowed = required | {"minimum_api_version"}
-        if not isinstance(raw, dict) or not required.issubset(raw) or set(raw) - allowed:
+        if not isinstance(raw, dict) or set(raw) != required:
             raise ValueError("invalid release fields")
         notes = raw["release_notes"]
         if (
@@ -411,7 +415,6 @@ class UpdateRelease:
             _parse_time(raw["published_at"], "published_at"), ReleaseStatus(raw["status"]),
             ReleaseSeverity(raw["severity"]), {k: ReleaseNotes.from_dict(v) for k, v in notes.items()},
             MinimumOsVersions.from_dict(raw["minimum_os_versions"]),
-            _integer(raw["minimum_api_version"], "minimum_api_version") if "minimum_api_version" in raw else None,
             MandatoryPolicy.from_dict(raw["mandatory_policy"]),
             RollbackCompatibility(raw["rollback_compatibility"]),
             tuple(UpdateArtifact.from_dict(item) for item in raw["artifacts"]),

@@ -314,6 +314,8 @@ def verify_release(repo: str, source_sha: str, values: ReleaseInputs) -> str:
         raise ReleaseError(
             f"release target mismatch: expected {source_sha}, got {release.get('target_commitish')}"
         )
+    if release.get("immutable") is not True:
+        raise ReleaseError("GitHub Release is not immutable")
     expected_apk = f"student-execution-os-{values.version}-android-universal.apk"
     assets = {item.get("name") for item in release.get("assets", [])}
     if expected_apk not in assets or "provenance.json" not in assets:
@@ -389,8 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             "BETA": load_policy(repo, "BETA"),
         }
         values = collect_inputs(args, policies)
-        if release_exists(repo, values.version):
-            raise ReleaseError(f"immutable GitHub Release v{values.version} already exists")
+        resume_existing = release_exists(repo, values.version)
 
         dispatch_id = uuid.uuid4().hex
         print("\nProduction Android release")
@@ -401,6 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  channel:         {values.channel}")
         print(f"  policy sequence: {values.policy_sequence}")
         print(f"  rollout:         {values.rollout}%")
+        print(f"  publication:     {'verify and resume existing immutable release' if resume_existing else 'create immutable release'}")
         if not args.yes:
             answer = prompt_text("Dispatch this production release? (yes/no)", default="no")
             if answer.lower() not in {"y", "yes"}:

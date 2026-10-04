@@ -45,30 +45,37 @@ jobs:
           SEOS_UPDATE_SIGNING_KEY_B64: ${{ secrets.SEOS_UPDATE_SIGNING_KEY_B64 }}
           SEOS_UPDATE_TRUST_KEYS_JSON: ${{ vars.SEOS_UPDATE_TRUST_KEYS_JSON }}
           SEOS_UPDATE_SIGNING_KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
+          CHANNEL: ${{ inputs.channel }}
+          REQUESTED_SEQUENCE: ${{ inputs.sequence }}
+          STATUS: ${{ inputs.status }}
+          ROLLOUT: ${{ inputs.rollout }}
         run: |
+          set -euo pipefail
           test -n "$SEOS_UPDATE_SIGNING_KEY_B64"
           test -n "$SEOS_UPDATE_TRUST_KEYS_JSON"
           test -n "$SEOS_UPDATE_SIGNING_KEY_ID"
-          channel="$(printf '%s' '${{ inputs.channel }}' | tr '[:upper:]' '[:lower:]')"
+          channel="${CHANNEL,,}"
           branch="update-$channel"
           repo="$GITHUB_REPOSITORY"
           mkdir current
-          gh api -H "Accept: application/vnd.github.raw+json" \
-            "repos/$repo/contents/policy.json?ref=$branch" > current/policy.json
-          python tools/update_policy.py verify --policy current/policy.json
+          # Bytes and blob SHA come from ONE response: the PUT below is a true
+          # compare-and-swap against exactly the predecessor that was verified.
+          gh api "repos/$repo/contents/policy.json?ref=$branch" > current/contents.json
+          python -c 'import base64,json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[2],"wb").write(base64.b64decode(d["content"]))' current/contents.json current/policy.json
+          current_sha="$(jq -er .sha current/contents.json)"
+          python tools/update_policy.py verify-authenticity --policy current/policy.json
           current_sequence="$(python -c 'import json; print(json.load(open("current/policy.json"))["sequence"])')"
-          requested_sequence="${{ inputs.sequence }}"
+          requested_sequence="$REQUESTED_SEQUENCE"
           if test "$requested_sequence" -le "$current_sequence"; then
             echo "policy sequence must increase: current=$current_sequence requested=$requested_sequence" >&2
             exit 1
           fi
 
           python tools/update_policy.py control --policy current/policy.json --output policy.json \
-            --sequence "$requested_sequence" --status "${{ inputs.status }}" \
-            --rollout "${{ inputs.rollout }}" --key-id "$SEOS_UPDATE_SIGNING_KEY_ID"
-          python tools/update_policy.py verify --policy policy.json
+            --sequence "$requested_sequence" --status "$STATUS" \
+            --rollout "$ROLLOUT" --key-id "$SEOS_UPDATE_SIGNING_KEY_ID"
+          python tools/update_policy.py verify-client-policy --policy policy.json
 
-          current_sha="$(gh api "repos/$repo/contents/policy.json?ref=$branch" --jq .sha)"
           gh api --method PUT "repos/$repo/contents/policy.json" \
             -f message="Control $channel update policy sequence $requested_sequence" \
             -f content="$(base64 -w0 policy.json)" -f branch="$branch" -f sha="$current_sha" >/dev/null
@@ -77,10 +84,10 @@ jobs:
           gh api -H "Accept: application/vnd.github.raw+json" \
             "repos/$repo/contents/policy.json?ref=$branch" > published/policy.json
           cmp policy.json published/policy.json
-          python tools/update_policy.py verify --policy published/policy.json
+          python tools/update_policy.py verify-client-policy --policy published/policy.json
 
           public_url="https://raw.githubusercontent.com/$repo/$branch/policy.json?run=$GITHUB_RUN_ID"
           curl --fail --location --silent --show-error --header 'Cache-Control: no-cache' \
             "$public_url" -o published/public-policy.json
           cmp policy.json published/public-policy.json
-          python tools/update_policy.py verify --policy published/public-policy.json
+          python tools/update_policy.py verify-client-policy --policy published/public-policy.json

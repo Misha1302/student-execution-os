@@ -75,6 +75,16 @@ The private Ed25519 key is never part of the APK or repository. See
 key rotation and the local update source. Android always retains the right to show
 its install confirmation; the app does not attempt silent installation.
 
+Production builds expose Beta only when a real signed `update-beta` feed exists. The
+default and current production setting is false. Automatic APK downloads run only when
+Android reports an unmetered active network; a manual Download action remains available
+on metered networks.
+
+Android backup rules exclude the installation id/update preferences, pending installer
+session, Keystore-backed credential ciphertext and the account-owned offline SQLite
+queue from cloud backup and device transfer. These rules do not delete app data during
+a normal same-package APK upgrade.
+
 ## Layout
 
 - `scripts/sync-web.mjs` — copies the web client into `www/` (`index.html` + `/assets/…`,

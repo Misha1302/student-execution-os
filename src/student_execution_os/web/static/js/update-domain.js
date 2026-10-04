@@ -4,11 +4,19 @@
 export const UpdateChannel = Object.freeze({ STABLE: 'STABLE', BETA: 'BETA' });
 export const ReleaseStatus = Object.freeze({ DRAFT: 'DRAFT', AVAILABLE: 'AVAILABLE', PAUSED: 'PAUSED', WITHDRAWN: 'WITHDRAWN' });
 export const MandatoryMode = Object.freeze({ OPTIONAL: 'OPTIONAL', REQUIRED_AFTER: 'REQUIRED_AFTER', UNSUPPORTED_CLIENT: 'UNSUPPORTED_CLIENT' });
+export const CompatibilityState = Object.freeze({ SUPPORTED: 'SUPPORTED', UPDATE_REQUIRED_SOON: 'UPDATE_REQUIRED_SOON', UNSUPPORTED: 'UNSUPPORTED' });
 export const UpdateState = Object.freeze({
   IDLE: 'IDLE', CHECKING: 'CHECKING', UP_TO_DATE: 'UP_TO_DATE', AVAILABLE: 'AVAILABLE',
   DOWNLOADING: 'DOWNLOADING', DOWNLOADED: 'DOWNLOADED', READY_TO_INSTALL: 'READY_TO_INSTALL',
   APPLYING: 'APPLYING', RESTART_REQUIRED: 'RESTART_REQUIRED', FAILED: 'FAILED',
 });
+export const PUBLIC_UPDATE_ERRORS = Object.freeze([
+  'METADATA_UNAVAILABLE', 'METADATA_INVALID', 'SIGNATURE_INVALID', 'METADATA_EXPIRED',
+  'METADATA_ROLLBACK', 'METADATA_EQUIVOCATION', 'INCOMPATIBLE_PLATFORM', 'NETWORK_ERROR',
+  'DOWNLOAD_FAILED', 'DOWNLOAD_INTERRUPTED', 'INSUFFICIENT_DISK', 'HASH_MISMATCH',
+  'PACKAGE_INVALID', 'PACKAGE_IDENTITY_MISMATCH', 'PERMISSION_REQUIRED', 'INSTALLER_FAILED',
+  'INSTALL_CANCELLED', 'RELEASE_NO_LONGER_AVAILABLE', 'STARTUP_UNHEALTHY', 'UPDATE_LOCKED',
+]);
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -25,7 +33,9 @@ export class UpdateError extends Error {
 
 export class SemVer {
   constructor(value) {
-    const match = SEMVER.exec(String(value));
+    const text = String(value);
+    if (text.length > 80) throw new UpdateError('METADATA_INVALID', 'SemVer is too long');
+    const match = SEMVER.exec(text);
     if (!match) throw new UpdateError('METADATA_INVALID', `Invalid SemVer: ${value}`);
     this.major = Number(match[1]); this.minor = Number(match[2]); this.patch = Number(match[3]);
     this.prerelease = match[4] ? match[4].split('.') : [];
@@ -33,7 +43,7 @@ export class SemVer {
     if (this.prerelease.some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) {
       throw new UpdateError('METADATA_INVALID', `Invalid numeric prerelease identifier: ${value}`);
     }
-    this.value = String(value);
+    this.value = text;
     Object.freeze(this.prerelease); Object.freeze(this.build); Object.freeze(this);
   }
 
@@ -87,7 +97,13 @@ function integer(value, min, max, name) {
 }
 
 function instant(value, name) {
-  if (typeof value !== 'string' || !/(?:Z|[+-]\d\d:\d\d)$/.test(value)) throw new UpdateError('METADATA_INVALID', `Invalid ${name}`);
+  const match = typeof value === 'string' && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) throw new UpdateError('METADATA_INVALID', `Invalid ${name}`);
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (month < 1 || month > 12 || day < 1 || day > days || hour > 23 || minute > 59 || second > 59) {
+    throw new UpdateError('METADATA_INVALID', `Invalid ${name}`);
+  }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) throw new UpdateError('METADATA_INVALID', `Invalid ${name}`);
   return parsed;
@@ -110,11 +126,13 @@ export class UpdateArtifact {
       throw new UpdateError('INCOMPATIBLE_PLATFORM', 'Unsupported artifact identity');
     }
     let url;
+    if (typeof raw.url !== 'string' || raw.url.length > 2048) throw new UpdateError('METADATA_INVALID', 'Artifact URL is too long');
     try { url = new URL(raw.url); } catch { throw new UpdateError('METADATA_INVALID', 'Invalid artifact URL'); }
     const localHttp = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '10.0.2.2'].includes(url.hostname);
     if ((url.protocol !== 'https:' && !localHttp) || url.username || url.password || url.hash) throw new UpdateError('METADATA_INVALID', 'Artifact URL must be public HTTPS or a local test URL');
     exactKeys(raw.updater_metadata, ['package_name', 'version_code', 'min_sdk'], [], 'updater_metadata');
-    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(raw.updater_metadata.package_name)) throw new UpdateError('METADATA_INVALID', 'Invalid package name');
+    if (typeof raw.updater_metadata.package_name !== 'string' || raw.updater_metadata.package_name.length > 255
+        || !/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(raw.updater_metadata.package_name)) throw new UpdateError('METADATA_INVALID', 'Invalid package name');
     this.platform = raw.platform;
     this.architecture = raw.architecture;
     this.artifactKind = raw.artifact_kind;
@@ -137,7 +155,7 @@ export class UpdateArtifact {
 export class UpdateRelease {
   constructor(raw) {
     exactKeys(raw, ['version', 'build_number', 'channel', 'published_at', 'status', 'severity', 'release_notes',
-      'minimum_os_versions', 'mandatory_policy', 'rollback_compatibility', 'artifacts'], ['minimum_api_version'], 'release');
+      'minimum_os_versions', 'mandatory_policy', 'rollback_compatibility', 'artifacts'], [], 'release');
     this.version = new SemVer(raw.version);
     this.buildNumber = integer(raw.build_number, 1, Number.MAX_SAFE_INTEGER, 'build_number');
     this.channel = enumValue(raw.channel, VALUES(UpdateChannel), 'release channel');
@@ -150,7 +168,6 @@ export class UpdateRelease {
     this.releaseNotes = Object.freeze(Object.fromEntries(locales.map((locale) => [locale, notes(raw.release_notes[locale])])));
     exactKeys(raw.minimum_os_versions, [], ['android_sdk'], 'minimum_os_versions');
     this.minimumAndroidSdk = raw.minimum_os_versions.android_sdk == null ? null : integer(raw.minimum_os_versions.android_sdk, 24, 1000, 'android_sdk');
-    this.minimumApiVersion = raw.minimum_api_version == null ? null : integer(raw.minimum_api_version, 1, Number.MAX_SAFE_INTEGER, 'minimum_api_version');
     exactKeys(raw.mandatory_policy, ['mode'], ['required_after'], 'mandatory_policy');
     const mode = enumValue(raw.mandatory_policy.mode, VALUES(MandatoryMode), 'mandatory mode');
     const requiredAfter = raw.mandatory_policy.required_after == null ? null : instant(raw.mandatory_policy.required_after, 'required_after');
@@ -161,6 +178,7 @@ export class UpdateRelease {
     this.artifacts = Object.freeze(raw.artifacts.map((artifact) => new UpdateArtifact(artifact)));
     if (new Set(this.artifacts.map((artifact) => artifact.identity)).size !== this.artifacts.length) throw new UpdateError('METADATA_INVALID', 'Duplicate artifact identity');
     if (this.artifacts.some((artifact) => artifact.updaterMetadata.versionCode !== this.buildNumber)) throw new UpdateError('METADATA_INVALID', 'Artifact build mismatch');
+    if (this.artifacts.some((artifact) => artifact.updaterMetadata.minSdk !== this.minimumAndroidSdk)) throw new UpdateError('METADATA_INVALID', 'Artifact min SDK mismatch');
     if (this.channel === UpdateChannel.STABLE && this.version.isPrerelease) throw new UpdateError('METADATA_INVALID', 'Stable prerelease is forbidden');
     this.raw = Object.freeze(structuredClone(raw));
     Object.freeze(this);
@@ -224,13 +242,35 @@ export function rolloutBucket(installationId, releaseId) {
   return hash % 10000;
 }
 
-export function selectExactTarget(policy, { currentVersion, platform, architecture, sdk, installationId, now = new Date() }) {
+export function evaluateCompatibility(policy, { currentVersion, currentVersionCode, now = new Date() }) {
   const current = currentVersion instanceof SemVer ? currentVersion : new SemVer(currentVersion);
+  const currentBuild = integer(currentVersionCode, 1, Number.MAX_SAFE_INTEGER, 'current versionCode');
+  if (policy.expiresAt <= now) throw new UpdateError('METADATA_EXPIRED', 'Update policy has expired');
+  if (policy.minimumSupportedVersion && current.compare(policy.minimumSupportedVersion) < 0) {
+    return CompatibilityState.UNSUPPORTED;
+  }
+  const release = policy.latestRelease;
+  const behind = release.version.compare(current) > 0 && release.buildNumber > currentBuild;
+  if (!behind || release.status !== ReleaseStatus.AVAILABLE) return CompatibilityState.SUPPORTED;
+  if (release.mandatoryPolicy.mode === MandatoryMode.UNSUPPORTED_CLIENT) return CompatibilityState.UNSUPPORTED;
+  if (release.mandatoryPolicy.mode === MandatoryMode.REQUIRED_AFTER) {
+    return release.mandatoryPolicy.requiredAfter <= now
+      ? CompatibilityState.UNSUPPORTED : CompatibilityState.UPDATE_REQUIRED_SOON;
+  }
+  return CompatibilityState.SUPPORTED;
+}
+
+export function selectExactTarget(policy, { currentVersion, currentVersionCode, platform, architecture, sdk, installationId, now = new Date() }) {
+  const current = currentVersion instanceof SemVer ? currentVersion : new SemVer(currentVersion);
+  const currentBuild = integer(currentVersionCode, 1, Number.MAX_SAFE_INTEGER, 'current versionCode');
   if (policy.expiresAt <= now) throw new UpdateError('METADATA_EXPIRED', 'Update policy has expired');
   const release = policy.latestRelease;
   if (release.status !== ReleaseStatus.AVAILABLE) return null;
   if (policy.channel === UpdateChannel.STABLE && release.version.isPrerelease) return null;
-  if (release.version.compare(current) <= 0) return null; // forward fix by default; never automatic downgrade
+  // Publication and selection share one contract: normal releases must advance
+  // both SemVer and Android versionCode. Same-SemVer binary revisions are not
+  // representable by latest_version and therefore fail closed.
+  if (release.version.compare(current) <= 0 || release.buildNumber <= currentBuild) return null;
   if (release.minimumAndroidSdk != null && sdk < release.minimumAndroidSdk) return null;
   const artifacts = release.artifacts.filter((item) => item.platform === platform && (item.architecture === architecture || item.architecture === 'universal'));
   const exact = artifacts.find((item) => item.architecture === architecture);
@@ -239,17 +279,24 @@ export function selectExactTarget(policy, { currentVersion, platform, architectu
   if (!artifact || (exact && artifacts.filter((item) => item.architecture === architecture).length !== 1)
       || (!exact && artifacts.filter((item) => item.architecture === 'universal').length !== 1)) return null;
   let mandatory = release.mandatoryPolicy.mode;
-  if (mandatory === MandatoryMode.REQUIRED_AFTER && release.mandatoryPolicy.requiredAfter > now) mandatory = MandatoryMode.OPTIONAL;
-  if (policy.minimumSupportedVersion && current.compare(policy.minimumSupportedVersion) < 0) mandatory = MandatoryMode.UNSUPPORTED_CLIENT;
+  const compatibility = evaluateCompatibility(policy, { currentVersion: current, currentVersionCode: currentBuild, now });
+  if (mandatory === MandatoryMode.REQUIRED_AFTER) {
+    if (release.mandatoryPolicy.requiredAfter > now) {
+      mandatory = MandatoryMode.OPTIONAL;
+    }
+  }
+  if (policy.minimumSupportedVersion && current.compare(policy.minimumSupportedVersion) < 0) {
+    mandatory = MandatoryMode.UNSUPPORTED_CLIENT;
+  }
   // Staging is a safety tool for optional adoption. It must not strand a
   // client which policy explicitly declares unsupported or already required.
   if (mandatory === MandatoryMode.OPTIONAL
       && rolloutBucket(installationId, release.releaseId) >= policy.rollout.percentage * 100) return null;
-  return Object.freeze({ policy, release, artifact, mandatory });
+  return Object.freeze({ policy, release, artifact, mandatory, compatibility });
 }
 
 const TRANSITIONS = Object.freeze({
-  IDLE: new Set(['CHECKING', 'READY_TO_INSTALL']), // verified cache recovery after process restart
+  IDLE: new Set(['CHECKING', 'READY_TO_INSTALL', 'RESTART_REQUIRED', 'FAILED']), // process-death recovery
   CHECKING: new Set(['UP_TO_DATE', 'AVAILABLE', 'READY_TO_INSTALL', 'FAILED']),
   UP_TO_DATE: new Set(['CHECKING']),
   AVAILABLE: new Set(['CHECKING', 'DOWNLOADING']),

@@ -107,7 +107,6 @@ def create(args) -> int:
             "ru": ReleaseNotes(args.summary_ru, tuple(args.change_ru)),
         },
         minimum_os_versions=MinimumOsVersions(args.min_android_sdk),
-        minimum_api_version=args.minimum_api_version,
         mandatory_policy=MandatoryPolicy(mandatory, required_after),
         rollback_compatibility=RollbackCompatibility(args.rollback_compatibility),
         artifacts=(UpdateArtifact(
@@ -138,7 +137,7 @@ def create(args) -> int:
 def verify(args) -> int:
     policy = UpdatePolicy.from_json(Path(args.policy).read_text(encoding="utf-8"))
     verify_policy(policy, trusted_keys(args))
-    if not args.allow_expired and policy.expires_at <= utcnow():
+    if args.require_fresh and policy.expires_at <= utcnow():
         raise SystemExit("policy signature is valid but metadata is expired")
     release = policy.latest_release()
     print(json.dumps({
@@ -195,7 +194,6 @@ def parser() -> argparse.ArgumentParser:
     make.add_argument("--mandatory", choices=[item.value for item in MandatoryMode], default="OPTIONAL")
     make.add_argument("--required-after")
     make.add_argument("--minimum-supported-version")
-    make.add_argument("--minimum-api-version", type=int)
     make.add_argument("--rollback-compatibility", choices=[item.value for item in RollbackCompatibility], default="BINARY_ONLY")
     make.add_argument("--architecture", choices=("universal", "arm64", "x64"), default="universal")
     make.add_argument("--package-name", default="io.github.misha1302.seos")
@@ -208,11 +206,20 @@ def parser() -> argparse.ArgumentParser:
     common_key(make)
     make.set_defaults(func=create)
 
-    check = commands.add_parser("verify", help="verify signature, schema and freshness")
+    check = commands.add_parser("verify-client-policy", help="verify signature, schema and client freshness")
     check.add_argument("--policy", required=True)
     check.add_argument("--trusted-keys-file")
-    check.add_argument("--allow-expired", action="store_true")
+    check.set_defaults(require_fresh=True)
     check.set_defaults(func=verify)
+
+    authentic = commands.add_parser(
+        "verify-authenticity",
+        help="verify schema and signature for publisher predecessor use; expiry is intentionally not a publisher gate",
+    )
+    authentic.add_argument("--policy", required=True)
+    authentic.add_argument("--trusted-keys-file")
+    authentic.set_defaults(require_fresh=False)
+    authentic.set_defaults(func=verify)
 
     ctl = commands.add_parser("control", help="pause/withdraw/resume or change rollout without a binary")
     ctl.add_argument("--policy", required=True)

@@ -72,3 +72,17 @@ version increments launch attempts, then marks itself healthy only after the nor
 UI has rendered. Three incomplete critical startups retain diagnostics and do not
 create a restart loop. Recovery is forward-fix/reinstall by default; automatic
 downgrade is absent.
+
+The launch attempt is recorded before credential migration, session restore, network
+startup and render. Health is marked only after native storage, the shell and the first
+meaningful render succeed. PackageInstaller state persists the exact `session_id`,
+target version/build/hash synchronously; callbacks for any other session are diagnostic
+only. `COMMITTED` is written only after `Session.commit()` returns. A pending OS
+confirmation is reopened from PackageInstaller's own intent (or the session-details
+intent after process death); if neither can be opened, the session is abandoned and
+the verified cached APK can be applied again, so the user is never locked out.
+
+Accepted metadata persists both sequence and SHA-256 of authenticated canonical policy.
+Equal sequence/equal hash is an idempotent re-fetch; equal sequence/different hash is
+`METADATA_EQUIVOCATION`. Channel changes discard the old target and cached download and
+perform a fresh signed-policy check before another APK can be applied.

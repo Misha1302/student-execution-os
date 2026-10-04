@@ -1,6 +1,7 @@
 import { isNative, clearDeviceAlarms, clearExecutionNotification } from './native.js';
 import { credentialStore } from './device-storage.js';
 import { clearCaptureDrafts } from './capture-session.js';
+import { onlineOperationAllowed } from './update-compatibility.js';
 
 // Session state. In the browser the page is served by the API host itself, so the
 // base URL is same-origin (''). The Android app keeps a user-chosen server URL.
@@ -85,6 +86,7 @@ export class ApiError extends Error {
 }
 
 export async function api(path, { method = 'GET', body, server, timeoutMs = 20000 } = {}) {
+  if (!onlineOperationAllowed(path)) throw new ApiError('Update required before online operations can continue', { code: 'UNSUPPORTED_CLIENT' });
   const base = server ?? session.server;
   if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
   const headers = { Accept: 'application/json' };
@@ -131,6 +133,7 @@ export async function apiUpload(path, blob, {
   mimeType = 'application/octet-stream', filename = null, timeoutMs = 60000,
   method = 'PUT', extraHeaders = {},
 } = {}) {
+  if (!onlineOperationAllowed(path)) throw new ApiError('Update required before online operations can continue', { code: 'UNSUPPORTED_CLIENT' });
   const base = session.server;
   if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
   const headers = { Accept: 'application/json', 'Content-Type': mimeType };
@@ -154,6 +157,7 @@ export async function apiUpload(path, blob, {
 }
 
 export async function apiBlob(path, { timeoutMs = 60000 } = {}) {
+  if (!onlineOperationAllowed(path)) throw new ApiError('Update required before online operations can continue', { code: 'UNSUPPORTED_CLIENT' });
   const base = session.server;
   if (isNative() && !base) throw new ApiError('No server configured', { code: 'NO_SERVER' });
   const headers = {};

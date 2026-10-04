@@ -13,9 +13,17 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.assertIn('branch="update-$channel"', workflow)
             self.assertIn("raw.githubusercontent.com/$repo/$branch/policy.json", workflow)
             self.assertNotIn('gh release upload "$tag" policy.json', workflow)
-            self.assertIn("python tools/update_policy.py verify --policy published/policy.json", workflow)
+            self.assertIn("python tools/update_policy.py verify-client-policy --policy published/policy.json", workflow)
         self.assertIn("group: update-channel-${{ inputs.channel }}", release)
         self.assertIn("group: update-channel-${{ inputs.channel }}", control)
+
+    def test_scheduled_refresh_authenticates_expired_predecessor_and_serializes_by_channel(self):
+        workflow = (ROOT / ".github/workflows/update-policy-refresh.yml").read_text(encoding="utf-8")
+        self.assertIn("schedule:", workflow)
+        self.assertIn("verify-authenticity --policy current-policy.json", workflow)
+        self.assertIn("verify-client-policy --policy policy.json", workflow)
+        self.assertIn("group: update-channel-${{ matrix.channel }}", workflow)
+        self.assertIn('sha="$current_sha"', workflow)
 
     def test_release_publisher_rejects_non_increasing_sequence(self):
         release = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
