@@ -453,6 +453,10 @@ function openRoute(path) {
 async function boot() {
   applyTheme();
   relabel();
+  // Record a post-update launch before credential migration, session restore,
+  // network startup or the first render. A crash in any of those critical
+  // phases must remain observable on the next process start.
+  await appUpdateService.recordUpdatedLaunch().catch(() => {});
   // Native storage first: the Keystore credential migration and the queue import must
   // finish before the session and the offline queue are read.
   await initDeviceStorage();
@@ -519,7 +523,7 @@ async function boot() {
       action: { label: t('updates.openSettings'), run: () => go('settings') }, duration: 12000,
     });
     if (state.status === UpdateState.FAILED && state.error && state.error.code !== 'METADATA_UNAVAILABLE') {
-      toast(t(`updates.error.${state.error.code}`), { error: true, action: { label: t('updates.openSettings'), run: () => go('settings') } });
+      toast(errorMessage(state.error), { error: true, action: { label: t('updates.openSettings'), run: () => go('settings') } });
     }
   });
 
@@ -558,6 +562,9 @@ async function boot() {
     if (event.detail?.firstRun) setTimeout(() => openTutorial(), 300);
   });
   hideSplash();
+  // Native storage, the main shell and the first meaningful render succeeded.
+  // Only now may the candidate build be marked healthy.
+  await appUpdateService.markHealthy().catch(() => {});
   // UI and offline data are usable before any updater network request begins.
   startUpdateRuntime();
 }

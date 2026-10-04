@@ -68,7 +68,15 @@ export class AndroidUpdateAdapter {
     try { return await this.bridge.openInstallPermission(); } catch (error) { throw nativeError(error, 'PERMISSION_REQUIRED'); }
   }
 
+  async continueInstaller() {
+    try { return await this.bridge.continueInstaller(); } catch (error) { throw nativeError(error, 'INSTALLER_FAILED'); }
+  }
+
   async nativeState() {
     try { return await this.bridge.getState(); } catch (error) { throw nativeError(error); }
+  }
+
+  async networkStatus() {
+    try { return await this.bridge.networkStatus(); } catch (error) { throw nativeError(error, 'NETWORK_ERROR'); }
   }
 }

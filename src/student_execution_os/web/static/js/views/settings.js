@@ -31,7 +31,7 @@ function updateSection(updates) {
     <div class="progress"><span data-w="${percent}" data-update-progress-bar></span></div>
     <small data-update-progress-label>${esc(t('updates.progress', { n: percent }))}</small>
   </div>`;
-  const error = state.error ? `<div class="banner danger">${icon('alert')}<div><strong>${esc(t(`updates.error.${state.error.code}`))}</strong><p>${esc(state.error.message || '')}</p></div></div>` : '';
+  const error = state.error ? `<div class="banner danger">${icon('alert')}<div><strong>${esc(errorMessage(state.error))}</strong><p>${esc(state.error.message || '')}</p></div></div>` : '';
   const notes = releaseNotes ? `<div class="update-notes"><strong>${esc(releaseNotes.summary)}</strong><ul>${releaseNotes.changes.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div>` : '';
   const available = [UpdateState.AVAILABLE, UpdateState.FAILED].includes(state.status) && target && !state.downloaded
     ? `<button class="button primary" data-action="update-download">${esc(t('updates.download'))}</button>` : '';
@@ -39,6 +39,11 @@ function updateSection(updates) {
     ? `<button class="button primary" data-action="update-apply">${esc(t('updates.restartInstall'))}</button>` : '';
   const permission = state.error?.code === 'PERMISSION_REQUIRED'
     ? `<button class="button" data-action="update-permission">${esc(t('updates.allowInstall'))}</button>` : '';
+  const installer = state.installerState === 'USER_ACTION_REQUIRED'
+    ? `<div class="banner warn">${icon('alert')}<div><strong>${esc(t('updates.userActionRequired'))}</strong>
+        <button class="button" data-action="update-continue-installer">${esc(t('updates.continueInstaller'))}</button></div></div>`
+    : ['PREPARING', 'SUBMITTING', 'COMMITTED'].includes(state.installerState)
+      ? `<div class="banner">${icon('info')}<div><strong>${esc(t('updates.waitingForAndroid'))}</strong></div></div>` : '';
   return `<section class="section">
     <div class="section-head"><h2>${esc(t('updates.title'))}</h2></div>
     <div class="card form">
@@ -53,7 +58,7 @@ function updateSection(updates) {
       <label class="setting-toggle"><span><strong>${esc(t('updates.autoCheck'))}</strong></span><input type="checkbox" data-update-pref="autoCheck" ${preferences.autoCheck ? 'checked' : ''}></label>
       <label class="setting-toggle"><span><strong>${esc(t('updates.autoDownload'))}</strong></span><input type="checkbox" data-update-pref="autoDownload" ${preferences.autoDownload ? 'checked' : ''}></label>
       ${target && target.mandatory !== 'OPTIONAL' ? `<div class="banner danger">${icon('alert')}<div><strong>${esc(t(`updates.mandatory.${target.mandatory}`))}</strong><p>${esc(t('updates.dataSafe'))}</p></div></div>` : ''}
-      ${notes}${progress}${error}
+      ${notes}${progress}${installer}${error}
       <div class="button-row"><button class="button" data-action="update-check">${esc(t('updates.check'))}</button>${available}${ready}${permission}</div>
       ${!state.enabled ? `<p class="help">${esc(t('updates.notConfigured'))}</p>` : ''}
     </div>
@@ -386,6 +391,7 @@ export default {
     'update-download': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.download(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
     'update-apply': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.applyAndRestart(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
     'update-permission': async () => { await appUpdateService.adapter.openInstallPermission(); },
+    'update-continue-installer': async (el, ctx) => { setBusy(el, true); try { await appUpdateService.continueInstaller(); } catch (err) { toast(errorMessage(err), { error: true }); } finally { setBusy(el, false); ctx.refresh(); } },
     'account-delete-preview': (_el, ctx) => deleteSheet(ctx.view._deletion),
     ...aiActions,
     ...healthActions,

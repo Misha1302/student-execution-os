@@ -1,0 +1,21 @@
+{
+  "semver_order": [
+    "1.0.0-alpha",
+    "1.0.0-alpha.1",
+    "1.0.0-alpha.beta",
+    "1.0.0-beta",
+    "1.0.0-beta.2",
+    "1.0.0-beta.11",
+    "1.0.0-rc.1",
+    "1.0.0"
+  ],
+  "semver_equal_precedence": [
+    ["1.0.0+build.1", "1.0.0+build.2"]
+  ],
+  "semver_invalid": [
+    "1.0",
+    "01.0.0",
+    "1.0.0-beta.01",
+    "v1.0.0"
+  ]
+}
