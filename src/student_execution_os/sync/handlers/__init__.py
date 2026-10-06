@@ -1,4 +1,5 @@
 """Domain owners of the sync operation types (see ``sync.commands.Commands``)."""
+from .checkins import CheckInCommandHandler
 from .events import EventCommandHandler
 from .execution import ExecutionCommandHandler
 from .notes import NoteCommandHandler
@@ -9,6 +10,6 @@ from .routines import RoutineCommandHandler
 from .series import SeriesCommandHandler
 from .tasks import TaskCommandHandler
 
-__all__ = ["EventCommandHandler", "ExecutionCommandHandler", "NoteCommandHandler", "PlanningCommandHandler",
+__all__ = ["CheckInCommandHandler", "EventCommandHandler", "ExecutionCommandHandler", "NoteCommandHandler", "PlanningCommandHandler",
            "ProjectCommandHandler", "ReminderCommandHandler", "RoutineCommandHandler", "SeriesCommandHandler",
            "TaskCommandHandler"]

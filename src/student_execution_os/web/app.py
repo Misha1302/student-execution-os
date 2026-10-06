@@ -535,6 +535,18 @@ def create_app(
     async def list_reminders(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.notifications.reminders()
 
+    @app.get("/api/v1/checkins")
+    async def list_checkins(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.checkins.checkins()
+
+    @app.get("/api/v1/checkins/{template_id}")
+    async def get_checkin(template_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.checkins.checkin(template_id)
+
+    @app.get("/api/v1/reminder-series")
+    async def list_reminder_series(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.checkins.reminder_series()
+
     @app.get("/api/v1/reminders/alarms")
     async def upcoming_alarms(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.notifications.upcoming_alarms()

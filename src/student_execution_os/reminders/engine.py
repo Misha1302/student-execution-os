@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from student_execution_os.domain.clock import FrozenClock
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
 
-from .messages import compose, compose_standalone
+from .messages import compose, compose_checkin, compose_standalone
 from .policy import ACCOUNT_MIN_GAP, OPEN_STATUSES, Decision, ReminderState, Stage, TaskFacts, decide, is_urgent
 from .store import ReminderStore
 
@@ -168,6 +168,7 @@ class ReminderEngine:
                 state = replace(previous, next_check_at=hold_until)
             store.save_state(account_id, task_id, state)
 
+        self._advance_recurring(repo, account_id, now)
         messages: list[str] = self._fire_standalone(repo, store, prefs, account_id, now)
         if sending:
             ordered = sorted(sending, key=lambda tid: (not is_urgent(sending[tid].stage, sending[tid].reason),
@@ -196,6 +197,18 @@ class ReminderEngine:
         return TickResult(account_id, len(decisions), messages, held_reason)
 
     @staticmethod
+    def _advance_recurring(repo, account_id: str, now: datetime) -> None:
+        """Recurring reminders and check-ins: materialize the next days, record MISSED by
+        policy, re-arm a follow-up prompt. A failure here never silences other reminders."""
+        from student_execution_os.checkins import SQLiteCheckInRepository
+        from .series import SQLiteReminderSeriesRepository
+        for owner in (SQLiteReminderSeriesRepository(repo), SQLiteCheckInRepository(repo)):
+            try:
+                owner.ensure_horizon(account_id, now)
+            except Exception:
+                log.exception("recurring reminder pass failed for account %s", account_id)
+
+    @staticmethod
     def _fire_standalone(repo, store: ReminderStore, prefs, account_id: str, now: datetime) -> list[str]:
         """Standalone reminders whose moment came: one message each, at that moment.
 
@@ -209,8 +222,16 @@ class ReminderEngine:
         for reminder in reminders.due(account_id, now):
             at = datetime.fromisoformat(reminder["remind_at"])
             with repo._tx():
+                checkin = _checkin_context(repo, account_id, reminder)
+                if checkin is not None and checkin["status"] != "PENDING":
+                    # The day already has its outcome: nothing to ask any more.
+                    reminders.mark_fired(account_id, reminder["id"], now)
+                    continue
                 if now - at <= FIRE_GRACE:
-                    content = compose_standalone(reminder, now=now, timezone_name=prefs.timezone_name, locale=prefs.locale)
+                    content = (compose_checkin(reminder, checkin, now=now, timezone_name=prefs.timezone_name,
+                                               locale=prefs.locale)
+                               if checkin is not None else
+                               compose_standalone(reminder, now=now, timezone_name=prefs.timezone_name, locale=prefs.locale))
                     message_id = store.add_message(
                         account_id, stage="REMINDER", task_ids=[], content=content,
                         dedupe_key=f"standalone:{reminder['id']}:{reminder['remind_at']}", now=now,
@@ -220,3 +241,19 @@ class ReminderEngine:
                         sent.append(message_id)
                 reminders.mark_fired(account_id, reminder["id"], now)
         return sent
+
+
+def _checkin_context(repo, account_id: str, reminder: dict) -> dict | None:
+    """The check-in occurrence a reminder is the prompt of, if any."""
+    link = reminder.get("checkin")
+    if not link:
+        return None
+    row = repo.connection.execute(
+        "SELECT o.status,o.followups_sent,o.quantity_done,o.target_quantity,t.kind,t.title,t.dose_text,t.unit "
+        "FROM checkin_occurrences o JOIN checkin_templates t ON t.account_id=o.account_id AND t.id=o.template_id "
+        "WHERE o.account_id=? AND o.template_id=? AND o.original_recurrence_id=?",
+        (account_id, link["template_id"], link["original_recurrence_id"]),
+    ).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), **link}

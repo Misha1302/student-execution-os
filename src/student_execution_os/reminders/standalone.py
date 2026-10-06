@@ -42,12 +42,28 @@ def has_alarm(delivery: str) -> bool:
     return delivery in ("ALARM", "PUSH_AND_ALARM")
 
 
+# Reminders are read with what they belong to (schema v31): the occurrence of a
+# reminder series, or the check-in occurrence whose prompt they are.
+_SELECT = (
+    "SELECT " + ",".join(f"r.{column}" for column in _COLUMNS.split(",")) + ","
+    "so.series_id AS series_id,so.original_recurrence_id AS series_recurrence_id,"
+    "co.template_id AS checkin_template_id,co.original_recurrence_id AS checkin_recurrence_id "
+    "FROM reminders r LEFT JOIN reminder_series_occurrences so ON so.reminder_id=r.id "
+    "LEFT JOIN checkin_occurrences co ON co.reminder_id=r.id"
+)
+
+
 def reminder_payload(row) -> dict[str, Any]:
     item = {key: row[key] for key in _COLUMNS.split(",")}
     item["kind"] = "REMINDER"
     item["wake_check"] = bool(item["wake_check"])
     item["raise_volume"] = bool(item["raise_volume"])
     item.pop("actor_category")
+    keys = row.keys()
+    item["series"] = ({"series_id": row["series_id"], "original_recurrence_id": row["series_recurrence_id"]}
+                      if "series_id" in keys and row["series_id"] else None)
+    item["checkin"] = ({"template_id": row["checkin_template_id"], "original_recurrence_id": row["checkin_recurrence_id"]}
+                       if "checkin_template_id" in keys and row["checkin_template_id"] else None)
     return item
 
 
@@ -66,7 +82,7 @@ class SQLiteReminderRepository:
     # ---- reads ----------------------------------------------------------------------
 
     def _row(self, account_id: str, reminder_id: str):
-        row = self.connection.execute(f"SELECT {_COLUMNS} FROM reminders WHERE account_id=? AND id=?",
+        row = self.connection.execute(f"{_SELECT} WHERE r.account_id=? AND r.id=?",
                                       (account_id, reminder_id)).fetchone()
         if row is None:
             raise EntityNotFound("reminder not found")
@@ -84,25 +100,28 @@ class SQLiteReminderRepository:
                                        (account_id, reminder_id)).fetchone() is not None
 
     def list(self, account_id: str, *, since: datetime | None = None) -> list[dict[str, Any]]:
-        """Open reminders, plus closed ones touched since ``since`` (history for the lists)."""
+        """Open reminders, plus closed ones touched since ``since`` (history for the lists).
+
+        The prompt of a check-in is shown with its check-in, not as a reminder of its own.
+        """
         rows = self.connection.execute(
-            f"SELECT {_COLUMNS} FROM reminders WHERE account_id=? AND (status IN ('SCHEDULED','FIRED') OR updated_at>=?) "
-            "ORDER BY remind_at", (account_id, _iso(since) if since else ""),
+            f"{_SELECT} WHERE r.account_id=? AND (r.status IN ('SCHEDULED','FIRED') OR r.updated_at>=?) "
+            "AND co.template_id IS NULL ORDER BY r.remind_at", (account_id, _iso(since) if since else ""),
         ).fetchall()
         return [reminder_payload(row) for row in rows]
 
     def upcoming_alarms(self, account_id: str, now: datetime) -> list[dict[str, Any]]:
         """What an Android phone should have scheduled: open alarm reminders not yet over."""
         rows = self.connection.execute(
-            f"SELECT {_COLUMNS} FROM reminders WHERE account_id=? AND delivery IN ('ALARM','PUSH_AND_ALARM') "
-            "AND status IN ('SCHEDULED','FIRED') AND remind_at>=?",
+            f"{_SELECT} WHERE r.account_id=? AND r.delivery IN ('ALARM','PUSH_AND_ALARM') "
+            "AND r.status IN ('SCHEDULED','FIRED') AND r.remind_at>=?",
             (account_id, _iso(now - FIRE_GRACE)),
         ).fetchall()
         return [reminder_payload(row) for row in rows]
 
     def due(self, account_id: str, now: datetime) -> list[dict[str, Any]]:
         rows = self.connection.execute(
-            f"SELECT {_COLUMNS} FROM reminders WHERE account_id=? AND status='SCHEDULED' AND remind_at<=? ORDER BY remind_at",
+            f"{_SELECT} WHERE r.account_id=? AND r.status='SCHEDULED' AND r.remind_at<=? ORDER BY r.remind_at",
             (account_id, _iso(now)),
         ).fetchall()
         return [reminder_payload(row) for row in rows]

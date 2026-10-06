@@ -38,7 +38,7 @@ class PlanningPreferenceMigrationTest(unittest.TestCase):
             with SQLiteCanonicalRepository(database) as repo:
                 repo.initialize()
                 self.assertEqual(repo.schema_version(), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 30)
+                self.assertGreaterEqual(SCHEMA_VERSION, 30)
                 repo.connection.execute(
                     "INSERT INTO planning_preferences(id,account_id,kind,date_from,minutes,created_at,updated_at) "
                     "VALUES ('p-1','existing-account','WORK_LIMIT','2026-10-03',180,?,?)",
@@ -68,7 +68,7 @@ class PlanningPreferenceMigrationTest(unittest.TestCase):
         """The application-rollback contract (deploy/README.md, "Rollback"): a build runs on a
         database a newer build has migrated — it starts, reads and writes — while account
         export/deletion refuse tables it cannot classify instead of silently skipping them.
-        Simulated here with this build and a migration 31 it does not know."""
+        Simulated here with this build and a migration SCHEMA_VERSION + 1 it does not know."""
         from student_execution_os.domain.errors import ValidationError
         from student_execution_os.reliability import SQLiteDataLifecycle
 
@@ -82,13 +82,13 @@ class PlanningPreferenceMigrationTest(unittest.TestCase):
                     "account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE);"
                     "INSERT INTO future_rows VALUES ('f-1','account');"
                 )
-                repo.connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES (31,?)",
-                                        (NOW.isoformat(),))
+                repo.connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES (?,?)",
+                                        (SCHEMA_VERSION + 1, NOW.isoformat()))
                 repo.connection.commit()
 
             with SQLiteCanonicalRepository(database) as repo:
                 repo.initialize()  # no refusal and no re-run of known migrations
-                self.assertEqual(repo.schema_version(), 31)
+                self.assertEqual(repo.schema_version(), SCHEMA_VERSION + 1)
                 repo.create_account("second")
                 repo.connection.commit()
             with self.assertRaisesRegex(ValidationError, "does not classify database tables: future_rows"):

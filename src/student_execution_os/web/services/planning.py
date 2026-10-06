@@ -295,6 +295,8 @@ class PlanningQueries(ApplicationService):
                 and event.interval.starts_at < soon_end and now < event.interval.ends_at
             ]), key=lambda e: (e["starts_at"], e["id"]))
             inbox_notes = SQLiteNoteRepository(repo).list_unlinked(self.account_id, limit=3)
+            from .checkins import day_checkins
+            checkins = day_checkins(repo, self.account_id, day_start, day_end, now)
             windows = planning_intervals(profile, local_day, 1)
             capacity_minutes = sum(int((end - start).total_seconds() // 60) for start, end in windows)
             occupied_parts: list[tuple[datetime, datetime]] = []
@@ -341,6 +343,9 @@ class PlanningQueries(ApplicationService):
                 "events": day_events,
                 "upcoming_events": upcoming_events,
                 "inbox_notes": inbox_notes,
+                # Check-ins are not Tasks: shown with their outcome, never as planned work.
+                "checkins": checkins["items"],
+                "checkin_quota_demand": checkins["quota_demand"],
                 "travel": {
                     "transitions": transitions,
                     "unknown_reasons": list(snapshot.travel_projection.unknown_reasons),
