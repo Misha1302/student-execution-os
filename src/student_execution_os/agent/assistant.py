@@ -24,7 +24,8 @@ from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
-from . import checkin_actions
+from . import checkin_actions, place_actions
+from .location_phrases import parse_location_trigger, parse_place_create
 from .disambiguation import judge
 from .nlparse import parse_task
 from .recurring import parse_recurring
@@ -91,6 +92,12 @@ class DeterministicAssistantParser:
         outcome = checkin_actions.parse_outcome(clean, list(context.get("checkins") or []))
         if outcome is not None:
             return [outcome]
+        place = parse_place_create(clean)
+        if place is not None:
+            return [place_actions.place_action(place)]
+        trigger = parse_location_trigger(clean, list(context.get("places") or []))
+        if trigger is not None:
+            return [place_actions.trigger_action(trigger)]
         recurring = parse_recurring(clean, now=now or datetime.now(timezone.utc), timezone_name=zone_name)
         if recurring is not None:
             return checkin_actions.recurring_actions(recurring, zone_name)
@@ -197,6 +204,8 @@ _PAYLOAD_KEYS = {
     AgentCommand.CHECKIN_OUTCOME.value: {"outcome", "occurred_at", "note"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
     AgentCommand.CHECKIN_PROGRESS.value: {"count"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
     AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: {"when", "target_local"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
+    AgentCommand.CREATE_PLACE.value: set(place_actions.CREATE_PLACE_FIELDS),
+    AgentCommand.CREATE_LOCATION_TRIGGER.value: set(place_actions.CREATE_TRIGGER_FIELDS),
 }
 _REQUIRED = {
     AgentCommand.CREATE_NOTE.value: ("content",),
@@ -212,6 +221,8 @@ _REQUIRED = {
     AgentCommand.CHECKIN_OUTCOME.value: ("outcome",),
     AgentCommand.CHECKIN_PROGRESS.value: ("count",),
     AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: ("when",),
+    AgentCommand.CREATE_PLACE.value: ("display_name",),
+    AgentCommand.CREATE_LOCATION_TRIGGER.value: ("title", "transition"),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -391,6 +402,10 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
                                         or ReminderStore(canonical).prefs(account_id).timezone_name)
     if command in checkin_actions.TARGETED:
         checkin_actions.validate_targeted(command, payload)
+    if command in {AgentCommand.CREATE_PLACE.value, AgentCommand.CREATE_LOCATION_TRIGGER.value}:
+        place_actions.validate(command, payload, unresolved, canonical, account_id)
+    if command == AgentCommand.CREATE_EVENT.value:
+        place_actions.validate_event_location(payload, canonical, account_id)
     expected = raw["expected_version"]
     if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
         raise ValidationError("assistant expected_version must be an integer")
@@ -574,6 +589,8 @@ class SQLiteAssistantService:
             # Check-ins by name and today's open days (their prompts are not separate reminders).
             "checkins": checkin_actions.context_items(self.canonical, self.principal.account_id,
                                                       self.canonical.clock.now()),
+            # Places by name only: never coordinates, an address only where the owner allowed it.
+            "places": place_actions.context_places(self.canonical, self.principal.account_id),
         }
         if isinstance(client.get("locale"), str):
             context["locale"] = client["locale"][:16]
@@ -1536,6 +1553,8 @@ class SQLiteAssistantService:
         target = target_of(self.canonical, self.principal.account_id, data)
         kind, entity = (target[0], target[1]) if target else ("", "")
         fields = {key: value for key, value in data.items() if key not in _TARGET and key != _RELATIVE}
+        if command in {AgentCommand.CREATE_PLACE, AgentCommand.CREATE_LOCATION_TRIGGER}:
+            return place_actions.operation(command.value, data, lambda kind: f"{kind}-{uuid4()}")
         if command.value in checkin_actions.TARGETED or command in {AgentCommand.CREATE_CHECKIN,
                                                                      AgentCommand.CREATE_REMINDER_SERIES}:
             return checkin_actions.operation(command.value, data, lambda kind: f"{kind}-{uuid4()}")
@@ -1660,6 +1679,7 @@ class SQLiteAssistantService:
     # Where each inverse's entity keeps its optimistic version.
     _VERSION_TABLES = {"reminder": ("reminders", "id"), "note": ("notes", "id"),
                        "checkin": ("checkin_templates", "id"), "reminder_series": ("reminder_series", "id"),
+                       "place": ("places", "id"), "location_trigger": ("location_triggers", "id"),
                        "constraint": ("user_time_constraints", "id"),
                        "preference": ("planning_preferences", "id")}
 
@@ -1681,6 +1701,8 @@ class SQLiteAssistantService:
             AgentCommand.CREATE_PLANNING_PREFERENCE.value: "preference.delete",
             AgentCommand.CREATE_CHECKIN.value: "checkin.delete",
             AgentCommand.CREATE_REMINDER_SERIES.value: "reminder_series.delete",
+            AgentCommand.CREATE_PLACE.value: "place.delete",
+            AgentCommand.CREATE_LOCATION_TRIGGER.value: "location_trigger.delete",
         }.get(action["command"])
         return None if operation is None else {"operation": operation, "payload": {}}
 

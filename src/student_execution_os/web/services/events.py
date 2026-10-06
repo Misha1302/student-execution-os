@@ -17,6 +17,7 @@ from student_execution_os.domain.model import (
 from student_execution_os.recurrence import SQLiteRecurrenceRepository
 from student_execution_os.planning import SQLitePlanningStateSource
 from student_execution_os.travel import SQLiteTravelRepository
+from student_execution_os.travel.triggers import SQLiteLocationTriggerRepository
 
 from .common import _occurrence_details, _jsonify, _dt, _local_iso
 
@@ -97,7 +98,9 @@ class EventService(ApplicationService):
             travel = SQLiteTravelRepository(repo)
             current = travel.current_location(self.account_id)
             place_rows = repo.connection.execute(
-                "SELECT id,alias,display_name,visibility_policy,version FROM places WHERE account_id=? ORDER BY display_name,id",
+                "SELECT id,alias,display_name,visibility_policy,version,routing_allowed,"
+                "address IS NOT NULL AS has_address,latitude IS NOT NULL AS has_coordinates "
+                "FROM places WHERE account_id=? ORDER BY coalesce(alias,display_name),id",
                 (self.account_id,),
             ).fetchall()
             names = {r["id"]: (r["alias"] or r["display_name"]) for r in place_rows}
@@ -134,13 +137,36 @@ class EventService(ApplicationService):
                     "expires_at": _jsonify(current.expires_at),
                     "source": current.source,
                 },
-                "places": [dict(r) for r in place_rows],
+                "places": [{**dict(r), "routing_allowed": bool(r["routing_allowed"]),
+                            "has_address": bool(r["has_address"]), "has_coordinates": bool(r["has_coordinates"]),
+                            "in_use": travel.place_references(self.account_id, r["id"])} for r in place_rows],
+                "current_place_id": current.place_id if current.effective_state_at(now).value != "UNKNOWN" else None,
                 "route_estimates": estimates,
+                "location_triggers": SQLiteLocationTriggerRepository(repo).list(self.account_id),
                 "privacy": {
                     "exact_location_in_default_payload": False,
                     "note": "Exact address and coordinates remain server-side and are not serialized by this endpoint.",
                 },
             }
+
+    def place_detail(self, place_id: str) -> dict[str, Any]:
+        """The owner's own exact place data, requested explicitly (the edit screen).
+
+        Never cached by list endpoints and never part of an Assistant or external-agent context.
+        """
+        with self._repo() as repo:
+            place = SQLiteTravelRepository(repo).get_place(self.account_id, place_id)
+            return {"id": place.id, "display_name": place.display_name, "alias": place.alias, "address": place.address,
+                    "latitude": place.latitude, "longitude": place.longitude,
+                    "visibility_policy": place.visibility_policy, "routing_allowed": place.routing_allowed,
+                    "version": place.version,
+                    "in_use": SQLiteTravelRepository(repo).place_references(self.account_id, place_id)}
+
+    def armed_location_triggers(self) -> dict[str, Any]:
+        """What this account's Android phone must watch (it needs the positions to geofence)."""
+        with self._repo() as repo:
+            return {"triggers": SQLiteLocationTriggerRepository(repo).armed_for_device(self.account_id),
+                    "now": _jsonify(self._now())}
 
     def create_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         kind = LocationEffectKind(payload.get("location_effect", {}).get("kind", "NONE"))

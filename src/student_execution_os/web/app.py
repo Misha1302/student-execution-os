@@ -615,6 +615,14 @@ def create_app(
     async def places(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.events.places()
 
+    @app.get("/api/v1/places/{place_id}")
+    async def place_detail(place_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.events.place_detail(place_id)
+
+    @app.get("/api/v1/location-triggers/armed")
+    async def armed_location_triggers(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.events.armed_location_triggers()
+
     @app.get("/api/v1/settings/diagnostics")
     async def diagnostics(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.account.diagnostics()

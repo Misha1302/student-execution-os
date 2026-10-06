@@ -11,9 +11,57 @@ from .model import (
     CurrentLocationContext,
     LocationContextState,
     Place,
+    PlaceVisibility,
     TravelEstimate,
     TravelEstimateSource,
 )
+
+_PLACE_EDITABLE = {"display_name", "alias", "address", "latitude", "longitude", "visibility_policy", "routing_allowed"}
+
+
+def clean_place_fields(payload: dict, *, creating: bool) -> dict:
+    """Validate user-editable place fields (shared by create and update)."""
+    unknown = set(payload) - _PLACE_EDITABLE
+    if unknown:
+        raise ValidationError("place fields are not supported: " + ", ".join(sorted(unknown)))
+    fields: dict = {}
+    if creating or "display_name" in payload:
+        name = " ".join(str(payload.get("display_name") or "").split())
+        if not name or len(name) > 120:
+            raise ValidationError("a place needs a name of up to 120 characters")
+        fields["display_name"] = name
+    if "alias" in payload:
+        alias = " ".join(str(payload.get("alias") or "").split()) or None
+        if alias and len(alias) > 60:
+            raise ValidationError("alias is longer than 60 characters")
+        fields["alias"] = alias
+    if "address" in payload:
+        address = " ".join(str(payload.get("address") or "").split()) or None
+        if address and len(address) > 300:
+            raise ValidationError("address is longer than 300 characters")
+        fields["address"] = address
+    if "latitude" in payload or "longitude" in payload:
+        lat, lon = payload.get("latitude"), payload.get("longitude")
+        if (lat is None) != (lon is None):
+            raise ValidationError("coordinates need both latitude and longitude")
+        if lat is not None:
+            try:
+                lat, lon = float(lat), float(lon)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("coordinates must be numbers") from exc
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValidationError("coordinates are out of range")
+        fields["latitude"], fields["longitude"] = lat, lon
+    if creating or "visibility_policy" in payload:
+        try:
+            fields["visibility_policy"] = PlaceVisibility(payload.get("visibility_policy") or PlaceVisibility.PRIVATE_ALIAS.value).value
+        except ValueError as exc:
+            raise ValidationError("visibility_policy must be PRIVATE_ALIAS or ASSISTANT_ADDRESS") from exc
+    if "routing_allowed" in payload:
+        if not isinstance(payload["routing_allowed"], bool):
+            raise ValidationError("routing_allowed must be true or false")
+        fields["routing_allowed"] = payload["routing_allowed"]
+    return fields
 
 
 class SQLiteTravelRepository:
@@ -34,6 +82,7 @@ class SQLiteTravelRepository:
         latitude: float | None = None,
         longitude: float | None = None,
         place_id: str | None = None,
+        routing_allowed: bool = False,
     ) -> Place:
         self.canonical._require_account(account_id)
         now = self.clock.now()
@@ -46,13 +95,14 @@ class SQLiteTravelRepository:
             address=address,
             latitude=latitude,
             longitude=longitude,
+            routing_allowed=routing_allowed,
         )
         with self.canonical._tx() as conn:
             conn.execute(
                 "INSERT INTO places("
                 "id,account_id,alias,display_name,address,latitude,longitude,"
-                "visibility_policy,version,created_at,updated_at"
-                ") VALUES (?,?,?,?,?,?,?,?,1,?,?)",
+                "visibility_policy,version,created_at,updated_at,routing_allowed"
+                ") VALUES (?,?,?,?,?,?,?,?,1,?,?,?)",
                 (
                     place.id,
                     account_id,
@@ -64,6 +114,7 @@ class SQLiteTravelRepository:
                     visibility_policy,
                     _iso(now),
                     _iso(now),
+                    int(routing_allowed),
                 ),
             )
             self.canonical._record_change(
@@ -93,7 +144,97 @@ class SQLiteTravelRepository:
             latitude=row["latitude"],
             longitude=row["longitude"],
             version=int(row["version"]),
+            routing_allowed=bool(row["routing_allowed"]) if "routing_allowed" in row.keys() else False,
         )
+
+    def owner_of_place(self, place_id: str) -> str | None:
+        row = self.connection.execute("SELECT account_id FROM places WHERE id=?", (place_id,)).fetchone()
+        return None if row is None else row["account_id"]
+
+    def list_places(self, account_id: str) -> list[Place]:
+        self.canonical._require_account(account_id)
+        rows = self.connection.execute(
+            "SELECT id FROM places WHERE account_id=? ORDER BY coalesce(alias,display_name),id", (account_id,)
+        ).fetchall()
+        return [self.get_place(account_id, row["id"]) for row in rows]
+
+    def update_place(self, *, account_id: str, place_id: str, fields: dict, actor: ActorCategory,
+                     expected_version: int | None = None) -> Place:
+        from dataclasses import replace as _replace
+        current = self.get_place(account_id, place_id)
+        if expected_version is not None and expected_version != current.version:
+            from student_execution_os.domain.errors import VersionConflict
+            raise VersionConflict(f"expected place version {expected_version}, current {current.version}")
+        if not fields:
+            return current
+        candidate = _replace(current, **fields)
+        now = self.clock.now()
+        with self.canonical._tx() as conn:
+            conn.execute(
+                "UPDATE places SET display_name=?,alias=?,address=?,latitude=?,longitude=?,visibility_policy=?,"
+                "routing_allowed=?,version=version+1,updated_at=? WHERE account_id=? AND id=?",
+                (candidate.display_name, candidate.alias, candidate.address, candidate.latitude, candidate.longitude,
+                 candidate.visibility_policy, int(candidate.routing_allowed), _iso(now), account_id, place_id),
+            )
+            if (candidate.latitude, candidate.longitude, candidate.address) != (current.latitude, current.longitude, current.address):
+                # Routes computed for the old position are no longer evidence for this place.
+                conn.execute(
+                    "UPDATE travel_estimates SET expires_at=? WHERE account_id=? AND (origin_place_id=? OR "
+                    "destination_place_id=?) AND source='ROUTING_PROVIDER' AND (expires_at IS NULL OR expires_at>?)",
+                    (_iso(now), account_id, place_id, place_id, _iso(now)),
+                )
+            self.canonical._record_change(conn, account_id=account_id, entity_type="PLACE", entity_id=place_id,
+                                          action="UPDATE_PLACE", actor=actor, payload={"fields": sorted(fields)})
+        return self.get_place(account_id, place_id)
+
+    def place_references(self, account_id: str, place_id: str) -> dict[str, int]:
+        """What still points at a place (open events, their options, armed triggers)."""
+        events = self.connection.execute(
+            "SELECT count(*) FROM events e JOIN obligations o ON o.id=e.obligation_id WHERE o.account_id=? "
+            "AND o.lifecycle_status IN ('ACTIVE','DRAFT') AND (e.origin_place_id=? OR e.destination_place_id=?)",
+            (account_id, place_id, place_id)).fetchone()[0]
+        options = self.connection.execute(
+            "SELECT count(*) FROM event_location_options l JOIN obligations o ON o.id=l.event_id WHERE l.account_id=? "
+            "AND o.lifecycle_status IN ('ACTIVE','DRAFT') AND (l.origin_place_id=? OR l.destination_place_id=?)",
+            (account_id, place_id, place_id)).fetchone()[0]
+        triggers = self.connection.execute(
+            "SELECT count(*) FROM location_triggers WHERE account_id=? AND place_id=? AND status IN ('ARMED','FIRED')",
+            (account_id, place_id)).fetchone()[0]
+        return {"events": int(events), "event_options": int(options), "triggers": int(triggers)}
+
+    def delete_place(self, *, account_id: str, place_id: str, actor: ActorCategory) -> None:
+        """Delete a place nothing open depends on.
+
+        Open events/options and armed triggers block it (the user changes those first).
+        Closed events that named it keep their history but lose the place (it no longer
+        exists); routes and current-location records of the place are derived context
+        and go with it.
+        """
+        self.get_place(account_id, place_id)
+        references = self.place_references(account_id, place_id)
+        if any(references.values()):
+            from student_execution_os.domain.errors import VersionConflict
+            raise VersionConflict("PLACE_IN_USE:" + ",".join(f"{k}={v}" for k, v in references.items() if v))
+        now = self.clock.now()
+        with self.canonical._tx() as conn:
+            closed = [row[0] for row in conn.execute(
+                "SELECT e.obligation_id FROM events e JOIN obligations o ON o.id=e.obligation_id WHERE o.account_id=? "
+                "AND (e.origin_place_id=? OR e.destination_place_id=?)", (account_id, place_id, place_id)).fetchall()]
+            for event_id in closed:
+                conn.execute("UPDATE events SET location_effect_kind='NONE',origin_place_id=NULL,destination_place_id=NULL "
+                             "WHERE obligation_id=?", (event_id,))
+            conn.execute("DELETE FROM event_location_options WHERE account_id=? AND (origin_place_id=? OR destination_place_id=?)",
+                         (account_id, place_id, place_id))
+            conn.execute("DELETE FROM location_triggers WHERE account_id=? AND place_id=?", (account_id, place_id))
+            conn.execute("DELETE FROM travel_estimates WHERE account_id=? AND (origin_place_id=? OR destination_place_id=?)",
+                         (account_id, place_id, place_id))
+            conn.execute("DELETE FROM current_location_context WHERE account_id=? AND place_id=?", (account_id, place_id))
+            conn.execute("DELETE FROM places WHERE account_id=? AND id=?", (account_id, place_id))
+            conn.execute("INSERT OR REPLACE INTO deleted_entities(account_id,entity_kind,entity_id,deleted_at) "
+                         "VALUES (?,'PLACE',?,?)", (account_id, place_id, _iso(now)))
+            self.canonical._record_change(conn, account_id=account_id, entity_type="PLACE", entity_id=place_id,
+                                          action="DELETE_PLACE", actor=actor,
+                                          payload={"closed_events_unlinked": len(closed)})
 
     def set_current_location(
         self,

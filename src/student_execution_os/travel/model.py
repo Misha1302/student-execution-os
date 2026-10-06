@@ -7,6 +7,17 @@ from enum import StrEnum
 from student_execution_os.domain.model import HalfOpenInterval, require_aware
 
 
+class PlaceVisibility(StrEnum):
+    """What the Assistant (and external agents) may learn about a place.
+
+    PRIVATE_ALIAS: only the alias/name; address and coordinates stay on the server.
+    ASSISTANT_ADDRESS: the Assistant may also see the address (never coordinates).
+    """
+
+    PRIVATE_ALIAS = "PRIVATE_ALIAS"
+    ASSISTANT_ADDRESS = "ASSISTANT_ADDRESS"
+
+
 class LocationContextState(StrEnum):
     KNOWN = "KNOWN"
     ASSUMED = "ASSUMED"
@@ -31,10 +42,17 @@ class Place:
     latitude: float | None = None
     longitude: float | None = None
     version: int = 1
+    # The user's explicit consent to send this place's exact position to the routing
+    # provider (schema v32). Never implied by having coordinates.
+    routing_allowed: bool = False
 
     def __post_init__(self) -> None:
         if not self.id or not self.account_id or not self.display_name.strip():
             raise ValueError("place identity/account/display_name are required")
+        if self.latitude is not None and not -90 <= self.latitude <= 90:
+            raise ValueError("latitude must be between -90 and 90")
+        if self.longitude is not None and not -180 <= self.longitude <= 180:
+            raise ValueError("longitude must be between -180 and 180")
         if not self.visibility_policy:
             raise ValueError("visibility_policy is required")
         if self.version < 1:

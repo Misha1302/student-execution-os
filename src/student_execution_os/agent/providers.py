@@ -36,7 +36,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST|CREATE_CHECKIN|CREATE_REMINDER_SERIES|CHECKIN_OUTCOME|CHECKIN_PROGRESS|MOVE_CHECKIN_OCCURRENCE","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
+{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST|CREATE_CHECKIN|CREATE_REMINDER_SERIES|CHECKIN_OUTCOME|CHECKIN_PROGRESS|MOVE_CHECKIN_OCCURRENCE|CREATE_PLACE|CREATE_LOCATION_TRIGGER","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
@@ -136,6 +136,14 @@ Answers about a check-in in context.checkins take checkin_id and expected_versio
   MOVE_CHECKIN_OCCURRENCE {checkin_id, when: ISO instant, local_date?, day_part?} — "перенеси только
     сегодняшний приём на 22:00" (one day only; the series stays).
   Do not pick the day's occurrence yourself: the server chooses it from local_date/day_part.
+Places (context.places lists the user's places by name; you never get or send coordinates):
+  CREATE_PLACE {display_name, alias?, address?} — "добавь место Спортзал"; an address only if the
+    user said it, verbatim.
+  CREATE_LOCATION_TRIGGER {place_id (from context.places), transition:"ENTER"|"EXIT", title, note?,
+    place_text: the user's words for the place} — "когда приду домой, напомни разобрать вещи" (ENTER),
+    "когда уйду из ВШЭ, напомни написать Саше" (EXIT). If no context place fits, omit place_id and list
+    "place_id" in unresolved_fields; never invent a place.
+  For an event at one of the places use CREATE_EVENT location_effect {kind:"STAY",destination_place_id}.
 Commands on existing items take obligation_id (tasks/events, from context.obligations) or
 reminder_id (from context.reminders) and expected_version (that item's "version"):
   UPDATE_TASK {obligation_id, any CREATE_TASK field to change}
@@ -191,7 +199,7 @@ _TOP_LEVEL_SCHEMA = {
                             "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
                             "CREATE_TIME_CONSTRAINT", "CREATE_PLANNING_PREFERENCE", "UNDO_LAST",
                             "CREATE_CHECKIN", "CREATE_REMINDER_SERIES", "CHECKIN_OUTCOME", "CHECKIN_PROGRESS",
-                            "MOVE_CHECKIN_OCCURRENCE",
+                            "MOVE_CHECKIN_OCCURRENCE", "CREATE_PLACE", "CREATE_LOCATION_TRIGGER",
                         )]},
                         "payload": {"type": "object", "additionalProperties": True},
                         "client_ref": {"type": "string", "maxLength": 64},

@@ -1,0 +1,174 @@
+{
+ "places": [
+  {
+   "id": "p-home",
+   "display_name": "Дом",
+   "alias": null
+  },
+  {
+   "id": "p-hse",
+   "display_name": "Высшая школа экономики",
+   "alias": "ВШЭ"
+  },
+  {
+   "id": "p-shop",
+   "display_name": "Магазин у дома",
+   "alias": null
+  },
+  {
+   "id": "p-gym",
+   "display_name": "Спортзал",
+   "alias": "gym"
+  }
+ ],
+ "cases": [
+  {
+   "text": "Когда приду домой, напомни разобрать вещи",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Разобрать вещи",
+    "place_text": "дом",
+    "place_id": "p-home",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Когда уйду из ВШЭ, напомни написать Саше",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "EXIT",
+    "title": "Написать Саше",
+    "place_text": "вшэ",
+    "place_id": "p-hse",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Когда буду у магазина, напомни купить молоко",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Купить молоко",
+    "place_text": "магазина",
+    "unresolved": [
+     "place_id"
+    ]
+   }
+  },
+  {
+   "text": "напомни позвонить маме когда приду домой",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Позвонить маме",
+    "place_text": "дом",
+    "place_id": "p-home",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "When I get home remind me to call mom",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Call mom",
+    "place_text": "home",
+    "place_id": "p-home",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "when I leave the gym remind me to stretch",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "EXIT",
+    "title": "Stretch",
+    "place_text": "gym",
+    "place_id": "p-gym",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Когда приду в библиотеку напомни взять книгу",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Взять книгу",
+    "place_text": "библиотеку",
+    "unresolved": [
+     "place_id"
+    ]
+   }
+  },
+  {
+   "text": "купить хлеб завтра в 18",
+   "expected": null
+  },
+  {
+   "text": "Когда буду в спортзале напомни про растяжку",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Растяжку",
+    "place_text": "спортзале",
+    "place_id": "p-gym",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "когда вернусь домой скажи покормить кота",
+   "expected": {
+    "kind": "LOCATION_TRIGGER",
+    "transition": "ENTER",
+    "title": "Покормить кота",
+    "place_text": "дом",
+    "place_id": "p-home",
+    "unresolved": []
+   }
+  },
+  {
+   "text": "Каждый день в 9 принять витамин",
+   "expected": null
+  }
+ ],
+ "place_cases": [
+  {
+   "text": "Добавь место Спортзал",
+   "expected": {
+    "display_name": "Спортзал"
+   }
+  },
+  {
+   "text": "добавь место Дом: ул. Ленина, 5",
+   "expected": {
+    "display_name": "Дом",
+    "address": "ул. Ленина, 5"
+   }
+  },
+  {
+   "text": "Сохрани место ВШЭ, Покровский бульвар 11",
+   "expected": {
+    "display_name": "ВШЭ",
+    "address": "Покровский бульвар 11"
+   }
+  },
+  {
+   "text": "add place Gym",
+   "expected": {
+    "display_name": "Gym"
+   }
+  },
+  {
+   "text": "Add a place Library: 5th Avenue 10",
+   "expected": {
+    "display_name": "Library",
+    "address": "5th Avenue 10"
+   }
+  },
+  {
+   "text": "добавь задачу купить хлеб",
+   "expected": null
+  }
+ ]
+}

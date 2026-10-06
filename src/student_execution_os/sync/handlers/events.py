@@ -85,7 +85,7 @@ class EventCommandHandler(CommandHandler):
         return self._event_out(event_id)
 
     _EVENT_EDITABLE = {"title", "description", "category", "importance", "starts_at", "ends_at",
-                       "attendance_policy", "remind_before_minutes"}
+                       "attendance_policy", "remind_before_minutes", "location_effect", "arrival_requirement_minutes"}
 
     def _imported_event_identity(self, event_id: str):
         return self.repo.connection.execute(
@@ -119,6 +119,27 @@ class EventCommandHandler(CommandHandler):
                 "source-owned event fields change on schedule refresh; use a personal reminder",
             )
         current = self.repo.get_event(self.account_id, event_id)
+        if "location_effect" in payload or "arrival_requirement_minutes" in payload:
+            # Where it happens is its own change (the travel planner reads it).
+            location = payload.get("location_effect") or {}
+            if "location_effect" in payload and not isinstance(location, dict):
+                raise ValidationError("location_effect must be an object")
+            effect = current.location_effect if "location_effect" not in payload else LocationEffect(
+                kind=LocationEffectKind(location.get("kind", "NONE")),
+                origin_place_id=location.get("origin_place_id"),
+                destination_place_id=location.get("destination_place_id"),
+            )
+            arrival = payload.get("arrival_requirement_minutes", current.arrival_requirement_minutes)
+            if isinstance(arrival, bool) or not isinstance(arrival, int):
+                raise ValidationError("arrival_requirement_minutes must be a whole number")
+            if effect != current.location_effect or arrival != current.arrival_requirement_minutes:
+                current = self.repo.update_event_location(
+                    account_id=self.account_id, obligation_id=event_id, expected_version=current.obligation.version,
+                    location_effect=effect, arrival_requirement_minutes=arrival, actor=self.actor,
+                )
+            payload = {k: v for k, v in payload.items() if k not in {"location_effect", "arrival_requirement_minutes"}}
+            if not payload:
+                return self._event_out(event_id)
         fields: dict[str, Any] = {}
         if "title" in payload:
             fields["title"] = _title(payload["title"])

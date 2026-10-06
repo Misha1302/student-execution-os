@@ -24,6 +24,9 @@ checkin.occurrence.done checkin.occurrence.skip checkin.occurrence.cancel checki
 checkin.occurrence.progress checkin.occurrence.move
 reminder_series.create reminder_series.update reminder_series.end reminder_series.delete reminder_series.split
 reminder_series.occurrence.skip reminder_series.occurrence.move
+place.create place.update place.delete location.set travel.estimate.set
+location_trigger.create location_trigger.update location_trigger.fire location_trigger.done
+location_trigger.cancel location_trigger.reopen location_trigger.delete
 calibration.set constraint.create constraint.delete constraint.update
 event.cancel event.create event.delete event.reopen event.update
 execution.cancel execution.finish execution.pause execution.resume execution.start

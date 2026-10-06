@@ -37,6 +37,7 @@ from .handlers import (
     EventCommandHandler,
     ExecutionCommandHandler,
     NoteCommandHandler,
+    PlaceCommandHandler,
     PlanningCommandHandler,
     ProjectCommandHandler,
     ReminderCommandHandler,
@@ -59,7 +60,8 @@ _REMINDER_ACTIONS = {"task.start": "START", "execution.start": "START", "task.co
                      "checkin.occurrence.progress": "PROGRESS"}
 # Operation prefixes of the entity kinds that keep their delete tombstones in
 # deleted_entities (schema v31+); the entity id of these operations is the owner id.
-_TOMBSTONED = {"checkin.": "CHECKIN", "reminder_series.": "REMINDER_SERIES"}
+_TOMBSTONED = {"checkin.": "CHECKIN", "reminder_series.": "REMINDER_SERIES", "place.": "PLACE",
+               "location_trigger.": "LOCATION_TRIGGER"}
 
 
 class Commands:
@@ -87,9 +89,10 @@ class Commands:
         self.series = SeriesCommandHandler(repo, **context, events=self.events)
         self.reminders = ReminderCommandHandler(repo, **context)
         self.checkins = CheckInCommandHandler(repo, **context)
+        self.places = PlaceCommandHandler(repo, **context)
         self.handlers: dict[str, Handler] = {}
         for owner in (self.tasks, self.execution, self.projects, self.routines, self.planning, self.notes,
-                      self.events, self.series, self.reminders, self.checkins):
+                      self.events, self.series, self.reminders, self.checkins, self.places):
             for op_type, handler in owner.operations().items():
                 if op_type in self.handlers:
                     raise RuntimeError(f"operation type {op_type} has two owners")

@@ -236,6 +236,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "reminder_series",
     "reminder_series_occurrences",
     "deleted_entities",
+    "location_triggers",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {
