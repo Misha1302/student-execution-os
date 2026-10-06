@@ -13,6 +13,7 @@
 // planned" until the server replans.
 
 import { projectCheckins, projectCheckinDetail, projectTodayCheckins, applySeriesOccurrenceToReminders } from './checkin-overlay.js';
+import { projectPlaces } from './place-overlay.js';
 
 const OPEN = new Set(['ACTIVE', 'DRAFT']);
 
@@ -979,6 +980,7 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (route === '/api/v1/calendar') return projectCalendar(base, ops);
   if (route === '/api/v1/reminders') return applySeriesOccurrenceToReminders(projectReminders(base, ops), ops);
   if (route === '/api/v1/checkins') return projectCheckins(base, ops, now);
+  if (route === '/api/v1/places') return projectPlaces(base, ops);
   if (route.startsWith('/api/v1/checkins/')) return projectCheckinDetail(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);

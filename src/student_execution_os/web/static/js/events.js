@@ -7,6 +7,7 @@ import { t, code, fmtDay, fmtTime, fmtDuration, sameDay, now } from './i18n.js';
 import { esc, icon, openSheet, chipGroup, chipValue, localInputValue, isoFromLocalInput, toast, kv, chip, focusSoon } from './ui.js';
 import { change, lifecycle } from './actions.js';
 import { newEntityId } from './sync.js';
+import { placeSelect, readPlaceSelect } from './places.js';
 
 export const EVENT_CATEGORIES = ['LESSON', 'EXAM', 'MEETING', 'WORK', 'PERSONAL_APPOINTMENT', 'GENERAL'];
 export const LEADS = [['', 'event.lead.none'], ['0', 'event.lead.0'], ['5', 'event.lead.5'], ['15', 'event.lead.15'],
@@ -84,6 +85,7 @@ export function eventFieldsHtml(draft) {
     <div class="field"><span>${esc(t('form.attendance'))}</span>
       ${chipGroup('e-attendance', ['REQUIRED', 'PREFERRED', 'OPTIONAL'].map((v) => [v, code('attendance', v)]), draft.attendance_policy || 'REQUIRED')}
       <small class="help">${esc(t('event.attendanceHelp'))}</small></div>
+    ${draft.location_options?.length ? '' : placeSelect(draft.location_effect)}
     ${field(t('form.category'), `<select data-e="category">${EVENT_CATEGORIES.map((c) => `<option value="${c}" ${c === (draft.category || 'GENERAL') ? 'selected' : ''}>${esc(code('category', c))}</option>`).join('')}</select>`)}
     ${field(t('form.description'), `<textarea data-e="description" rows="2" maxlength="5000">${esc(draft.description || '')}</textarea>`)}
   </div>`;
@@ -104,6 +106,7 @@ export function readEventFields(root) {
     ends_at: endsAt,
     attendance_policy: chipValue(root, 'e-attendance') || 'REQUIRED',
     remind_before_minutes: readLead(root, 'e-lead', '[data-e-lead-custom]'),
+    ...(readPlaceSelect(root) ? { location_effect: readPlaceSelect(root) } : {}),
   };
 }
 
@@ -202,6 +205,8 @@ export function eventChanges(event, fields) {
   if (instant(fields.starts_at) !== instant(event.starts_at)) out.starts_at = fields.starts_at;
   if (instant(fields.ends_at) !== instant(event.ends_at)) out.ends_at = fields.ends_at;
   if ((fields.remind_before_minutes ?? null) !== (event.remind_before_minutes ?? null)) out.remind_before_minutes = fields.remind_before_minutes;
+  const place = (effect) => `${effect?.kind || 'NONE'}:${effect?.destination_place_id || ''}`;
+  if (fields.location_effect && place(fields.location_effect) !== place(event.location_effect)) out.location_effect = fields.location_effect;
   return out;
 }
 

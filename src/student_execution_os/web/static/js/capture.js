@@ -20,6 +20,8 @@ import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
 import { parseRecurring, recurringActions, parseCheckinOutcome } from './recurring.js';
+import { parseLocationTrigger, parsePlaceCreate } from './location-phrases.js';
+import { cachedPlaces } from './places.js';
 import { renderCommands, knownItems, isAssistantPlan } from './command-preview.js';
 import { assistantSession, renderRead, validUntil } from './assistant-turn.js';
 import { createReminder, deliveryChips, hasAlarm } from './reminders.js';
@@ -412,6 +414,15 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     // «Принял витамин»: an answer about a check-in the device knows.
     const outcome = parseCheckinOutcome(raw, knownItems().filter((x) => x.kind === 'CHECKIN'));
     if (outcome) { showLocalCommand(outcome); return; }
+    // «Добавь место Спортзал», «когда приду домой, напомни…»: places, not tasks.
+    const place = parsePlaceCreate(raw);
+    if (place) { showLocalCommand({ command: 'CREATE_PLACE', payload: place, unresolved_fields: [], expected_version: null, requires_confirmation: false }); return; }
+    const trigger = parseLocationTrigger(raw, cachedPlaces());
+    if (trigger) {
+      const payload = { transition: trigger.transition, title: trigger.title, place_text: trigger.place_text, ...(trigger.place_id ? { place_id: trigger.place_id } : {}) };
+      showLocalCommand({ command: 'CREATE_LOCATION_TRIGGER', payload, unresolved_fields: trigger.unresolved, expected_version: null, requires_confirmation: false });
+      return;
+    }
     // «Каждый день в 9 напоминай…»: something recurring is never a task card.
     const recurring = parseRecurring(raw, now());
     if (recurring) { showLocalActions(recurringActions(recurring, deviceTimeZone())); return; }
@@ -437,7 +448,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     // A recurring request or a check-in answer the device already read: a server answer
     // that is not a plan (e.g. a task card) must not replace that card.
     const localRecurring = Boolean(parseRecurring(raw, now())
-      || parseCheckinOutcome(raw, knownItems().filter((x) => x.kind === 'CHECKIN')));
+      || parseCheckinOutcome(raw, knownItems().filter((x) => x.kind === 'CHECKIN'))
+      || parsePlaceCreate(raw) || parseLocationTrigger(raw, cachedPlaces()));
     if (!raw) return;
     const caps = await capabilities();
     if (closed || seq !== serverSeq || revision !== captureSession.revision || input.value.trim() !== raw) return;

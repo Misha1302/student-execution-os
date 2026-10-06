@@ -389,7 +389,8 @@ function handleBack() {
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
 const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/notes', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
-  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/reflection?days=7', '/api/v1/notifications/health'];
+  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/reflection?days=7', '/api/v1/notifications/health',
+  '/api/v1/checkins', '/api/v1/places'];
 let lastPrefetch = 0;
 function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;

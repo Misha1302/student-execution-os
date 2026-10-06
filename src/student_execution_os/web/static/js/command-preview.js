@@ -17,6 +17,7 @@ import { matchTarget, rescheduleChange } from './commands.js';
 import { syncDeviceAlarms } from './reminders.js';
 import { assistantSession, offerUndo } from './assistant-turn.js';
 import { ruleLabel, firstStart } from './checkins.js';
+import { cachedPlaces, placeName } from './places.js';
 import { newEntityId } from './sync.js';
 
 const DESTRUCTIVE = new Set(['COMPLETE_OBLIGATION', 'CANCEL_OBLIGATION', 'ARCHIVE_OBLIGATION']);
@@ -46,11 +47,12 @@ export function knownItems() {
 export const isCommand = (action) => Boolean(KINDS[action?.command]);
 
 // Server actions that only exist as part of an Assistant proposal (never a capture card).
-const PLAN_ONLY = new Set(['UNDO_LAST', 'CREATE_TIME_CONSTRAINT', 'CREATE_PLANNING_PREFERENCE', ...RECURRING]);
+const PLACE_COMMANDS = new Set(['CREATE_PLACE', 'CREATE_LOCATION_TRIGGER']);
+const PLAN_ONLY = new Set(['UNDO_LAST', 'CREATE_TIME_CONSTRAINT', 'CREATE_PLANNING_PREFERENCE', ...RECURRING, ...PLACE_COMMANDS]);
 // What the server can revert for [Отменить] (it stores an inverse for these).
 const REVERSIBLE = new Set(['RESCHEDULE', 'SNOOZE', 'UPDATE_TASK', 'UPDATE_EVENT', 'UPDATE_REMINDER',
   'CREATE_TASK', 'CREATE_EVENT', 'CREATE_REMINDER', 'CREATE_NOTE', 'CREATE_TIME_CONSTRAINT',
-  'CREATE_PLANNING_PREFERENCE', 'CREATE_CHECKIN', 'CREATE_REMINDER_SERIES']);
+  'CREATE_PLANNING_PREFERENCE', 'CREATE_CHECKIN', 'CREATE_REMINDER_SERIES', 'CREATE_PLACE', 'CREATE_LOCATION_TRIGGER']);
 // A time the server derives from an earlier action («после неё») — known once that
 // action's item is picked, so it does not block the button.
 const DERIVED = new Set(['starts_at', 'ends_at', 'actionable_from', 'remind_at']);
@@ -115,6 +117,11 @@ function describe(action, item) {
       return t(p.outcome === 'SKIPPED' ? 'cmd.checkinSkipped' : action.resolution?.checkin_kind === 'MEDICATION' ? 'cmd.checkinTaken' : 'cmd.checkinDone', { title, time: at });
     }
     case 'CHECKIN_PROGRESS': return t('cmd.checkinProgress', { title, n: p.count });
+    case 'CREATE_PLACE': return p.address ? t('cmd.createPlaceAddress', { name: p.display_name, address: p.address }) : t('cmd.createPlace', { name: p.display_name });
+    case 'CREATE_LOCATION_TRIGGER': {
+      const place = cachedPlaces().find((x) => x.id === p.place_id);
+      return t(p.transition === 'EXIT' ? 'cmd.triggerExit' : 'cmd.triggerEnter', { title: p.title, place: place ? placeName(place) : (p.place_text || '…') });
+    }
     case 'MOVE_CHECKIN_OCCURRENCE': return t('cmd.checkinMove', { title, from: action.resolution?.scheduled_at ? fmtTime(action.resolution.scheduled_at) : '',
       to: (p.target_local || action.resolution?.target_local || '').slice(11, 16) || fmtTime(p.when) });
     case 'CREATE_TIME_CONSTRAINT': return t(p.type === 'FIXED_PERSONAL_BLOCK' ? 'cmd.constraintBlock' : 'cmd.constraintFree',
@@ -204,9 +211,13 @@ function candidatesFor(action) {
 // Renders the proposal into `box`; resolves when it was carried out or dismissed.
 // state: { source: 'local'|'server', batchId?, validUntil?, actions }
 // onRefine: the user wants to correct a server proposal by saying what to change.
+const NEW_PLACE = '__new_place__';
+
 export function renderCommands(box, state, { onDone = () => {}, onRefine = null } = {}) {
   const picks = {};
   const times = {};
+  const placePicks = {};
+  state.placePicks = placePicks;
   // A time the user typed for a recurring creation completes it (the first matching day from now).
   const completed = (action, index) => {
     if (!RECURRING.has(action.command) || !(action.unresolved_fields || []).includes('dtstart_local') || !times[index]) return null;
@@ -226,6 +237,9 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
         ${choosing ? `<div class="command-pick"><small class="help">${esc(t('cmd.which'))}</small>
           <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.when ? `${x.title} · ${fmtDateTime(x.when)}` : x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
         ${missingWhen ? `<small class="help">${esc(t('cmd.whenMissing'))}</small>` : ''}
+        ${action.command === 'CREATE_LOCATION_TRIGGER' && (action.unresolved_fields || []).includes('place_id') ? `<div class="command-pick"><small class="help">${esc(t('cmd.whichPlace'))}</small>
+          <div class="chip-row">${cachedPlaces().map((x) => `<button type="button" class="chip-toggle ${placePicks[index] === x.id ? 'on' : ''}" data-place-pick="${index}" data-pid="${esc(x.id)}">${esc(placeName(x))}</button>`).join('')}
+          ${action.payload?.place_text ? `<button type="button" class="chip-toggle ${placePicks[index] === NEW_PLACE ? 'on' : ''}" data-place-pick="${index}" data-pid="${NEW_PLACE}">${esc(t('cmd.newPlace', { name: action.payload.place_text }))}</button>` : ''}</div></div>` : ''}
         ${RECURRING.has(action.command) && (action.unresolved_fields || []).includes('dtstart_local')
           ? `<label class="field inline"><span>${esc(t('cmd.atTime'))}</span><input type="time" data-recurring-time="${index}" value="${esc(times[index] || '')}"></label>` : ''}
         ${!isCommand(action) && blocking(action).filter((f) => !(RECURRING.has(action.command) && f === 'dtstart_local' && times[index])).length ? `<small class="help">${esc(t('cmd.needsDetails'))}</small>` : ''}
@@ -237,7 +251,7 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
     // explained, never offered as if it could succeed.
     const ready = state.actions.every((a, i) => !a.blocked && (isCommand(a)
       ? targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when')
-      : !blocking(a).filter((f) => !(f === 'dtstart_local' && completed(a, i))).length));
+      : !blocking(a).filter((f) => !(f === 'dtstart_local' && completed(a, i)) && !(f === 'place_id' && placePicks[i])).length));
     const destructive = state.actions.some((a) => DESTRUCTIVE.has(a.command));
     box.innerHTML = `<article class="capture-card command-card">
       <span class="eyebrow">${icon('spark')} ${esc(t('capture.commandTitle'))}</span>
@@ -256,6 +270,10 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
       draw();
     }));
     box.querySelector('[data-refine]')?.addEventListener('click', () => onRefine(state));
+    box.querySelectorAll('[data-place-pick]').forEach((b) => b.addEventListener('click', () => {
+      placePicks[Number(b.dataset.placePick)] = b.dataset.pid;
+      draw();
+    }));
     box.querySelectorAll('[data-recurring-time]').forEach((input) => input.addEventListener('change', () => {
       times[Number(input.dataset.recurringTime)] = input.value;
       draw();
@@ -263,7 +281,9 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
     box.querySelector('[data-run]')?.addEventListener('click', async (e) => {
       const button = e.currentTarget;
       setBusy(button, true);
-      const ok = state.source === 'server' ? await applyServer(state, picks) : await applyLocal(state, picks);
+      // A place the user creates from the card is created on the device first (offline too).
+      const local = state.source !== 'server' || Object.values(placePicks).includes(NEW_PLACE);
+      const ok = local ? await applyLocal(state, picks) : await applyServer(state, picks);
       if (ok) onDone(); else setBusy(button, false);
     });
   };
@@ -273,6 +293,26 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
 async function applyLocal(state, picks) {
   let applied = null;
   for (const [index, action] of state.actions.entries()) {
+    if (action.command === 'CREATE_PLACE') {
+      applied = await change('place.create', newEntityId('place'), { ...action.payload },
+        { success: t('place.created', { name: action.payload.display_name }) });
+      continue;
+    }
+    if (action.command === 'CREATE_LOCATION_TRIGGER') {
+      const payload = { ...action.payload };
+      delete payload.place_text;
+      const pick = state.placePicks?.[index];
+      if (pick === NEW_PLACE) {
+        const placeId = newEntityId('place');
+        const name = action.payload.place_text.slice(0, 1).toUpperCase() + action.payload.place_text.slice(1);
+        if (!(await change('place.create', placeId, { display_name: name }))) return false;
+        payload.place_id = placeId;
+      } else if (pick) payload.place_id = pick;
+      if (!payload.place_id) continue;
+      applied = await change('location_trigger.create', newEntityId('trigger'), payload, { success: t(payload.transition === 'EXIT'
+        ? 'trigger.createdExit' : 'trigger.createdEnter', { name: placeName(cachedPlaces().find((x) => x.id === payload.place_id)) || action.payload.place_text }) });
+      continue;
+    }
     if (RECURRING.has(action.command)) {
       const payload = { ...action.payload };
       const start = state.completed?.(action, index);
@@ -301,6 +341,8 @@ async function applyServer(state, picks) {
   for (const [index, action] of state.actions.entries()) {
     const start = state.completed?.(action, index);
     if (start) edits[action.id] = { dtstart_local: start };
+    const placePick = state.placePicks?.[index];
+    if (placePick && placePick !== NEW_PLACE) edits[action.id] = { ...(edits[action.id] || {}), place_id: placePick };
     const item = picks[index];
     if (!item) continue;
     const key = item.kind === 'REMINDER' ? 'reminder_id' : item.kind === 'CHECKIN' ? 'checkin_id' : 'obligation_id';
