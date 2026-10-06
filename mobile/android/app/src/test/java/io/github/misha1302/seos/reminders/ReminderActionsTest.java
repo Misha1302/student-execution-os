@@ -93,4 +93,60 @@ public class ReminderActionsTest {
         assertEquals(SyncResultPolicy.Decision.SUCCESS, SyncResultPolicy.decide(safeNoop));
         assertEquals(SyncResultPolicy.Decision.PERMANENT_FAILURE, SyncResultPolicy.decide(unsafeNoop));
     }
+
+    @Test
+    public void checkinButtonsRecordTheOutcomeOfThatOccurrence() throws Exception {
+        JSONObject taken = new JSONArray(ReminderActions.checkinOperations(
+                "CHECKIN_DONE", "rem-7", "checkin-vit", "2026-09-24T19:00:00", "checkin-r1", PRESSED)).getJSONObject(0);
+        assertEquals("checkin.occurrence.done", taken.getString("type"));
+        assertEquals("checkin-vit", taken.getString("entity_id"));
+        assertEquals("push-rem-7-CHECKIN_DONE", taken.getString("op_id"));
+        JSONObject payload = taken.getJSONObject("payload");
+        assertEquals("checkin-vit", payload.getString("template_id"));
+        assertEquals("2026-09-24T19:00:00", payload.getString("original_recurrence_id"));
+        // The moment of the press, not of the network coming back.
+        assertEquals("2026-09-24T16:00:37Z", payload.getString("occurred_at"));
+        assertEquals("rem-7", payload.getString("reminder_message_id"));
+        // A retry or a double tap is the same operation (exactly once on the server).
+        assertEquals(ReminderActions.checkinOperations("CHECKIN_DONE", "rem-7", "checkin-vit", "2026-09-24T19:00:00",
+                "checkin-r1", PRESSED), ReminderActions.checkinOperations("CHECKIN_DONE", "rem-7", "checkin-vit",
+                "2026-09-24T19:00:00", "checkin-r1", PRESSED));
+        JSONObject skipped = new JSONArray(ReminderActions.checkinOperations(
+                "CHECKIN_SKIP", "rem-7", "checkin-vit", "2026-09-24T19:00:00", "checkin-r1", PRESSED)).getJSONObject(0);
+        assertEquals("checkin.occurrence.skip", skipped.getString("type"));
+        assertFalse(skipped.getJSONObject("payload").has("occurred_at"));
+    }
+
+    @Test
+    public void checkinSnoozeMovesOnlyThePrompt() throws Exception {
+        JSONObject later = new JSONArray(ReminderActions.checkinOperations(
+                "SNOOZE_15", "rem-7", "checkin-vit", "2026-09-24T19:00:00", "checkin-r1", PRESSED)).getJSONObject(0);
+        assertEquals("reminder.snooze", later.getString("type"));
+        assertEquals("checkin-r1", later.getString("entity_id"));
+        assertEquals("2026-09-24T16:15:00Z", later.getJSONObject("payload").getString("until"));
+        assertTrue(ReminderActions.runsInBackground("CHECKIN_DONE"));
+        assertTrue(ReminderActions.runsInBackground("CHECKIN_SKIP"));
+        assertEquals(15, ReminderActions.snoozeMinutes("SNOOZE_15"));
+    }
+
+    @Test
+    public void checkinPushCarriesTheOccurrenceIdentity() throws Exception {
+        java.util.Map<String, String> data = new java.util.HashMap<>();
+        data.put("message_id", "rem-8");
+        data.put("reminder_id", "checkin-r1");
+        data.put("title", "💊 Витамин D");
+        data.put("checkin", "{\"template_id\":\"checkin-vit\",\"original_recurrence_id\":\"2026-09-24T09:00:00\",\"kind\":\"MEDICATION\"}");
+        ReminderNotifications.Reminder reminder = ReminderNotifications.parse(data);
+        assertTrue(reminder.isCheckin());
+        assertEquals("checkin-vit", reminder.checkinTemplateId);
+        assertEquals("2026-09-24T09:00:00", reminder.checkinRecurrenceId);
+        data.remove("checkin");
+        assertFalse(ReminderNotifications.parse(data).isCheckin());
+    }
+
+    @Test
+    public void alreadySkippedIsASafeReplay() throws Exception {
+        JSONArray noop = new JSONArray().put(new JSONObject().put("status", "NOOP").put("code", "ALREADY_SKIPPED"));
+        assertEquals(SyncResultPolicy.Decision.SUCCESS, SyncResultPolicy.decide(noop));
+    }
 }

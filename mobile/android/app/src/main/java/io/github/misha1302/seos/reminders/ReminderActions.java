@@ -22,16 +22,22 @@ public final class ReminderActions {
     public static final String SNOOZE_30 = "SNOOZE_30";
     public static final String SNOOZE_60 = "SNOOZE_60";
     public static final String SNOOZE_10 = "SNOOZE_10";
+    public static final String SNOOZE_15 = "SNOOZE_15";
+    /** Check-in prompts: these record the outcome of the occurrence («Принял» / «Не принял»). */
+    public static final String CHECKIN_DONE = "CHECKIN_DONE";
+    public static final String CHECKIN_SKIP = "CHECKIN_SKIP";
 
     private ReminderActions() {}
 
     /** Buttons the device executes itself without opening the app. */
     public static boolean runsInBackground(String action) {
-        return START.equals(action) || DONE.equals(action) || snoozeMinutes(action) > 0;
+        return START.equals(action) || DONE.equals(action) || CHECKIN_DONE.equals(action) || CHECKIN_SKIP.equals(action)
+                || snoozeMinutes(action) > 0;
     }
 
     public static int snoozeMinutes(String action) {
         if (SNOOZE_10.equals(action)) return 10;
+        if (SNOOZE_15.equals(action)) return 15;
         if (SNOOZE_30.equals(action)) return 30;
         if (SNOOZE_60.equals(action)) return 60;
         return 0;
@@ -108,6 +114,31 @@ public final class ReminderActions {
         }
         return "[{\"op_id\":" + quote(opId) + ",\"type\":" + quote(type) + ",\"entity_id\":" + quote(reminderId)
                 + ",\"payload\":" + payload + "}]";
+    }
+
+    /**
+     * A button on a check-in prompt. «Принял»/«Не принял» record the outcome of exactly that
+     * occurrence (template + original recurrence id), with the moment of the press; «позже»
+     * only snoozes the prompt, so the occurrence stays open. The operation id is fixed by the
+     * message and the button, so a double tap or a WorkManager retry is applied once.
+     */
+    public static String checkinOperations(String action, String messageId, String templateId, String recurrenceId,
+                                           String reminderId, long pressedAtMillis) {
+        if (snoozeMinutes(action) > 0) return reminderOperations(action, messageId, reminderId, pressedAtMillis);
+        String type;
+        String extra = "";
+        if (CHECKIN_DONE.equals(action)) {
+            type = "checkin.occurrence.done";
+            extra = ",\"occurred_at\":" + quote(iso(pressedAtMillis));
+        } else if (CHECKIN_SKIP.equals(action)) {
+            type = "checkin.occurrence.skip";
+        } else {
+            throw new IllegalArgumentException("not a check-in action: " + action);
+        }
+        String payload = "{\"template_id\":" + quote(templateId) + ",\"original_recurrence_id\":" + quote(recurrenceId)
+                + extra + ",\"reminder_message_id\":" + quote(messageId) + "}";
+        return "[{\"op_id\":" + quote("push-" + messageId + "-" + action) + ",\"type\":" + quote(type)
+                + ",\"entity_id\":" + quote(templateId) + ",\"payload\":" + payload + "}]";
     }
 
     /** Fills "{title}"/"{time}" placeholders of a server-provided label. */

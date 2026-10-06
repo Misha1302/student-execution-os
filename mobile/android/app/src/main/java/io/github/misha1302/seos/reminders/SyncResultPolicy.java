@@ -14,7 +14,7 @@ public final class SyncResultPolicy {
     private static final Set<String> SAFE_NOOPS = new HashSet<>(Arrays.asList(
             "ALREADY_COMPLETED", "ALREADY_DONE", "ALREADY_CANCELLED", "ALREADY_STARTED",
             "ALREADY_OPEN", "ALREADY_UP", "ALREADY_EXISTS", "NOTHING_TO_CHANGE",
-            "REMINDER_CLOSED", "SNOOZE_EXPIRED", "DELETED", "SUPERSEDED"));
+            "REMINDER_CLOSED", "SNOOZE_EXPIRED", "DELETED", "SUPERSEDED", "ALREADY_SKIPPED"));
 
     private SyncResultPolicy() {}
 
