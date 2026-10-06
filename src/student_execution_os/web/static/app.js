@@ -33,12 +33,15 @@ import notes from './js/views/notes.js';
 import note from './js/views/note-detail.js';
 import connect from './js/views/connect.js';
 import groups, { group } from './js/views/groups.js';
+import checkins from './js/views/checkins.js';
+import checkin from './js/views/checkin.js';
+import { CHECKIN_ACTIONS } from './js/checkins.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect, groups, group };
+const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect, groups, group, checkins, checkin };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -106,7 +109,7 @@ function updateChrome(view) {
   $('#page-subtitle').textContent = subtitle;
   $('#page-subtitle').hidden = !subtitle;
   document.title = `${view.title()} · ${t('app.name')}`;
-  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id === 'project' ? 'projects' : view.id;
+  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id === 'project' ? 'projects' : view.id === 'checkin' ? 'checkins' : view.id;
   document.querySelectorAll('#tabbar [data-nav]').forEach((b) => {
     const on = b.dataset.nav === active || (b.classList.contains('mobile-only') && view.tab === 'more' && b.dataset.nav === 'more');
     b.classList.toggle('active', on);
@@ -300,6 +303,7 @@ function syncSheet() {
 }
 
 const GLOBAL_ACTIONS = {
+  ...CHECKIN_ACTIONS,
   'sync-status': () => syncSheet(),
   compose: () => openCapture(),
   'compose-task': () => openCapture(),

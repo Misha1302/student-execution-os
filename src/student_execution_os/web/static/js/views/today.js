@@ -5,6 +5,7 @@ import { logProgress, lifecycle, change } from '../actions.js';
 import { rescheduleSheet } from '../task-sheets.js';
 import { isOpen, hasAlarm, reminderStatusChip } from '../reminders.js';
 import { upcomingItems, currentEvent as runningEvent } from '../upcoming.js';
+import { todayCheckinsSection } from '../checkins.js';
 import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 export function parseWhyNow(value) {
@@ -322,7 +323,7 @@ export default {
     const travel = travelCard(data.travel);
     const bounds = boundaries(data);
 
-    const nothingYet = !(data.tasks || []).length && !(data.needs_refinement || []).length && !events.length && !(data.reminders || []).length;
+    const nothingYet = !(data.tasks || []).length && !(data.needs_refinement || []).length && !events.length && !(data.reminders || []).length && !(data.checkins || []).length;
     const capture = `<button class="capture-cta" data-action="compose">
         <span class="capture-cta-copy"><strong>${esc(t('capture.title'))}</strong><small>${esc(t('capture.ctaHint'))}</small></span>
         <span class="capture-cta-icons">${icon('plus')}</span></button>`;
@@ -353,6 +354,8 @@ export default {
           </button>`;
         }).join('')}</div>
       </section>` : ''}
+
+      ${todayCheckinsSection(data.checkins || [])}
 
       ${upcoming.length ? `<section class="section" data-soon>
         ${sectionHead(t('today.soon'))}

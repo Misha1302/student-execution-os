@@ -19,6 +19,7 @@ import { parseTask, correctedText, reminderTurn } from './nlparse.js';
 import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
 import { parseCommand } from './commands.js';
+import { parseRecurring, recurringActions, parseCheckinOutcome } from './recurring.js';
 import { renderCommands, knownItems, isAssistantPlan } from './command-preview.js';
 import { assistantSession, renderRead, validUntil } from './assistant-turn.js';
 import { createReminder, deliveryChips, hasAlarm } from './reminders.js';
@@ -391,8 +392,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     if (semanticConflicts.length) createButton.disabled = true;
   }
 
-  function showLocalCommand(action) {
-    commands = { source: 'local', actions: [action] };
+  function showLocalCommand(action) { showLocalActions([action]); }
+
+  function showLocalActions(actions) {
+    commands = { source: 'local', actions };
     renderCommands(dialog.querySelector('[data-commands]'), commands, { onDone: () => dialog.close('applied') });
     showEngine('local');
     render();
@@ -406,6 +409,12 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     // "готово эссе", "перенеси созвон на 19:00": about something the user already has.
     const command = parseCommand(raw, now(), knownItems());
     if (command) { showLocalCommand(command); return; }
+    // «Принял витамин»: an answer about a check-in the device knows.
+    const outcome = parseCheckinOutcome(raw, knownItems().filter((x) => x.kind === 'CHECKIN'));
+    if (outcome) { showLocalCommand(outcome); return; }
+    // «Каждый день в 9 напоминай…»: something recurring is never a task card.
+    const recurring = parseRecurring(raw, now());
+    if (recurring) { showLocalActions(recurringActions(recurring, deviceTimeZone())); return; }
     const parsed = parseTask(raw, now());
     resetParsedState();
     showStatus('');
@@ -425,6 +434,10 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     const revision = captureSession.revision;
     const seq = ++serverSeq;
     const command = Boolean(parseCommand(raw, now(), knownItems()));
+    // A recurring request or a check-in answer the device already read: a server answer
+    // that is not a plan (e.g. a task card) must not replace that card.
+    const localRecurring = Boolean(parseRecurring(raw, now())
+      || parseCheckinOutcome(raw, knownItems().filter((x) => x.kind === 'CHECKIN')));
     if (!raw) return;
     const caps = await capabilities();
     if (closed || seq !== serverSeq || revision !== captureSession.revision || input.value.trim() !== raw) return;
@@ -477,6 +490,7 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
       render();
       return;
     }
+    if (localRecurring) return;
     // The words asked for an alarm: a task or event reading of them is a downgrade
     // (an older server may still send one), so the local alarm card stays.
     if (reminderFloor && !kindChosen && actions[0]?.command !== 'CREATE_REMINDER') return;
