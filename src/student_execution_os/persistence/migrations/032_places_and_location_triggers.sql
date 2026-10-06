@@ -32,3 +32,20 @@ CREATE TABLE IF NOT EXISTS location_triggers (
     FOREIGN KEY (account_id, place_id) REFERENCES places(account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_location_triggers_account ON location_triggers(account_id, status, place_id);
+
+-- Routing provider bookkeeping (ADR 0035): when a route was last asked for and how it
+-- went, so a failing or unconfigured provider is retried with backoff, not every tick.
+-- Never holds a provider credential or response body.
+CREATE TABLE IF NOT EXISTS route_refresh_state (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    origin_place_id TEXT NOT NULL,
+    destination_place_id TEXT NOT NULL,
+    transport_mode TEXT NOT NULL,
+    last_attempt_at TEXT NOT NULL,
+    last_status TEXT NOT NULL CHECK (length(last_status) BETWEEN 1 AND 40),
+    failures INTEGER NOT NULL DEFAULT 0 CHECK (failures >= 0),
+    next_attempt_at TEXT NOT NULL,
+    PRIMARY KEY (account_id, origin_place_id, destination_place_id, transport_mode),
+    FOREIGN KEY (account_id, origin_place_id) REFERENCES places(account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id, destination_place_id) REFERENCES places(account_id, id) ON DELETE CASCADE
+);

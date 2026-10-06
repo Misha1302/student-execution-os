@@ -228,6 +228,8 @@ class SQLiteTravelRepository:
             conn.execute("DELETE FROM location_triggers WHERE account_id=? AND place_id=?", (account_id, place_id))
             conn.execute("DELETE FROM travel_estimates WHERE account_id=? AND (origin_place_id=? OR destination_place_id=?)",
                          (account_id, place_id, place_id))
+            conn.execute("DELETE FROM route_refresh_state WHERE account_id=? AND (origin_place_id=? OR destination_place_id=?)",
+                         (account_id, place_id, place_id))
             conn.execute("DELETE FROM current_location_context WHERE account_id=? AND place_id=?", (account_id, place_id))
             conn.execute("DELETE FROM places WHERE account_id=? AND id=?", (account_id, place_id))
             conn.execute("INSERT OR REPLACE INTO deleted_entities(account_id,entity_kind,entity_id,deleted_at) "
@@ -403,14 +405,20 @@ class SQLiteTravelRepository:
         as_of: datetime,
     ) -> TravelEstimate | None:
         require_aware(as_of, "as_of")
-        for estimate in self.list_route_estimates(
-            account_id=account_id,
-            origin_place_id=origin_place_id,
-            destination_place_id=destination_place_id,
-        ):
-            if estimate.calculated_at <= as_of and estimate.is_fresh_at(as_of):
+        fresh = [
+            estimate for estimate in self.list_route_estimates(
+                account_id=account_id,
+                origin_place_id=origin_place_id,
+                destination_place_id=destination_place_id,
+            )
+            if estimate.calculated_at <= as_of and estimate.is_fresh_at(as_of)
+        ]
+        # The user's own estimate wins while it is valid (they know their route); otherwise
+        # the newest fresh evidence. Stale evidence is never used as fresh.
+        for estimate in fresh:
+            if estimate.source is TravelEstimateSource.USER_OVERRIDE:
                 return estimate
-        return None
+        return fresh[0] if fresh else None
 
     def route_has_stale_evidence(
         self,

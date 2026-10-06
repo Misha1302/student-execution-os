@@ -1,6 +1,7 @@
 -- Roll back schema v32: location triggers are dropped; the routing consent column is
 -- removed by rebuilding places with its v6 columns (SQLite < 3.35 has no DROP COLUMN).
 DROP TABLE IF EXISTS location_triggers;
+DROP TABLE IF EXISTS route_refresh_state;
 CREATE TABLE places_v31 (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
