@@ -24,8 +24,10 @@ from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
+from . import checkin_actions
 from .disambiguation import judge
 from .nlparse import parse_task
+from .recurring import parse_recurring
 from .providers import ProviderUnavailable
 from .read import SQLiteAssistantReadService
 from .reliability import ReliabilityPolicy, ReliabilityTrace, sanitized_validation_feedback
@@ -85,6 +87,13 @@ class DeterministicAssistantParser:
                      "unresolved_fields": unresolved, "expected_version": None, "requires_confirmation": False}]
         # Commands about existing items ("готово эссе", "перенеси созвон на 18:00").
         now = _dt(str(context.get("now"))) if context.get("now") else None
+        zone_name = str(context.get("timezone") or "UTC")
+        outcome = checkin_actions.parse_outcome(clean, list(context.get("checkins") or []))
+        if outcome is not None:
+            return [outcome]
+        recurring = parse_recurring(clean, now=now or datetime.now(timezone.utc), timezone_name=zone_name)
+        if recurring is not None:
+            return checkin_actions.recurring_actions(recurring, zone_name)
         items = [*(context.get("obligations") or []), *(context.get("reminders") or [])]
         command = parse_command(clean, now=now or datetime.now(timezone.utc),
                                 timezone_name=str(context.get("timezone") or "UTC"), items=items)
@@ -150,7 +159,7 @@ _CREATE_TASK_FIELDS = {
     "actual_cutoff", "target_at", "actionable_from", "remind_at", "splittable", "min_chunk_minutes", "max_chunk_minutes",
 }
 _NULLABLE_CAPTURE = {"estimated_total_effort_minutes"}
-_TARGET = {"obligation_id", "reminder_id", "target_text"}
+_TARGET = {"obligation_id", "reminder_id", "checkin_id", "target_text"}
 # A time the server derives from an earlier action of the same plan (never a sync field).
 _RELATIVE = "relative_to"
 _RELATIVE_FIELDS = {
@@ -183,6 +192,11 @@ _PAYLOAD_KEYS = {
     AgentCommand.CREATE_TIME_CONSTRAINT.value: {"type", "starts_at", "ends_at", "reason"},
     AgentCommand.CREATE_PLANNING_PREFERENCE.value: _PREFERENCE_FIELDS,
     AgentCommand.UNDO_LAST.value: set(),
+    AgentCommand.CREATE_CHECKIN.value: set(checkin_actions.CREATE_CHECKIN_FIELDS),
+    AgentCommand.CREATE_REMINDER_SERIES.value: set(checkin_actions.CREATE_SERIES_FIELDS),
+    AgentCommand.CHECKIN_OUTCOME.value: {"outcome", "occurred_at", "note"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
+    AgentCommand.CHECKIN_PROGRESS.value: {"count"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
+    AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: {"when", "target_local"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
 }
 _REQUIRED = {
     AgentCommand.CREATE_NOTE.value: ("content",),
@@ -193,6 +207,11 @@ _REQUIRED = {
     AgentCommand.SNOOZE.value: ("until",),
     AgentCommand.CREATE_TIME_CONSTRAINT.value: ("type", "starts_at", "ends_at"),
     AgentCommand.CREATE_PLANNING_PREFERENCE.value: ("kind", "date_from"),
+    AgentCommand.CREATE_CHECKIN.value: ("title", "dtstart_local", "recurrence_rule"),
+    AgentCommand.CREATE_REMINDER_SERIES.value: ("title", "dtstart_local", "recurrence_rule"),
+    AgentCommand.CHECKIN_OUTCOME.value: ("outcome",),
+    AgentCommand.CHECKIN_PROGRESS.value: ("count",),
+    AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: ("when",),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -206,11 +225,14 @@ _TARGET_KINDS = {
     AgentCommand.UPDATE_REMINDER.value: {"REMINDER"},
     AgentCommand.RESCHEDULE.value: {"TASK", "EVENT", "REMINDER"},
     AgentCommand.SNOOZE.value: {"TASK", "REMINDER"},
+    AgentCommand.CHECKIN_OUTCOME.value: {"CHECKIN"},
+    AgentCommand.CHECKIN_PROGRESS.value: {"CHECKIN"},
+    AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: {"CHECKIN"},
 }
 
 
 def _target_unresolved(unresolved: list[str]) -> bool:
-    return bool({"target", "obligation_id", "reminder_id"} & set(unresolved))
+    return bool({"target", "obligation_id", "reminder_id", "checkin_id"} & set(unresolved))
 
 
 def _positive_minutes(value: object, field: str, *, allow_none: bool = False) -> None:
@@ -363,6 +385,12 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         raise ValidationError("assistant target_text must be short text")
     if _RELATIVE in payload:
         parse_relative_to(payload[_RELATIVE])  # resolved against the plan by SQLiteAssistantService
+    if command in {AgentCommand.CREATE_CHECKIN.value, AgentCommand.CREATE_REMINDER_SERIES.value}:
+        from student_execution_os.reminders import ReminderStore
+        checkin_actions.validate_create(command, payload, timezone_name=timezone_name
+                                        or ReminderStore(canonical).prefs(account_id).timezone_name)
+    if command in checkin_actions.TARGETED:
+        checkin_actions.validate_targeted(command, payload)
     expected = raw["expected_version"]
     if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
         raise ValidationError("assistant expected_version must be an integer")
@@ -372,6 +400,9 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         if canonical.connection.execute("SELECT 1 FROM obligations WHERE account_id=? AND id=?",
                                         (account_id, str(payload["obligation_id"]))).fetchone() is None:
             raise ValidationError("assistant proposal references an unknown obligation")
+    if command in checkin_actions.TARGETED and not _target_unresolved(unresolved):
+        # The server, not the model, decides which day's occurrence is meant.
+        resolution = checkin_actions.resolve_occurrence(canonical, account_id, command, payload)
     if command == AgentCommand.RESCHEDULE.value and payload.get("temporal_transform") is not None and not _target_unresolved(unresolved):
         target = target_of(canonical, account_id, payload)
         assert target is not None
@@ -401,6 +432,9 @@ def _instant(value: object, field: str) -> datetime:
 
 def target_of(canonical: SQLiteCanonicalRepository, account_id: str, payload: dict[str, Any]) -> tuple[str, str, int] | None:
     """(kind, id, version) of the item an action addresses, or None when it is unknown."""
+    if payload.get("checkin_id"):
+        version = checkin_actions.target_version(canonical, account_id, str(payload["checkin_id"]))
+        return None if version is None else ("CHECKIN", str(payload["checkin_id"]), version)
     if payload.get("reminder_id"):
         row = canonical.connection.execute("SELECT version FROM reminders WHERE account_id=? AND id=?",
                                            (account_id, str(payload["reminder_id"]))).fetchone()
@@ -437,9 +471,9 @@ def _validate_target(command: str, payload: dict[str, Any], unresolved: list[str
                      canonical: SQLiteCanonicalRepository, account_id: str) -> None:
     if _target_unresolved(unresolved):
         return  # the user picks the item in the preview; apply refuses until then
-    if payload.get("obligation_id") and payload.get("reminder_id"):
+    if sum(1 for key in ("obligation_id", "reminder_id", "checkin_id") if payload.get(key)) > 1:
         raise ValidationError("assistant action must address one item")
-    if not payload.get("obligation_id") and not payload.get("reminder_id"):
+    if not payload.get("obligation_id") and not payload.get("reminder_id") and not payload.get("checkin_id"):
         raise ValidationError(f"assistant {command} payload lacks obligation_id")
     target = target_of(canonical, account_id, payload)
     if target is None:
@@ -516,7 +550,8 @@ class SQLiteAssistantService:
         ).fetchall()
         reminder_rows = self.canonical.connection.execute(
             "SELECT id,title,version,status,remind_at FROM reminders WHERE account_id=? AND status IN ('SCHEDULED','FIRED') "
-            "ORDER BY remind_at LIMIT 40", (self.principal.account_id,),
+            "AND id NOT IN (SELECT reminder_id FROM checkin_occurrences WHERE account_id=? AND reminder_id IS NOT NULL) "
+            "ORDER BY remind_at LIMIT 40", (self.principal.account_id, self.principal.account_id),
         ).fetchall()
         from student_execution_os.reminders import ReminderStore
         prefs = ReminderStore(self.canonical).prefs(self.principal.account_id)
@@ -536,6 +571,9 @@ class SQLiteAssistantService:
                              **({"starts_at": row["starts_at"]} if row["starts_at"] else {})} for row in rows],
             "reminders": [{"id": row["id"], "kind": "REMINDER", "title": row["title"], "version": int(row["version"]),
                            "status": row["status"], "remind_at": row["remind_at"]} for row in reminder_rows],
+            # Check-ins by name and today's open days (their prompts are not separate reminders).
+            "checkins": checkin_actions.context_items(self.canonical, self.principal.account_id,
+                                                      self.canonical.clock.now()),
         }
         if isinstance(client.get("locale"), str):
             context["locale"] = client["locale"][:16]
@@ -888,8 +926,8 @@ class SQLiteAssistantService:
         unresolved = raw.get("unresolved_fields")
         if not isinstance(payload, dict) or not isinstance(unresolved, list) or _target_unresolved(unresolved):
             return raw, None
-        chosen = payload.get("reminder_id") or payload.get("obligation_id")
-        if not chosen or (payload.get("reminder_id") and payload.get("obligation_id")):
+        chosen = payload.get("reminder_id") or payload.get("obligation_id") or payload.get("checkin_id")
+        if not chosen or sum(1 for key in ("obligation_id", "reminder_id", "checkin_id") if payload.get(key)) > 1:
             return raw, None  # validate_proposal rejects these shapes
         destination = None
         for field in ("when", "until"):
@@ -912,7 +950,7 @@ class SQLiteAssistantService:
             raise ValidationError("assistant proposal references an item outside its authorized context")
         if verdict.decision == "CONTINUE":
             return raw, None
-        unresolved_payload = {k: v for k, v in payload.items() if k not in {"obligation_id", "reminder_id"}}
+        unresolved_payload = {k: v for k, v in payload.items() if k not in {"obligation_id", "reminder_id", "checkin_id"}}
         provenance = raw.get("field_provenance")
         guarded = {
             **raw,
@@ -1427,12 +1465,14 @@ class SQLiteAssistantService:
             elif action["command"] == AgentCommand.CREATE_EVENT.value and payload.get("starts_at") \
                     and isinstance(edit.get("duration_minutes"), int) and not isinstance(edit["duration_minutes"], bool):
                 payload["ends_at"] = _iso(_dt(str(payload["starts_at"])) + timedelta(minutes=edit["duration_minutes"]))
-        picked = "obligation_id" in edit or "reminder_id" in edit
+        picked = "obligation_id" in edit or "reminder_id" in edit or "checkin_id" in edit
         if picked:
             # The user chose which item the command is about.
             payload.pop("target_text", None)
             if "reminder_id" in edit:
                 payload.pop("obligation_id", None)
+            if "checkin_id" in edit:
+                payload.pop("original_recurrence_id", None)  # re-resolved for the picked check-in
         if (action["command"] == AgentCommand.CREATE_EVENT.value
                 and ({"starts_at", "ends_at"} & edit.keys())
                 and "duration_minutes" not in edit):
@@ -1441,7 +1481,8 @@ class SQLiteAssistantService:
             payload.pop("duration_minutes", None)
         raw["payload"] = payload
         raw["unresolved_fields"] = [field for field in action["unresolved_fields"] if field not in edit
-                                    and not (picked and field in {"target", "obligation_id", "reminder_id", "expected_version"})]
+                                    and not (picked and field in {"target", "obligation_id", "reminder_id", "checkin_id",
+                                                                  "expected_version"})]
         clean = validate_proposal(
             raw, self.canonical, self.principal.account_id,
             timezone_name=str((action.get("resolution") or {}).get("timezone") or "") or None,
@@ -1495,6 +1536,9 @@ class SQLiteAssistantService:
         target = target_of(self.canonical, self.principal.account_id, data)
         kind, entity = (target[0], target[1]) if target else ("", "")
         fields = {key: value for key, value in data.items() if key not in _TARGET and key != _RELATIVE}
+        if command.value in checkin_actions.TARGETED or command in {AgentCommand.CREATE_CHECKIN,
+                                                                     AgentCommand.CREATE_REMINDER_SERIES}:
+            return checkin_actions.operation(command.value, data, lambda kind: f"{kind}-{uuid4()}")
         if command is AgentCommand.CREATE_NOTE:
             return "note.create", f"note-{uuid4()}", {**fields, "source_kind": "CAPTURE"}
         if command is AgentCommand.CREATE_EVENT:
@@ -1539,6 +1583,8 @@ class SQLiteAssistantService:
         if target is None:
             return None
         kind, entity_id, _version = target
+        if kind == "CHECKIN":
+            return None  # an outcome is undone with «снять отметку», not by the Assistant's undo
         requested = {key for key in data if key not in _TARGET}
         if command in {AgentCommand.RESCHEDULE, AgentCommand.SNOOZE}:
             if kind == "EVENT":
@@ -1613,6 +1659,7 @@ class SQLiteAssistantService:
 
     # Where each inverse's entity keeps its optimistic version.
     _VERSION_TABLES = {"reminder": ("reminders", "id"), "note": ("notes", "id"),
+                       "checkin": ("checkin_templates", "id"), "reminder_series": ("reminder_series", "id"),
                        "constraint": ("user_time_constraints", "id"),
                        "preference": ("planning_preferences", "id")}
 
@@ -1632,6 +1679,8 @@ class SQLiteAssistantService:
             AgentCommand.CREATE_REMINDER.value: "reminder.delete", AgentCommand.CREATE_NOTE.value: "note.delete",
             AgentCommand.CREATE_TIME_CONSTRAINT.value: "constraint.delete",
             AgentCommand.CREATE_PLANNING_PREFERENCE.value: "preference.delete",
+            AgentCommand.CREATE_CHECKIN.value: "checkin.delete",
+            AgentCommand.CREATE_REMINDER_SERIES.value: "reminder_series.delete",
         }.get(action["command"])
         return None if operation is None else {"operation": operation, "payload": {}}
 

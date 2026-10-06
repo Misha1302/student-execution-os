@@ -1,0 +1,397 @@
+{
+ "now": "2026-10-06T05:00:00+00:00",
+ "timezone": "Europe/Moscow",
+ "cases": [
+  {
+   "text": "Напоминай мне принимать сертралин каждый день в 9 утра",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "09:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Сертралин",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  },
+  {
+   "text": "Каждый день в 9 напоминай принять витамин D",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "09:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Витамин D",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  },
+  {
+   "text": "Каждый день в 22:30 напоминай вынести мусор",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "22:30"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Вынести мусор",
+    "dtstart_local": "2026-10-06T22:30"
+   }
+  },
+  {
+   "text": "Каждое воскресенье в 18:00 позвонить бабушке",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=SU",
+    "times": [
+     "18:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Позвонить бабушке",
+    "dtstart_local": "2026-10-11T18:00"
+   }
+  },
+  {
+   "text": "По будням утром напомни взять пропуск",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+    "times": [
+     "09:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Взять пропуск",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  },
+  {
+   "text": "Решать по 20 задач матана каждый день",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "QUOTA",
+    "title": "Решать 20 задач матана",
+    "target_quantity": 20,
+    "unit": "задач",
+    "remind": false,
+    "dtstart_local": "2026-10-06T00:00"
+   }
+  },
+  {
+   "text": "Читать по 30 страниц в день",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "QUOTA",
+    "title": "Читать 30 страниц",
+    "target_quantity": 30,
+    "unit": "страниц",
+    "remind": false,
+    "dtstart_local": "2026-10-06T00:00"
+   }
+  },
+  {
+   "text": "100 карточек Anki в день",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "QUOTA",
+    "title": "100 карточек Anki",
+    "target_quantity": 100,
+    "unit": "карточек",
+    "remind": false,
+    "dtstart_local": "2026-10-06T00:00"
+   }
+  },
+  {
+   "text": "Каждый вечер в 22:30 напоминай вынести мусор",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "22:30"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Вынести мусор",
+    "dtstart_local": "2026-10-06T22:30"
+   }
+  },
+  {
+   "text": "Каждый будний день напоминай взять пропуск",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+    "times": [],
+    "unresolved": [
+     "time"
+    ],
+    "kind": "REMINDER_SERIES",
+    "title": "Взять пропуск",
+    "dtstart_local": null
+   }
+  },
+  {
+   "text": "принимать сертралин 50 мг в 9 и 21 каждый день",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "09:00",
+     "21:00"
+    ],
+    "unresolved": [],
+    "dose_text": "50 мг",
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Сертралин",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  },
+  {
+   "text": "every day at 9am remind me to take vitamin D",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "09:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Vitamin D",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  },
+  {
+   "text": "купить хлеб завтра в 18",
+   "expected": null
+  },
+  {
+   "text": "в день рождения позвонить маме",
+   "expected": null
+  },
+  {
+   "text": "по понедельникам и средам в 8:30 бассейн",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO,WE",
+    "times": [
+     "08:30"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Бассейн",
+    "dtstart_local": "2026-10-07T08:30"
+   }
+  },
+  {
+   "text": "каждый день отмечать зарядку в 7 утра",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "07:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "ROUTINE",
+    "title": "Зарядку",
+    "dtstart_local": "2026-10-07T07:00"
+   }
+  },
+  {
+   "text": "Каждый день принимать душ в 8",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "08:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Принимать душ",
+    "dtstart_local": "2026-10-07T08:00"
+   }
+  },
+  {
+   "text": "every day at 21:00 take 2 pills of magnesium",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "21:00"
+    ],
+    "unresolved": [],
+    "dose_text": "2 pills",
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Magnesium",
+    "dtstart_local": "2026-10-06T21:00"
+   }
+  },
+  {
+   "text": "каждый вечер пить таблетку от давления",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "19:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Таблетку от давления",
+    "dtstart_local": "2026-10-06T19:00"
+   }
+  },
+  {
+   "text": "через день в 20:00 полить цветы",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY;INTERVAL=2",
+    "times": [
+     "20:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Полить цветы",
+    "dtstart_local": "2026-10-06T20:00"
+   }
+  },
+  {
+   "text": "read 30 pages a day",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "QUOTA",
+    "title": "Read 30 pages",
+    "target_quantity": 30,
+    "unit": "pages",
+    "remind": false,
+    "dtstart_local": "2026-10-06T00:00"
+   }
+  },
+  {
+   "text": "Каждое утро зарядка",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "09:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Зарядка",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  },
+  {
+   "text": "on weekdays at 8:15 remind me to take the badge",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+    "times": [
+     "08:15"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Take the badge",
+    "dtstart_local": "2026-10-06T08:15"
+   }
+  },
+  {
+   "text": "каждую неделю в субботу в 11 уборка",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=SA",
+    "times": [
+     "11:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Уборка",
+    "dtstart_local": "2026-10-10T11:00"
+   }
+  },
+  {
+   "text": "В пятницу к шести сдать лабу",
+   "expected": null
+  },
+  {
+   "text": "напомни завтра в 9 позвонить маме",
+   "expected": null
+  },
+  {
+   "text": "Каждый день в 23:00 перед сном выпить магний 400 мг",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "23:00"
+    ],
+    "unresolved": [],
+    "dose_text": "400 мг",
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Магний",
+    "dtstart_local": "2026-10-06T23:00"
+   }
+  },
+  {
+   "text": "по выходным в 10 утра пробежка",
+   "expected": {
+    "recurrence_rule": "FREQ=WEEKLY;BYDAY=SA,SU",
+    "times": [
+     "10:00"
+    ],
+    "unresolved": [],
+    "kind": "REMINDER_SERIES",
+    "title": "Пробежка",
+    "dtstart_local": "2026-10-10T10:00"
+   }
+  },
+  {
+   "text": "every day at 8 take vitamin C",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "08:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Vitamin C",
+    "dtstart_local": "2026-10-07T08:00"
+   }
+  },
+  {
+   "text": "каждый день в 21:00 принимать витамин B12 2 таблетки",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY",
+    "times": [
+     "21:00"
+    ],
+    "unresolved": [],
+    "dose_text": "2 таблетки",
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Витамин B12",
+    "dtstart_local": "2026-10-06T21:00"
+   }
+  },
+  {
+   "text": "через день утром выпить таблетку",
+   "expected": {
+    "recurrence_rule": "FREQ=DAILY;INTERVAL=2",
+    "times": [
+     "09:00"
+    ],
+    "unresolved": [],
+    "kind": "CHECKIN",
+    "checkin_kind": "MEDICATION",
+    "title": "Таблетку",
+    "dtstart_local": "2026-10-06T09:00"
+   }
+  }
+ ]
+}

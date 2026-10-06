@@ -144,7 +144,8 @@ class Candidate:
 
 def candidates_from_context(context: dict[str, object]) -> list[Candidate]:
     result: list[Candidate] = []
-    for item in [*(context.get("obligations") or []), *(context.get("reminders") or [])]:
+    for item in [*(context.get("obligations") or []), *(context.get("reminders") or []),
+                 *(context.get("checkins") or [])]:
         if not isinstance(item, dict) or not item.get("id"):
             continue
         raw = item.get("starts_at") or item.get("remind_at") or item.get("due")
@@ -157,7 +158,8 @@ def candidates_from_context(context: dict[str, object]) -> list[Candidate]:
     return result
 
 
-_SESSION_KEYS = (("obligation_id", frozenset({"TASK", "EVENT"})), ("reminder_id", frozenset({"REMINDER"})))
+_SESSION_KEYS = (("obligation_id", frozenset({"TASK", "EVENT"})), ("reminder_id", frozenset({"REMINDER"})),
+                 ("checkin_id", frozenset({"CHECKIN"})))
 
 
 def session_targets(context: dict[str, object]) -> dict[str, frozenset[str]]:
