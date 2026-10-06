@@ -1,7 +1,7 @@
 import { load, peek } from '../store.js';
 import { t, code, fmtDateTime, fmtDuration, fmtTime } from '../i18n.js';
 import { esc, icon, chip, empty, sectionHead } from '../ui.js';
-import { placeSheet, whereAmISheet, routeSheet, triggerSheet, triggerMenu, triggerLabel, placeName } from '../places.js';
+import { placeSheet, whereAmISheet, routeSheet, triggerSheet, triggerMenu, triggerLabel, placeName, locationAccessLine, ensureLocationAccess } from '../places.js';
 import { isNative } from '../native.js';
 
 const TRIGGER_TONE = { ARMED: 'accent', FIRED: 'warn', DONE: 'ok', CANCELLED: 'muted' };
@@ -50,12 +50,21 @@ export default {
         ${placeRows ? `<div class="list">${placeRows}</div>` : empty(t('places.none'), t('place.emptyHint'), 'place')}</section>
       <section class="section">${sectionHead(t('trigger.title'), places.length ? `<button class="button small" data-action="trigger-new">${icon('plus')}${esc(t('trigger.new'))}</button>` : '')}
         ${triggerRows ? `<div class="list">${triggerRows}</div>` : `<p class="muted pad">${esc(t('trigger.empty'))}</p>`}
-        <p class="help pad">${esc(t(isNative() ? 'trigger.androidHelp' : 'trigger.webHelp'))}</p></section>
+        <p class="help pad" data-location-access>${esc(t(isNative() ? 'trigger.androidHelp' : 'trigger.webHelp'))}</p></section>
       <section class="section">${sectionHead(t('places.routes'), places.length > 1 ? `<button class="button small" data-action="route-new">${icon('plus')}${esc(t('place.routeNew'))}</button>` : '')}
         ${routes ? `<div class="stack">${routes}</div>` : `<p class="muted pad">${esc(t('places.noRoutes'))}</p>`}</section>
       <p class="help pad">${icon('alert')} ${esc(t('places.privacy'))}</p>`;
   },
+  async mount(root, data) {
+    if (!isNative() || !(data?.location_triggers || []).some((x) => x.status === 'ARMED')) return;
+    const line = await locationAccessLine();
+    const box = root.querySelector('[data-location-access]');
+    if (!line || !box) return;
+    box.innerHTML = `${esc(line.text)}${line.fix ? ` <button class="link" data-action="location-access">${esc(t('trigger.allow'))}</button>` : ''}`;
+    box.classList.toggle('warn', line.tone === 'warn');
+  },
   actions: {
+    'location-access'() { return ensureLocationAccess(); },
     'place-new'() { placeSheet(); },
     'place-edit'(el) {
       const place = (peek('/api/v1/places')?.places || []).find((p) => p.id === el.dataset.id);

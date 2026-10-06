@@ -2,7 +2,7 @@ import { api, session, restoreSession, refreshHealth, onUnauthenticated } from '
 import { initDeviceStorage } from './js/device-storage.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
-import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, prefGet, onAppLink, alarmsSupported } from './js/native.js';
+import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, prefGet, onAppLink, alarmsSupported, refreshGeofences } from './js/native.js';
 import { refreshLocalStatus } from './js/health.js';
 import { applyTheme } from './js/theme.js';
 import { peek, load, invalidate, setCacheFirst } from './js/store.js';
@@ -396,7 +396,7 @@ function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
   lastPrefetch = Date.now();
   // Not fresh: what is already in memory (just loaded, not invalidated) is kept.
-  Promise.all(PREFETCH.map((path) => load(path).catch(() => {}))).then(() => syncDeviceAlarms());
+  Promise.all(PREFETCH.map((path) => load(path).catch(() => {}))).then(() => { syncDeviceAlarms(); refreshGeofences(); });
 }
 
 // Registers this device's FCM token with the signed-in account (no-op in browsers

@@ -109,6 +109,10 @@ public final class ReminderNotifications {
         return value == null || value.isEmpty() ? fallback : value;
     }
 
+    public static void ensureChannelPublic(Context context) {
+        ensureChannel(context);
+    }
+
     static void ensureChannel(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = context.getSystemService(NotificationManager.class);

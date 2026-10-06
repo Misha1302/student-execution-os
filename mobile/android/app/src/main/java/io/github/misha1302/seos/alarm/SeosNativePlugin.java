@@ -18,6 +18,11 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
+import com.getcapacitor.PermissionState;
+import io.github.misha1302.seos.geofence.GeofenceRegistrar;
+import io.github.misha1302.seos.geofence.GeofenceSyncWorker;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -27,7 +32,11 @@ import org.json.JSONObject;
  * notifications and ring exact / full-screen alarms, the system screens to fix that,
  * and the local alarm schedule.
  */
-@CapacitorPlugin(name = "SeosNative")
+@CapacitorPlugin(name = "SeosNative", permissions = {
+        @Permission(alias = "location", strings = {android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION}),
+        @Permission(alias = "backgroundLocation", strings = {android.Manifest.permission.ACCESS_BACKGROUND_LOCATION})
+})
 public class SeosNativePlugin extends Plugin {
     @PluginMethod
     public void status(PluginCall call) {
@@ -94,9 +103,52 @@ public class SeosNativePlugin extends Plugin {
         }
     }
 
+    /** Place reminders: what this phone may watch and how many it watches. */
+    @PluginMethod
+    public void geofenceStatus(PluginCall call) {
+        try {
+            call.resolve(JSObject.fromJSONObject(GeofenceRegistrar.status(getContext())));
+        } catch (JSONException impossible) {
+            call.reject("status unavailable");
+        }
+    }
+
+    /** Fetch the armed place reminders and register them (no-op when signed out). */
+    @PluginMethod
+    public void refreshGeofences(PluginCall call) {
+        GeofenceSyncWorker.enqueue(getContext());
+        call.resolve();
+    }
+
+    /**
+     * Asks for location access only when the user turns on a place reminder: first while
+     * in use, then (a separate system step on Android 10+) "allow all the time".
+     */
+    @PluginMethod
+    public void requestLocation(PluginCall call) {
+        boolean background = Boolean.TRUE.equals(call.getBoolean("background", false));
+        if (getPermissionState("location") != PermissionState.GRANTED) {
+            requestPermissionForAlias("location", call, "locationAnswered");
+        } else if (background && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                && getPermissionState("backgroundLocation") != PermissionState.GRANTED) {
+            requestPermissionForAlias("backgroundLocation", call, "locationAnswered");
+        } else {
+            locationAnswered(call);
+        }
+    }
+
+    @PermissionCallback
+    private void locationAnswered(PluginCall call) {
+        GeofenceRegistrar.registerAll(getContext());
+        GeofenceSyncWorker.enqueue(getContext());
+        geofenceStatus(call);
+    }
+
     /** End authenticated alarm ownership before credentials/cache are changed. */
     @PluginMethod
     public void clearAlarms(PluginCall call) {
+        GeofenceRegistrar.clear(getContext());
+        WorkManager.getInstance(getContext()).cancelUniqueWork("seos-geofence-sync");
         int removed = AlarmStore.clearAccountAlarms(getContext());
         WorkManager work = WorkManager.getInstance(getContext());
         work.cancelUniqueWork("seos-alarm-sync");

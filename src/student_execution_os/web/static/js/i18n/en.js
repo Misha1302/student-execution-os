@@ -1913,4 +1913,9 @@ export default {
   'cmd.triggerExit': 'Remind “{title}” when I leave: {place}',
   'cmd.whichPlace': 'Which place is it?',
   'cmd.newPlace': 'New place “{name}”',
+  'trigger.denied': 'Location access is not allowed — place reminders will not fire.',
+  'trigger.onlyInUse': 'Allowed only “while in use”: with the app closed place reminders will not fire. Allow “all the time”.',
+  'trigger.locationOff': 'Location is turned off on this phone.',
+  'trigger.watching': 'This phone watches {n} places.',
+  'trigger.allow': 'Allow',
 };

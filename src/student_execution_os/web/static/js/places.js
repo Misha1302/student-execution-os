@@ -8,7 +8,7 @@ import { t, fmtTime } from './i18n.js';
 import { esc, openSheet, chipGroup, chipValue, toast, confirmSheet, actionSheet, setBusy } from './ui.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
-import { isNative } from './native.js';
+import { isNative, refreshGeofences, requestLocation, geofenceStatus } from './native.js';
 
 export const placeName = (p) => (p ? p.alias || p.display_name : '');
 export const cachedPlaces = () => peek('/api/v1/places')?.places || [];
@@ -185,6 +185,7 @@ export function triggerSheet(prefill = {}, places = cachedPlaces()) {
       success: t(payload.transition === 'ENTER' ? 'trigger.createdEnter' : 'trigger.createdExit', { name: placeName(place) }) })) {
       dialog.close('saved');
       if (!place?.has_coordinates) toast(t('trigger.needsPosition', { name: placeName(place) }));
+      await ensureLocationAccess();
     }
   });
   dialog.querySelector('[data-trigger-title]').focus();
@@ -200,6 +201,27 @@ export async function triggerMenu(trigger) {
   const choice = await actionSheet({ title: trigger.title, items });
   const ops = { done: 'location_trigger.done', cancel: 'location_trigger.cancel', reopen: 'location_trigger.reopen', delete: 'location_trigger.delete' };
   if (choice && ops[choice]) await change(ops[choice], trigger.id, {}, { success: t(`trigger.toast.${choice}`) });
+  refreshGeofences();
+}
+
+// On Android: ask for location only now that a place reminder exists, then «всегда».
+export async function ensureLocationAccess() {
+  if (!isNative()) return;
+  let status = await geofenceStatus();
+  if (status && !status.fine) status = await requestLocation(false);
+  if (status && status.fine && !status.background) status = await requestLocation(true);
+  if (status && !status.background) toast(t(status.fine ? 'trigger.onlyInUse' : 'trigger.denied'));
+  refreshGeofences();
+}
+
+// What the phone can do about place reminders right now (Android only).
+export async function locationAccessLine() {
+  const status = await geofenceStatus();
+  if (!status) return null;
+  if (!status.fine) return { tone: 'warn', text: t('trigger.denied'), fix: true };
+  if (!status.background) return { tone: 'warn', text: t('trigger.onlyInUse'), fix: true };
+  if (!status.location_enabled) return { tone: 'warn', text: t('trigger.locationOff'), fix: false };
+  return { tone: 'ok', text: t('trigger.watching', { n: status.watched }), fix: false };
 }
 
 // «Напомнить, когда приду: Дом» — never the schema words.

@@ -342,3 +342,21 @@ export async function clearExecutionNotification() {
   await native.clearExecution();
   return true;
 }
+
+// ---- place reminders (Android geofences, schema v32) ------------------------------------
+// The phone fetches the armed triggers itself (with positions) and registers platform
+// proximity alerts; a browser cannot watch location in the background.
+export async function geofenceStatus() {
+  if (!isNative()) return null;
+  try { return await cap().Plugins.SeosNative.geofenceStatus(); } catch { return null; }
+}
+
+export async function refreshGeofences() {
+  if (!isNative()) return;
+  try { await cap().Plugins.SeosNative.refreshGeofences(); } catch { /* older app build */ }
+}
+
+export async function requestLocation(background = false) {
+  if (!isNative()) return null;
+  try { return await cap().Plugins.SeosNative.requestLocation({ background }); } catch { return null; }
+}

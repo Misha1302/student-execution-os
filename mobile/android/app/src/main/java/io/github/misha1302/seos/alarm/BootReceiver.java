@@ -27,5 +27,9 @@ public class BootReceiver extends BroadcastReceiver {
         AlarmStore.save(context, states);
         AlarmScheduler.rescheduleAll(context);
         AlarmSyncWorker.enqueue(context);
+        // Proximity alerts are forgotten on reboot/update too: put back what this phone
+        // watches now (works offline), then refresh the list from the server.
+        io.github.misha1302.seos.geofence.GeofenceRegistrar.registerAll(context);
+        io.github.misha1302.seos.geofence.GeofenceSyncWorker.enqueue(context);
     }
 }

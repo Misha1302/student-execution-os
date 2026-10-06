@@ -59,6 +59,11 @@ class PlaceCommandHandler(CommandHandler):
     def _triggers(self) -> SQLiteLocationTriggerRepository:
         return SQLiteLocationTriggerRepository(self.repo)
 
+    def _phones_refresh(self) -> None:
+        """The account's phones re-read the place reminders they watch (same signal as alarms)."""
+        from student_execution_os.reminders.store import ReminderStore
+        ReminderStore(self.repo).signal_alarm_sync(self.account_id, self.now)
+
     # ---- places -------------------------------------------------------------------------
 
     def place_create(self, place_id: str, payload: dict[str, Any]) -> Outcome:
@@ -85,6 +90,8 @@ class PlaceCommandHandler(CommandHandler):
         before = travel.get_place(self.account_id, place_id)
         place = travel.update_place(account_id=self.account_id, place_id=place_id, fields=fields, actor=self.actor,
                                     expected_version=_version(payload))
+        if {"latitude", "longitude"} & set(fields):
+            self._phones_refresh()
         return Outcome(APPLIED if place.version != before.version else NOOP, place_payload(place),
                        None if place.version != before.version else "NOTHING_TO_CHANGE")
 
@@ -171,13 +178,16 @@ class PlaceCommandHandler(CommandHandler):
                 raise ValidationError("trigger id is already in use")
             return Outcome(NOOP, triggers.get(self.account_id, trigger_id), "ALREADY_EXISTS")
         fields = clean_trigger_fields({k: v for k, v in payload.items() if k != "assistant_batch_id"}, creating=True)
-        return Outcome(APPLIED, triggers.create(account_id=self.account_id, trigger_id=trigger_id, fields=fields,
-                                                actor=self._capture_actor(payload), now=self.now))
+        created = triggers.create(account_id=self.account_id, trigger_id=trigger_id, fields=fields,
+                                  actor=self._capture_actor(payload), now=self.now)
+        self._phones_refresh()
+        return Outcome(APPLIED, created)
 
     def trigger_update(self, trigger_id: str, payload: dict[str, Any]) -> Outcome:
         fields = clean_trigger_fields(payload, creating=False)
-        return Outcome(APPLIED, self._triggers().update(self.account_id, trigger_id, fields, actor=self.actor,
-                                                        now=self.now))
+        updated = self._triggers().update(self.account_id, trigger_id, fields, actor=self.actor, now=self.now)
+        self._phones_refresh()
+        return Outcome(APPLIED, updated)
 
     def trigger_fire(self, trigger_id: str, payload: dict[str, Any]) -> Outcome:
         """The phone crossed the geofence (op id fixed by the device per transition)."""
@@ -193,6 +203,8 @@ class PlaceCommandHandler(CommandHandler):
 
     def _closing(self, method, trigger_id: str) -> Outcome:
         trigger, code = method(self.account_id, trigger_id, actor=self.actor, now=self.now)
+        if not code:
+            self._phones_refresh()
         return Outcome(NOOP if code else APPLIED, trigger, code)
 
     def trigger_done(self, trigger_id: str, payload: dict[str, Any]) -> Outcome:
@@ -206,4 +218,5 @@ class PlaceCommandHandler(CommandHandler):
 
     def trigger_delete(self, trigger_id: str, payload: dict[str, Any]) -> Outcome:
         self._triggers().delete(self.account_id, trigger_id, actor=self.actor, now=self.now)
+        self._phones_refresh()
         return Outcome(APPLIED, {"kind": "LOCATION_TRIGGER", "id": trigger_id, "deleted": True})

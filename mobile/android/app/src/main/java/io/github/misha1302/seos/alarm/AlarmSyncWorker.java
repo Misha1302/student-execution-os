@@ -133,6 +133,11 @@ public class AlarmSyncWorker extends Worker {
      * when signed out. A re-issued token of the same account keeps the ownership (and
      * the progress of a ringing alarm); another account or server does not.
      */
+    /** {@link #sessionOwner} for other packages (geofences use the same account binding). */
+    public static String sessionOwnerOf(Context context) {
+        return sessionOwner(context);
+    }
+
     static String sessionOwner(Context context) {
         SharedPreferences prefs = context.getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         String server = prefs.getString("seos.server", "");
