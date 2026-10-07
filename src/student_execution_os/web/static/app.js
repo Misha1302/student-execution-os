@@ -124,9 +124,15 @@ function setOffline(stale, fetchedAt) {
   const syncing = syncState();
   chip.hidden = !stale && !syncing.pending && !syncing.conflicts;
   chip.classList.toggle('chip-danger', Boolean(syncing.conflicts));
-  chip.textContent = syncing.conflicts ? t('sync.conflictChip', { n: syncing.conflicts })
-    : syncing.pending ? t('sync.pendingChip', { n: syncing.pending })
-      : stale ? t('offline.chip', { time: fetchedAt ? fmtTime(fetchedAt) : '—' }) : '';
+  const time = fetchedAt ? fmtTime(fetchedAt) : '—';
+  const [label, glyph, short] = syncing.conflicts ? [t('sync.conflictChip', { n: syncing.conflicts }), 'alert', syncing.conflicts]
+    : syncing.pending ? [t('sync.pendingChip', { n: syncing.pending }), 'refresh', syncing.pending]
+      : stale ? [t('offline.chip', { time }), 'clock', time] : ['', '', ''];
+  // On a phone the whole label squeezed the screen title down to one letter: there the
+  // chip shows an icon and the number, and the words stay for screen readers and wide screens.
+  chip.innerHTML = label ? `${icon(glyph)}<span class="chip-long">${esc(label)}</span><span class="chip-short" aria-hidden="true">${esc(String(short))}</span>` : '';
+  chip.title = label;
+  if (label) chip.setAttribute('aria-label', label); else chip.removeAttribute('aria-label');
 }
 
 function skeleton() {
@@ -272,7 +278,7 @@ function syncSheet() {
     const detail = problem
       ? (coded === codeKey ? t(`sync.why.${item.state}`) : coded)
       : new Date(item.queued_at).toLocaleString();
-    return `<article class="row"><span class="row-main"><strong>${esc(t(`sync.op.${op.type}`))} · ${esc(titleOf(op, item))}</strong>
+    return `<article class="row sync-item"><span class="row-main"><strong>${esc(t(`sync.op.${op.type}`))} · ${esc(titleOf(op, item))}</strong>
       <small>${esc(detail)}</small></span>
       ${problem && item.result?.code === 'EXECUTION_ACTIVE' ? `<button type="button" class="button ghost" data-nav="today" data-close-sheet>${esc(t('sync.openCurrentExecution'))}</button>` : ''}
       ${problem ? `<button type="button" class="button ghost" data-dismiss="${esc(op.op_id)}">${esc(item.result?.code === 'EXECUTION_ACTIVE' ? t('sync.keepCurrentExecution') : t('sync.dismiss'))}</button>` : ''}</article>`;

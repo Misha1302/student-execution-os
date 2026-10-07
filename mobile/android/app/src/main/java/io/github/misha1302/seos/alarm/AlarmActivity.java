@@ -14,14 +14,17 @@ import android.view.Gravity;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.core.content.ContextCompat;
 import java.text.DateFormat;
 import java.util.Date;
 
 /**
- * The ringing alarm on top of the lock screen: big time, the title, two large buttons.
- * Leaving it (Back, Home) does not silence the alarm: the sound belongs to {@link
+ * The ringing alarm on top of the lock screen: big time, the title, large buttons.
+ * Every answer stays on screen in any orientation: on a short (landscape) screen the
+ * buttons sit side by side under a smaller clock, and the whole screen scrolls when a
+ * large system font still does not fit. Leaving it (Back, Home) does not silence the alarm: the sound belongs to {@link
  * AlarmService} and only an answer stops it.
  */
 public class AlarmActivity extends Activity {
@@ -56,17 +59,20 @@ public class AlarmActivity extends Activity {
             finish();
             return;
         }
+        float density = getResources().getDisplayMetrics().density;
+        // A phone held sideways is ~400dp tall: a 72sp clock and three stacked 72dp buttons
+        // pushed «Не принял» off the screen (seen on a real device).
+        boolean compact = getResources().getConfiguration().screenHeightDp < 560;
+        int pad = (int) ((compact ? 16 : 32) * density);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER);
-        root.setBackgroundColor(Color.rgb(15, 18, 22));
-        int pad = (int) (32 * getResources().getDisplayMetrics().density);
         root.setPadding(pad, pad, pad, pad);
 
         TextView time = new TextView(this);
         time.setText(DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
         time.setTextColor(Color.WHITE);
-        time.setTextSize(72);
+        time.setTextSize(compact ? 48 : 72);
         time.setTypeface(Typeface.DEFAULT_BOLD);
         time.setGravity(Gravity.CENTER);
         root.addView(time);
@@ -74,40 +80,60 @@ public class AlarmActivity extends Activity {
         TextView title = new TextView(this);
         title.setText(state.title);
         title.setTextColor(Color.rgb(210, 214, 220));
-        title.setTextSize(24);
+        title.setTextSize(compact ? 20 : 24);
         title.setGravity(Gravity.CENTER);
-        title.setPadding(0, pad / 2, 0, pad * 2);
+        title.setPadding(0, pad / 2, 0, compact ? pad / 2 : pad * 2);
         root.addView(title);
 
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(compact ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        root.addView(buttons, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         if (state.answersCheckin()) {
             // A check-in prompt is answered right here; silencing it is not an answer, so
             // there is no plain «Выключить»: «Отложить» or a real outcome stops the sound.
             boolean med = state.isMedication();
-            root.addView(button(AlarmStore.label(this, med ? "alarm_taken" : "alarm_checkin_done"), Color.rgb(46, 125, 50),
-                    () -> answer(AlarmReceiver.ACTION_CHECKIN_DONE, state.id)));
-            root.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
-                    () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
-            root.addView(button(AlarmStore.label(this, med ? "alarm_not_taken" : "alarm_checkin_skip"), Color.rgb(90, 52, 52),
-                    () -> answer(AlarmReceiver.ACTION_CHECKIN_SKIP, state.id)));
+            buttons.addView(button(AlarmStore.label(this, med ? "alarm_taken" : "alarm_checkin_done"), Color.rgb(46, 125, 50),
+                    compact, () -> answer(AlarmReceiver.ACTION_CHECKIN_DONE, state.id)));
+            buttons.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
+                    compact, () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
+            buttons.addView(button(AlarmStore.label(this, med ? "alarm_not_taken" : "alarm_checkin_skip"), Color.rgb(90, 52, 52),
+                    compact, () -> answer(AlarmReceiver.ACTION_CHECKIN_SKIP, state.id)));
         } else {
-            root.addView(button(AlarmStore.label(this, state.wakeCheck ? "alarm_up" : "alarm_done"), Color.rgb(46, 125, 50),
-                    () -> answer(AlarmReceiver.ACTION_UP, state.id)));
-            root.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
-                    () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
+            buttons.addView(button(AlarmStore.label(this, state.wakeCheck ? "alarm_up" : "alarm_done"), Color.rgb(46, 125, 50),
+                    compact, () -> answer(AlarmReceiver.ACTION_UP, state.id)));
+            buttons.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
+                    compact, () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
         }
-        setContentView(root);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);  // centred when it fits, scrollable when it does not
+        scroll.setBackgroundColor(Color.rgb(15, 18, 22));
+        scroll.addView(root, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
+        setContentView(scroll);
     }
 
-    private Button button(String text, int color, Runnable action) {
+    private Button button(String text, int color, boolean compact, Runnable action) {
+        float density = getResources().getDisplayMetrics().density;
         Button button = new Button(this);
         button.setText(text);
-        button.setTextSize(22);
+        button.setTextSize(compact ? 18 : 22);
         button.setTextColor(Color.WHITE);
         button.setBackgroundColor(color);
         button.setAllCaps(false);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                (int) (72 * getResources().getDisplayMetrics().density));
-        params.topMargin = (int) (16 * getResources().getDisplayMetrics().density);
+        // A minimum, not a fixed height: a long label or a large font wraps instead of being cut.
+        button.setMinHeight((int) ((compact ? 64 : 72) * density));
+        button.setMinimumHeight((int) ((compact ? 64 : 72) * density));
+        int gap = (int) ((compact ? 8 : 16) * density);
+        LinearLayout.LayoutParams params = compact
+                ? new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                : new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        if (compact) {
+            params.leftMargin = gap / 2;
+            params.rightMargin = gap / 2;
+        } else {
+            params.topMargin = gap;
+        }
         button.setLayoutParams(params);
         button.setOnClickListener(v -> action.run());
         return button;

@@ -215,7 +215,7 @@ export default {
   'routine.every2Days': 'Every two days',
   'routine.weekly': 'Every week',
   'routine.biweekly': 'Every two weeks',
-  'routine.timezone': 'Series timezone: {zone}. The schedule is stored as the series local civil time.',
+  'routine.timezone': 'Times follow the {zone} time zone and stay put when the clocks change.',
   'routine.empty': 'No recurring work yet',
   'routine.emptyHelp': 'Create recurring work and upcoming occurrences will materialize as normal tasks.',
   'routine.stop': 'Stop series',
@@ -410,7 +410,7 @@ export default {
   'tasks.emptyAll': 'No obligations yet',
   'tasks.emptyAllHint': 'Add your first task — the plan is built automatically.',
   'tasks.noMatch': 'No matches',
-  'tasks.left': '{d} left',
+  'tasks.left': '{d} of work left',
   'tasks.startBy': 'start by {when}',
   'tasks.count': ['{n} task', '{n} tasks'],
 
