@@ -15,6 +15,8 @@ TASK_ID = "task-checklist-e2e-1"
 
 
 class ChecklistEndToEndTest(RealServerTestCase):
+    freeze_page_clock = False
+
     def test_steps_online_offline_and_reconnect(self):
         page = self._page()
         self._ready(page, "today")

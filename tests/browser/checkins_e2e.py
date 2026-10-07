@@ -16,6 +16,8 @@ from tests.browser.harness import MOSCOW, NOW, PENDING_JS, ACCOUNT, RealServerTe
 
 
 class CheckInsEndToEndTest(RealServerTestCase):
+    freeze_page_clock = False
+
     def test_1_medication_scenario_taken_with_timestamp_and_history(self):
         page = self._page()
         self._ready(page, "today")

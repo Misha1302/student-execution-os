@@ -101,9 +101,17 @@ class RealServerTestCase(unittest.TestCase):
             return
         route.fulfill(status=200, content_type="text/html", body=(STATIC / "index.html").read_text())
 
+    # A frozen page clock makes "acked after this response was fetched" undecidable
+    # (equal timestamps); tests that replay offline queues across restarts let the page
+    # clock run, starting at the scenario's moment.
+    freeze_page_clock = True
+
     def _page(self, hash_: str = "#/today"):
         page = self.context.new_page()
-        page.clock.set_fixed_time(self.clock["now"])
+        if self.freeze_page_clock:
+            page.clock.set_fixed_time(self.clock["now"])
+        else:
+            page.clock.install(time=self.clock["now"])
         page.on("pageerror", lambda e: self.errors.append(str(e)))
         page.goto(f"{self.origin}/{hash_}")
         return page
