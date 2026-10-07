@@ -12,6 +12,10 @@
 // applies (work for a finished or postponed task) and list new tasks as "not yet
 // planned" until the server replans.
 
+import { projectCheckins, projectCheckinDetail, projectTodayCheckins, applySeriesOccurrenceToReminders } from './checkin-overlay.js';
+import { projectPlaces } from './place-overlay.js';
+import { projectSubtasks, projectChecklistSummaries } from './subtask-overlay.js';
+
 const OPEN = new Set(['ACTIVE', 'DRAFT']);
 
 const clone = (value) => (value == null ? value : JSON.parse(JSON.stringify(value)));
@@ -836,6 +840,7 @@ function projectDay(data, ops, now) {
     if (out.current_action && unschedulable(byId.get(out.current_action.task_id), now)) out.current_action = null;
   }
   if (Array.isArray(data.events)) out.events = (projectEvents(data.events, eOps) || []).filter((e) => e.status === 'ACTIVE');
+  if (Array.isArray(data.checkins)) out.checkins = projectTodayCheckins(data.checkins, ops, now);
   if (Array.isArray(data.inbox_notes)) out.inbox_notes = (projectNotes(data.inbox_notes, nOps) || []).filter((n) => n.lifecycle_status === 'ACTIVE' && !(n.links || []).length);
   out.plan = projectPlan(data.plan, byId.size ? byId : new Map(known.map((task) => [task.id, task])), eOps, cOps, now);
   const preferenceOps = ops.filter((x) => ['intent.set', 'intent.close', 'calibration.set'].includes(x.operation?.type));
@@ -965,7 +970,8 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (!ops.length || data == null) return data;
   const route = String(path).split('?')[0];
   const base = clone(data);
-  if (route === '/api/v1/tasks') return projectTasks(base, ops);
+  if (route === '/api/v1/tasks') return projectChecklistSummaries(projectTasks(base, ops), ops);
+  if (/^\/api\/v1\/tasks\/[^/]+\/subtasks$/.test(route)) return projectSubtasks(base, ops);
   if (route === '/api/v1/events') return projectEvents(base, eventOps(ops));
   if (route === '/api/v1/notes') return projectNotes(base, noteOps(ops));
   if (route.startsWith('/api/v1/notes/')) {
@@ -974,7 +980,10 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   }
   if (route === '/api/v1/today' || route === '/api/v1/plan/agenda') return projectDay(base, ops, now);
   if (route === '/api/v1/calendar') return projectCalendar(base, ops);
-  if (route === '/api/v1/reminders') return projectReminders(base, ops);
+  if (route === '/api/v1/reminders') return applySeriesOccurrenceToReminders(projectReminders(base, ops), ops);
+  if (route === '/api/v1/checkins') return projectCheckins(base, ops, now);
+  if (route === '/api/v1/places') return projectPlaces(base, ops);
+  if (route.startsWith('/api/v1/checkins/')) return projectCheckinDetail(base, ops);
   if (route === '/api/v1/plan/constraints') return projectConstraints(base, constraintOps(ops));
   if (route === '/api/v1/work-routines') return projectWorkRoutines(base, ops);
   if (route.startsWith('/api/v1/reflection?') || route === '/api/v1/reflection'

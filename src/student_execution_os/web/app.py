@@ -441,6 +441,10 @@ def create_app(
         return service.tasks.saved_views()
 
     # Declared after /tasks/saved-views so that literal path keeps precedence.
+    @app.get("/api/v1/tasks/{task_id}/subtasks")
+    async def task_subtasks(task_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.tasks.subtasks(task_id)
+
     @app.get("/api/v1/tasks/{task_id}")
     async def get_task(task_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.tasks.task(task_id)
@@ -535,6 +539,18 @@ def create_app(
     async def list_reminders(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
         return service.notifications.reminders()
 
+    @app.get("/api/v1/checkins")
+    async def list_checkins(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.checkins.checkins()
+
+    @app.get("/api/v1/checkins/{template_id}")
+    async def get_checkin(template_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.checkins.checkin(template_id)
+
+    @app.get("/api/v1/reminder-series")
+    async def list_reminder_series(service: UiService = Depends(current_service)) -> list[dict[str, Any]]:
+        return service.checkins.reminder_series()
+
     @app.get("/api/v1/reminders/alarms")
     async def upcoming_alarms(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.notifications.upcoming_alarms()
@@ -602,6 +618,14 @@ def create_app(
     @app.get("/api/v1/places")
     async def places(service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.events.places()
+
+    @app.get("/api/v1/places/{place_id}")
+    async def place_detail(place_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.events.place_detail(place_id)
+
+    @app.get("/api/v1/location-triggers/armed")
+    async def armed_location_triggers(service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.events.armed_location_triggers()
 
     @app.get("/api/v1/settings/diagnostics")
     async def diagnostics(service: UiService = Depends(current_service)) -> dict[str, Any]:

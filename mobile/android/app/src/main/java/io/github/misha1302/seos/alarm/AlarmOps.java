@@ -25,6 +25,19 @@ public final class AlarmOps {
         return op(base(state) + "-UP", "reminder.ack", state.id, "{\"stage\":\"UP\"}");
     }
 
+    /**
+     * «Принял»/«Сделал» or «Не принял»/«Пропущу» on a check-in alarm: the outcome of exactly
+     * that occurrence, with the moment of the press. The op id is fixed by the alarm and
+     * the answer, so a retry or a double tap is one outcome on the server.
+     */
+    public static String checkin(AlarmState state, boolean done, long pressedAtMillis) {
+        String payload = "{\"template_id\":" + ReminderActions.quote(state.checkinTemplate)
+                + ",\"original_recurrence_id\":" + ReminderActions.quote(state.checkinRecurrence)
+                + (done ? ",\"occurred_at\":" + ReminderActions.quote(Iso.format(pressedAtMillis)) : "") + "}";
+        return op(base(state) + (done ? "-CHECKIN_DONE" : "-CHECKIN_SKIP"),
+                done ? "checkin.occurrence.done" : "checkin.occurrence.skip", state.checkinTemplate, payload);
+    }
+
     /** «Не сплю» after the awake check. */
     public static String awake(AlarmState state) {
         return op(base(state) + "-AWAKE", "reminder.ack", state.id, "{\"stage\":\"AWAKE\"}");

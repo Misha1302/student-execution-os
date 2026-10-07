@@ -36,7 +36,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
+{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST|CREATE_CHECKIN|CREATE_REMINDER_SERIES|CHECKIN_OUTCOME|CHECKIN_PROGRESS|MOVE_CHECKIN_OCCURRENCE|CREATE_PLACE|CREATE_LOCATION_TRIGGER|CHECKLIST_STEP","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
@@ -112,6 +112,46 @@ CREATE_REMINDER payload: just a moment to get attention, nothing to plan ("на�
   delivery? PUSH|ALARM|PUSH_AND_ALARM ("будильник"/"разбуди" = ALARM, "напомни … и поставь
   будильник" = PUSH_AND_ALARM), wake_check? (true for waking up), raise_volume? (true only
   for an alarm the user asked for), note?, obligation_id? (the task/event it is about)}.
+Something repeated is never a task just because it repeats. Recurring requests:
+  CREATE_CHECKIN — a repeated action whose real outcome the user wants recorded:
+    {kind:"MEDICATION"|"ROUTINE"|"QUOTA", title, dtstart_local:"YYYY-MM-DDTHH:MM" (local civil time of
+    the first occurrence, no offset), recurrence_rule ("FREQ=DAILY", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+    "FREQ=WEEKLY;BYDAY=SU", "FREQ=DAILY;INTERVAL=2"), timezone_name?, remind?: bool,
+    delivery?: PUSH|PUSH_AND_ALARM, followup_minutes?}.
+    MEDICATION ("напоминай принимать сертралин каждый день в 9"): title is the user's name for it;
+    dose_text?/instructions? only when the user said them, verbatim. Never add medical facts, doses,
+    or advice. Two daily times ("в 9 и в 21") are two CREATE_CHECKIN actions.
+    QUOTA ("решать по 20 задач матана каждый день", "100 карточек в день"): target_quantity, unit;
+    unit_effort_seconds only if the user said how long one takes. No time given: dtstart_local today
+    at 00:00 and remind false.
+    ROUTINE: a habit the user wants to mark done ("отмечать зарядку каждый день").
+  CREATE_REMINDER_SERIES — attention only, nothing to record ("каждый день в 22:30 напоминай вынести
+    мусор", "каждое воскресенье в 18:00 позвонить бабушке", "по будням утром напомни взять пропуск"):
+    {title, dtstart_local, recurrence_rule, timezone_name?, note?, delivery?}.
+  No time said: leave dtstart_local out and list it in unresolved_fields.
+Answers about a check-in in context.checkins take checkin_id and expected_version (its "version"):
+  CHECKIN_OUTCOME {checkin_id, outcome:"DONE"|"SKIPPED", occurred_at?, local_date?: "YYYY-MM-DD",
+    day_part?: MORNING|AFTERNOON|EVENING|NIGHT} — "я витамин уже принял", "вечерний приём пропущу".
+  CHECKIN_PROGRESS {checkin_id, count} — "решил ещё 5 задач".
+  MOVE_CHECKIN_OCCURRENCE {checkin_id, when: ISO instant, local_date?, day_part?} — "перенеси только
+    сегодняшний приём на 22:00" (one day only; the series stays).
+  Do not pick the day's occurrence yourself: the server chooses it from local_date/day_part.
+Checklist steps inside a task (context.obligations[].checklist lists a task's steps: id, title, done):
+  CHECKLIST_STEP {obligation_id, change, step_text?, subtask_id?, title?, effort_minutes?} with the task's
+    expected_version. change: ADD {title, effort_minutes?} — "добавь к задаче «лаба» шаг «написать тесты»";
+    RENAME {step, title}; COMPLETE {step} — "отметь в лабе шаг «парсер» выполненным"; REOPEN {step} —
+    "нет, верни этот шаг"; DELETE {step} (always requires_confirmation true); SET_EFFORT {step, effort_minutes}.
+    {step} = subtask_id from that task's checklist when one step clearly fits, else step_text with the
+    user's words: the server decides which step is meant and asks the user when several fit. Never
+    change the order of steps; never invent a subtask_id.
+Places (context.places lists the user's places by name; you never get or send coordinates):
+  CREATE_PLACE {display_name, alias?, address?} — "добавь место Спортзал"; an address only if the
+    user said it, verbatim.
+  CREATE_LOCATION_TRIGGER {place_id (from context.places), transition:"ENTER"|"EXIT", title, note?,
+    place_text: the user's words for the place} — "когда приду домой, напомни разобрать вещи" (ENTER),
+    "когда уйду из ВШЭ, напомни написать Саше" (EXIT). If no context place fits, omit place_id and list
+    "place_id" in unresolved_fields; never invent a place.
+  For an event at one of the places use CREATE_EVENT location_effect {kind:"STAY",destination_place_id}.
 Commands on existing items take obligation_id (tasks/events, from context.obligations) or
 reminder_id (from context.reminders) and expected_version (that item's "version"):
   UPDATE_TASK {obligation_id, any CREATE_TASK field to change}
@@ -166,6 +206,8 @@ _TOP_LEVEL_SCHEMA = {
                             "UPDATE_EVENT", "UPDATE_REMINDER", "RESCHEDULE", "SNOOZE", "LOG_PROGRESS",
                             "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
                             "CREATE_TIME_CONSTRAINT", "CREATE_PLANNING_PREFERENCE", "UNDO_LAST",
+                            "CREATE_CHECKIN", "CREATE_REMINDER_SERIES", "CHECKIN_OUTCOME", "CHECKIN_PROGRESS",
+                            "MOVE_CHECKIN_OCCURRENCE", "CREATE_PLACE", "CREATE_LOCATION_TRIGGER", "CHECKLIST_STEP",
                         )]},
                         "payload": {"type": "object", "additionalProperties": True},
                         "client_ref": {"type": "string", "maxLength": 64},

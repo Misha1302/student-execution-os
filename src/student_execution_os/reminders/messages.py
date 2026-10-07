@@ -20,6 +20,10 @@ ACTIONS = {
     "RESCHEDULE": {"background": False},
     "REPLAN": {"background": False},
     "OPEN": {"background": False},
+    # Check-in prompts: the outcome buttons record what happened; snooze only moves the prompt.
+    "CHECKIN_DONE": {"background": True},
+    "CHECKIN_SKIP": {"background": True},
+    "SNOOZE_15": {"background": True, "minutes": 15},
 }
 
 _STAGE_ACTIONS = {
@@ -37,9 +41,11 @@ _STAGE_ACTIONS = {
 }
 
 _LABELS = {
-    "ru": {"START": "Начать", "SNOOZE_10": "Через 10 мин", "SNOOZE_30": "Через 30 мин", "SNOOZE_60": "Через час", "DONE": "Готово",
+    "ru": {"CHECKIN_DONE": "Сделал", "CHECKIN_SKIP": "Пропущу", "SNOOZE_15": "Через 15 минут",
+           "START": "Начать", "SNOOZE_10": "Через 10 мин", "SNOOZE_30": "Через 30 мин", "SNOOZE_60": "Через час", "DONE": "Готово",
            "RESCHEDULE": "Перенести", "REPLAN": "План", "OPEN": "Открыть"},
-    "en": {"START": "Start", "SNOOZE_10": "In 10 min", "SNOOZE_30": "In 30 min", "SNOOZE_60": "In 1 hour", "DONE": "Done",
+    "en": {"CHECKIN_DONE": "Done", "CHECKIN_SKIP": "Skip", "SNOOZE_15": "In 15 minutes",
+           "START": "Start", "SNOOZE_10": "In 10 min", "SNOOZE_30": "In 30 min", "SNOOZE_60": "In 1 hour", "DONE": "Done",
            "RESCHEDULE": "Reschedule", "REPLAN": "Plan", "OPEN": "Open"},
 }
 
@@ -76,13 +82,15 @@ _TEXT = {
 
 # Texts the device shows after a notification button was handled in the background.
 FOLLOW_UP = {
-    "ru": {"started": "В работе: «{title}»", "started_body": "Отметьте, когда закончите",
+    "ru": {"checkin_done": "Отмечено: «{title}»", "checkin_skipped": "Отмечено как пропущенное: «{title}»",
+           "started": "В работе: «{title}»", "started_body": "Отметьте, когда закончите",
            "done": "Готово", "snoozed": "Напомню в {time}", "completed": "«{title}» выполнено",
            "failed": "Не удалось отправить — откройте приложение", "queued": "Отправлю, когда появится сеть",
            "alarm_up": "Я встал", "alarm_done": "Выключить", "alarm_snooze": "Отложить на 10 мин",
            "awake_title": "Вы не уснули?", "awake_body": "Нажмите «Не сплю», иначе через 10 минут будильник зазвонит снова",
            "awake_ok": "Не сплю", "alarm_missed": "Будильник пропущен: «{title}»"},
-    "en": {"started": "In progress: “{title}”", "started_body": "Mark it done when you finish",
+    "en": {"checkin_done": "Recorded: “{title}”", "checkin_skipped": "Recorded as skipped: “{title}”",
+           "started": "In progress: “{title}”", "started_body": "Mark it done when you finish",
            "done": "Done", "snoozed": "I'll remind you at {time}", "completed": "“{title}” is done",
            "failed": "Couldn't send — open the app", "queued": "Will send when you're back online",
            "alarm_up": "I'm up", "alarm_done": "Turn off", "alarm_snooze": "Snooze 10 min",
@@ -210,4 +218,42 @@ def compose_standalone(reminder: dict, *, now: datetime, timezone_name: str, loc
     ids = ("DONE", "SNOOZE_10", "SNOOZE_60")
     link = f"/task/{reminder['obligation_id']}" if reminder.get("obligation_id") else f"/reminder/{reminder['id']}"
     return {"title": title, "body": body, "deep_link": link,
+            "actions": [{"id": action_id, "label": labels[action_id], **ACTIONS[action_id]} for action_id in ids]}
+
+
+# Medication wording records adherence only: it never says whether a late or missed
+# dose is safe (that is not something this app knows).
+_CHECKIN_DONE_LABEL = {"ru": {"MEDICATION": "Принял", "ROUTINE": "Сделал", "QUOTA": "Всё сделал"},
+                       "en": {"MEDICATION": "Taken", "ROUTINE": "Done", "QUOTA": "All done"}}
+_CHECKIN_SKIP_LABEL = {"ru": {"MEDICATION": "Не принял", "ROUTINE": "Пропущу", "QUOTA": "Пропущу"},
+                       "en": {"MEDICATION": "Not taken", "ROUTINE": "Skip", "QUOTA": "Skip"}}
+
+
+def compose_checkin(reminder: dict, checkin: dict, *, now: datetime, timezone_name: str, locale: str) -> dict:
+    """«💊 Сертралин» [Принял] [Через 15 минут] [Не принял]."""
+    zone = ZoneInfo(timezone_name)
+    kind = checkin.get("kind") or "ROUTINE"
+    title = checkin.get("title") or reminder["title"]
+    title = title if len(title) <= 80 else title[:77] + "…"
+    head = f"💊 {title}" if kind == "MEDICATION" else title
+    at = datetime.fromisoformat(reminder["remind_at"])
+    followup = int(checkin.get("followups_sent") or 0) > 0
+    parts: list[str] = []
+    if kind == "MEDICATION" and checkin.get("dose_text"):
+        parts.append(str(checkin["dose_text"]))
+    if kind == "QUOTA" and checkin.get("target_quantity"):
+        unit = checkin.get("unit") or ""
+        done, target = int(checkin.get("quantity_done") or 0), int(checkin["target_quantity"])
+        parts.append((f"Сегодня: {done} из {target} {unit}" if locale == "ru" else f"Today: {done} of {target} {unit}").strip())
+    if followup:
+        parts.append(f"Ещё не отмечено ({_when(at, now, zone, locale)})" if locale == "ru"
+                     else f"Not recorded yet ({_when(at, now, zone, locale)})")
+    elif not parts:
+        parts.append("Отметьте, когда сделаете" if locale == "ru" else "Mark it when it's done")
+    labels = dict(_LABELS[locale])
+    labels["CHECKIN_DONE"] = _CHECKIN_DONE_LABEL[locale].get(kind, labels["CHECKIN_DONE"])
+    labels["CHECKIN_SKIP"] = _CHECKIN_SKIP_LABEL[locale].get(kind, labels["CHECKIN_SKIP"])
+    ids = ("CHECKIN_DONE", "SNOOZE_15", "CHECKIN_SKIP")
+    link = f"/checkin/{checkin['template_id']}"
+    return {"title": head, "body": " · ".join(parts), "deep_link": link,
             "actions": [{"id": action_id, "label": labels[action_id], **ACTIONS[action_id]} for action_id in ids]}

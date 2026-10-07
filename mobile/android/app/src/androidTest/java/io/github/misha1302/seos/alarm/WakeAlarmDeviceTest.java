@@ -15,6 +15,8 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import androidx.work.WorkInfo;
+import androidx.work.WorkManager;
 import io.github.misha1302.seos.storage.SessionCredentials;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -87,7 +89,7 @@ public class WakeAlarmDeviceTest {
         long at = System.currentTimeMillis() + 3_600_000L;
         JSONArray list = new JSONArray().put(new JSONObject().put("id", "reminder-device-wake")
                 .put("remind_at", Iso.format(at)).put("title", "Подъём").put("wake_check", true).put("raise_volume", true));
-        assertEquals(1, AlarmSyncWorker.apply(context, list, owner));
+        assertEquals(1, AlarmSyncWorker.apply(context, list, owner, true));
         AlarmManager alarms = context.getSystemService(AlarmManager.class);
         assertTrue("an alarm clock is registered", alarms.getNextAlarmClock() != null);
 
@@ -107,7 +109,7 @@ public class WakeAlarmDeviceTest {
         assertEquals(AlarmState.AWAKE_WAIT, after.phase);
         assertEquals(AlarmState.AWAKE_CHECK, after.nextKind);
 
-        AlarmSyncWorker.apply(context, new JSONArray(), owner);  // deleted on another device
+        AlarmSyncWorker.apply(context, new JSONArray(), owner, true);  // deleted on another device
         assertTrue(AlarmStore.get(context, "reminder-device-wake") == null);
     }
 
@@ -117,7 +119,7 @@ public class WakeAlarmDeviceTest {
         JSONArray list = new JSONArray().put(new JSONObject().put("id", "reminder-account-a")
                 .put("remind_at", Iso.format(at)).put("title", "A").put("wake_check", false).put("raise_volume", false));
         String ownerA = owner;
-        assertEquals(1, AlarmSyncWorker.apply(context, list, ownerA));
+        assertEquals(1, AlarmSyncWorker.apply(context, list, ownerA, true));
         AlarmState local = new AlarmState("seos-test-alarm", at, "Test", false, false, true);
         java.util.List<AlarmState> withTest = new ArrayList<>(AlarmStore.all(context));
         withTest.add(local);
@@ -131,7 +133,7 @@ public class WakeAlarmDeviceTest {
 
         // A response fetched for account A arrives after account B signed in: dropped.
         signIn("account-b");
-        assertEquals(0, AlarmSyncWorker.apply(context, list, ownerA));
+        assertEquals(0, AlarmSyncWorker.apply(context, list, ownerA, true));
         assertNull(AlarmStore.get(context, "reminder-account-a"));
 
         // Account A's alarms stored without a logout (e.g. an older app version) go too
@@ -139,7 +141,52 @@ public class WakeAlarmDeviceTest {
         AlarmStore.setOwner(context, ownerA);
         AlarmStore.save(context, java.util.Collections.singletonList(
                 new AlarmState("reminder-account-a", at, "A", false, false, false)));
-        AlarmSyncWorker.apply(context, new JSONArray(), owner);
+        AlarmSyncWorker.apply(context, new JSONArray(), owner, true);
         assertNull(AlarmStore.get(context, "reminder-account-a"));
+    }
+
+    private int queuedFor(String alarmId) throws Exception {
+        int queued = 0;
+        for (WorkInfo info : WorkManager.getInstance(context).getWorkInfosByTag("seos-alarm:" + alarmId).get()) {
+            if (info.getState() != WorkInfo.State.CANCELLED) queued++;
+        }
+        return queued;
+    }
+
+    /**
+     * A medication prompt that rings as an alarm: the page's own sync (which does not carry
+     * check-in prompts) leaves it scheduled, «Принял» on the alarm stops the sound and
+     * queues exactly one outcome for that occurrence, a second press adds nothing, and
+     * silencing is not offered as an answer.
+     */
+    @Test
+    public void medicationAlarmIsAnsweredOnTheAlarmOnceAndSurvivesAPageSync() throws Exception {
+        WorkManager.getInstance(context).cancelAllWork().getResult().get();
+        WorkManager.getInstance(context).pruneWork().getResult().get();
+        long at = System.currentTimeMillis() + 3_600_000L;
+        JSONObject prompt = new JSONObject().put("id", "reminder-device-med").put("remind_at", Iso.format(at))
+                .put("title", "Витамин D").put("status", "SCHEDULED")
+                .put("checkin", new JSONObject().put("template_id", "checkin-device-med")
+                        .put("original_recurrence_id", "2026-10-07T09:00:00").put("kind", "MEDICATION"));
+        assertEquals(1, AlarmSyncWorker.apply(context, new JSONArray().put(prompt), owner, true));
+        // The page syncs only its standalone reminders: the medication alarm stays.
+        AlarmSyncWorker.apply(context, new JSONArray(), owner, false);
+        AlarmState state = AlarmStore.get(context, "reminder-device-med");
+        assertTrue("a page sync without prompts keeps the medication alarm", state != null && state.answersCheckin());
+
+        AlarmReceiver.ring(context, state, System.currentTimeMillis());
+        waitFor(this::serviceRunning);
+        assertTrue(serviceRunning());
+        AlarmReceiver.handle(context, AlarmReceiver.ACTION_CHECKIN_DONE, "reminder-device-med", null);
+        waitFor(() -> !serviceRunning());
+        assertTrue("«Принял» stops the sound", !serviceRunning());
+        assertEquals(AlarmState.DONE, AlarmStore.get(context, "reminder-device-med").phase);
+        assertEquals("one outcome is queued for the server", 1, queuedFor("reminder-device-med"));
+        AlarmReceiver.handle(context, AlarmReceiver.ACTION_CHECKIN_DONE, "reminder-device-med", null);
+        AlarmReceiver.handle(context, AlarmReceiver.ACTION_CHECKIN_SKIP, "reminder-device-med", null);
+        assertEquals("a second press is not a second outcome", 1, queuedFor("reminder-device-med"));
+        // The server still lists the prompt until the outcome arrives: the answer here holds.
+        AlarmSyncWorker.apply(context, new JSONArray().put(prompt), owner, true);
+        assertEquals(AlarmState.DONE, AlarmStore.get(context, "reminder-device-med").phase);
     }
 }

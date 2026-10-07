@@ -4,10 +4,36 @@
 
 ## Current architecture
 
-- Schema: v30 (`persistence/sqlite.py::SCHEMA_VERSION`); what each version added is in
+- Schema: v33 (`persistence/sqlite.py::SCHEMA_VERSION`); what each version added is in
   [docs/SCHEMA_HISTORY.md](../SCHEMA_HISTORY.md). v28 persists login/IP abuse limits; v29
   stores Assistant action history (inverse + committed version) for safe undo; v30 stores
-  canonical planning preferences.
+  canonical planning preferences; v31 check-ins and reminder series; v32 places/location
+  triggers/routing state; v33 task checklists.
+- Check-ins (ADR 0034): `checkins/` owns templates and occurrence outcomes; prompts are
+  `reminders` rows armed/closed by the owner (`checkins/repository.py`); reminder series
+  in `reminders/series.py`; both materialized by `ensure_horizon` from the worker tick
+  (`ReminderEngine._advance_recurring`), reads and commands. Shared expansion:
+  `recurrence/expansion.py`. Sync: `sync/handlers/checkins.py`. Client:
+  `js/checkins.js`, `js/checkin-overlay.js`, views `checkins`/`checkin`. Assistant:
+  `agent/checkin_actions.py`, parser `agent/recurring.py` ⇄ `js/recurring.js`.
+- Places/triggers/routing (ADR 0035): `travel/repository.py` (CRUD, reference-checked
+  delete), `travel/triggers.py`, `travel/routing.py` (provider + refresh, worker pass),
+  `sync/handlers/places.py`; client `js/places.js`, `js/place-overlay.js`; Android
+  `geofence/` (platform proximity alerts, `GeofenceSyncWorker`, boot restore). Assistant:
+  `agent/place_actions.py`, parser `agent/location_phrases.py` ⇄ `js/location-phrases.js`.
+- Checklists/progress (ADR 0036): `subtasks.py`, `sync/handlers/subtasks.py`,
+  `js/subtask-overlay.js`; project progress in `web/services/projects.py`. Assistant:
+  `agent/checklist_actions.py` (typed `CHECKLIST_STEP`; the server picks the step, equally
+  fitting steps go back to the user; device phrase detector `js/commands.js`
+  `isChecklistStepPhrase`).
+- Quota time in the plan: `checkins/demand.py` → `PlanningSnapshot.quota_demands` (hashed into
+  the plan identity) → `Planner` engine-only work → `PlanSnapshot.quota_blocks`
+  (`PlanBlockType.QUOTA`, never persisted, never a Task; `QUOTA_DOES_NOT_FIT` when obligations
+  would not fit) → `plan.quota_blocks` in `/api/v1/today`; Today/Plan show it.
+- Medication alarms: `/api/v1/reminders/alarms` carries `checkin {template_id,
+  original_recurrence_id, kind}`; Android `AlarmState` keeps it, `AlarmActivity`/ringing
+  notification answer it (`AlarmOps.checkin`), and a page sync without check-in prompts
+  (`with_checkin_prompts=false`) keeps the phone's check-in alarms.
 - Planning preferences: `planning/preferences.py` (model, expansion, placement filter) and
   `planning/preference_store.py`; `Planner._honour_preferences` re-places work only after the
   hard model is FEASIBLE and relaxes preferences one by one; feasibility never reads them.
@@ -100,6 +126,7 @@ Actual external delivery/inference still requires:
 - FCM service-account credentials plus Android `google-services.json`;
 - per user: their own OpenAI, Anthropic, or OpenAI-compatible key (the server needs the
   `credential.key` master key file to store them);
-- routing and OAuth provider configuration for those optional integrations.
+- routing (`SEOS_ROUTING_PROVIDER=yandex` + worker key file, deploy/README.md) and OAuth
+  provider configuration for those optional integrations.
 
 Local mocks or compile-time wiring must not be reported as live provider delivery.

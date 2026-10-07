@@ -108,6 +108,10 @@ public final class AlarmStore {
             case "awake_wait": return ru ? "Проверю через 25 минут, что вы не уснули" : "I'll check in 25 minutes that you're awake";
             case "alarm_missed": return ru ? "Будильник пропущен: «{title}»" : "Missed alarm: “{title}”";
             case "test_title": return ru ? "Проверка будильника" : "Alarm test";
+            case "alarm_taken": return ru ? "Принял" : "Taken";
+            case "alarm_not_taken": return ru ? "Не принял" : "Not taken";
+            case "alarm_checkin_done": return ru ? "Сделал" : "Done";
+            case "alarm_checkin_skip": return ru ? "Пропущу" : "Skip";
             default: return "";
         }
     }

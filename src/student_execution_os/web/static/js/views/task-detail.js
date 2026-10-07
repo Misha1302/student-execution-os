@@ -6,6 +6,9 @@ import { DURATION_PRESETS } from '../duration.js';
 import { lifecycle, logProgress, mutate, change, taskPlace } from '../actions.js';
 import { editTaskSheet, rescheduleSheet } from '../task-sheets.js';
 import { deadlineText } from '../task-draft.js';
+import { checklistSummary } from '../subtask-overlay.js';
+import { openSheet, actionSheet } from '../ui.js';
+import { newEntityId } from '../sync.js';
 import { executionCard, mountExecutionTimers, startExecution, pauseExecution, resumeExecution, finishExecution, reviewLongExecution } from '../execution.js';
 
 function fileBase64(file) {
@@ -29,6 +32,64 @@ export function startAdvice(task) {
   return at < now() ? t('task.startNowAdvice') : t('task.startBy', { when: fmtDateTime(at) });
 }
 
+// The task's steps. Their effort is a breakdown next to the task's estimate; only the
+// task's own remaining effort is planned (nothing is counted twice).
+function checklistCard(task, total) {
+  const items = task.subtasks || [];
+  const summary = checklistSummary(items);
+  const stepEffort = summary?.effort_minutes;
+  const rows = items.map((x, i) => `<div class="row static subtask-row${x.done ? ' done' : ''}">
+    <label class="subtask-check"><input type="checkbox" data-subtask-toggle data-id="${esc(x.id)}" data-task-id="${esc(x.task_id)}" ${x.done ? 'checked' : ''}
+      aria-label="${esc(t(x.done ? 'subtask.markOpen' : 'subtask.markDone', { title: x.title }))}"><span>${esc(x.title)}</span></label>
+    <span class="row-aside">${x.effort_minutes ? `<small class="muted">${esc(fmtDuration(x.effort_minutes))}</small>` : ''}${x._pending ? `<small class="muted">${esc(t('checkin.pendingSync'))}</small>` : ''}
+      <button class="button small ghost" data-action="subtask-menu" data-id="${esc(x.id)}" data-index="${i}" aria-label="${esc(t('checkin.more', { title: x.title }))}">⋯</button></span>
+  </div>`).join('');
+  return `<section class="card" data-checklist>
+    <div class="section-head"><h3>${esc(t('subtask.title'))}</h3>${summary ? `<span class="muted">${esc(t('subtask.progress', { done: summary.done, total: summary.total }))}</span>` : ''}</div>
+    ${rows ? `<div class="list">${rows}</div>` : `<p class="muted">${esc(t('subtask.empty'))}</p>`}
+    ${stepEffort && total && stepEffort !== total ? `<p class="help">${esc(t('subtask.effortMismatch', { steps: fmtDuration(stepEffort), task: fmtDuration(total) }))}</p>` : ''}
+    <form class="inline-add" data-subtask-form data-task-id="${esc(task.id)}"><input data-subtask-title maxlength="300" value="${esc(stepDraft.taskId === task.id ? stepDraft.text : '')}" placeholder="${esc(t('subtask.addPlaceholder'))}" aria-label="${esc(t('subtask.add'))}">
+      <button class="button small" type="submit">${icon('plus')}${esc(t('subtask.add'))}</button></form>
+  </section>`;
+}
+
+// A step being typed survives a background redraw of the screen (text and focus).
+const stepDraft = { taskId: null, text: '', focused: false };
+
+// One delegated handler: the task screen is redrawn from cache without re-mounting,
+// and a form without a listener would otherwise submit natively (a page reload).
+if (globalThis.document?.addEventListener) {
+  document.addEventListener('input', (event) => {
+    const input = event.target.closest?.('[data-subtask-title]');
+    if (!input) return;
+    stepDraft.taskId = input.closest('[data-subtask-form]')?.dataset.taskId || null;
+    stepDraft.text = input.value;
+  });
+  // A real checkbox: its own state is the user's answer (a click handler that
+  // prevents the default would flip it back until the redraw).
+  document.addEventListener('change', async (event) => {
+    const box = event.target.closest?.('[data-subtask-toggle]');
+    if (!box) return;
+    const payload = { task_id: box.dataset.taskId };
+    if (box.checked) payload.occurred_at = new Date().toISOString();
+    await change(box.checked ? 'subtask.complete' : 'subtask.reopen', box.dataset.id, payload);
+  });
+  document.addEventListener('focusin', (event) => { if (event.target.closest?.('[data-subtask-title]')) stepDraft.focused = true; });
+  document.addEventListener('focusout', (event) => { if (event.target.closest?.('[data-subtask-title]')) stepDraft.focused = false; });
+  document.addEventListener('submit', async (event) => {
+    const form = event.target.closest?.('[data-subtask-form]');
+    if (!form) return;
+    event.preventDefault();
+    const input = form.querySelector('[data-subtask-title]');
+    const title = input.value.trim();
+    if (!title) return;
+    input.value = '';
+    stepDraft.text = '';
+    await change('subtask.create', newEntityId('subtask'), { task_id: form.dataset.taskId, title });
+    document.querySelector('[data-subtask-title]')?.focus();
+  });
+}
+
 export default {
   id: 'task',
   tab: 'tasks',
@@ -40,14 +101,16 @@ export default {
     if (!fresh && !result.data.some((x) => x.id === params[0])) result = await load('/api/v1/tasks', { fresh: true }).catch(() => result);
     const task = result.data.find((x) => x.id === params[0]) || null;
     if (!task) return { ...result, data: null };
-    const [attachments, active, history] = await Promise.all([
+    const [attachments, active, history, checklist] = await Promise.all([
       load(`/api/v1/attachments?owner_kind=OBLIGATION&owner_id=${encodeURIComponent(task.id)}`, { fresh }).catch(() => ({ data: [] })),
       load('/api/v1/execution/active', { fresh }).catch(() => ({ data: { session: null } })),
       load(`/api/v1/execution/sessions?task_id=${encodeURIComponent(task.id)}&days=365`, { fresh }).catch(() => ({ data: { sessions: [] } })),
+      load(`/api/v1/tasks/${encodeURIComponent(task.id)}/subtasks`, { fresh }).catch(() => ({ data: { task_id: task.id, subtasks: [] } })),
     ]);
     const executionActive = active.data?.session?.task_id === task.id ? active.data.session : null;
     return { ...result, stale: result.stale || attachments.stale || active.stale || history.stale,
-      data: { ...task, attachments: attachments.data, execution_active: executionActive, execution_sessions: history.data?.sessions || [] } };
+      data: { ...task, attachments: attachments.data, execution_active: executionActive, execution_sessions: history.data?.sessions || [],
+        subtasks: checklist.data?.subtasks || [] } };
   },
   render(task) {
     if (!task) return empty(t('task.missing'), t('task.missingHint'), 'tasks');
@@ -89,6 +152,8 @@ export default {
           ${task.execution_active ? '' : `<button class="button primary" data-action="detail-start">${esc(t('today.start'))}</button>`}
           <button class="button ${task.started_at ? 'primary' : ''}" data-action="detail-progress">${icon('check')}${esc(t('task.logProgress'))}</button></div>` : ''}
       </section>`}
+
+      ${checklistCard(task, total)}
 
       <section class="card">
         <dl class="kv-list">
@@ -138,6 +203,41 @@ export default {
       </section>`;
   },
   actions: {
+    async 'subtask-menu'(el, ctx) {
+      const items = ctx.data?.subtasks || [];
+      const index = Number(el.dataset.index);
+      const item = items[index];
+      if (!item) return;
+      const choice = await actionSheet({ title: item.title, items: [
+        { id: 'rename', icon: 'note', label: t('subtask.rename') },
+        { id: 'effort', icon: 'clock', label: t('subtask.effort') },
+        ...(index > 0 ? [{ id: 'up', icon: 'back', label: t('subtask.up') }] : []),
+        ...(index < items.length - 1 ? [{ id: 'down', icon: 'chevron', label: t('subtask.down') }] : []),
+        { id: 'delete', icon: 'x', label: t('lifecycle.delete'), tone: 'danger' },
+      ] });
+      if (choice === 'up' || choice === 'down') {
+        // Between the neighbours: a fractional position, so offline moves need no renumbering.
+        const target = choice === 'up' ? index - 1 : index + 1;
+        const beyond = choice === 'up' ? items[index - 2] : items[index + 2];
+        const edge = items[target].position + (choice === 'up' ? -1 : 1);
+        const position = beyond ? (items[target].position + beyond.position) / 2 : edge;
+        await change('subtask.move', item.id, { task_id: item.task_id, position });
+      } else if (choice === 'delete') {
+        await change('subtask.delete', item.id, { task_id: item.task_id }, { success: t('subtask.deleted') });
+      } else if (choice === 'rename' || choice === 'effort') {
+        const dialog = openSheet({ title: t(choice === 'rename' ? 'subtask.rename' : 'subtask.effort'),
+          body: choice === 'rename'
+            ? `<label class="field"><span>${esc(t('form.title'))}</span><input data-subtask-edit maxlength="300" value="${esc(item.title)}"></label>`
+            : `<label class="field"><span>${esc(t('subtask.minutes'))}</span><input type="number" min="1" max="100000" data-subtask-edit value="${esc(item.effort_minutes ?? '')}"></label><p class="help">${esc(t('subtask.effortHelp'))}</p>`,
+          actions: `<button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button><button type="button" class="button primary" data-save>${esc(t('common.save'))}</button>` });
+        dialog.querySelector('[data-save]').addEventListener('click', async () => {
+          const value = dialog.querySelector('[data-subtask-edit]').value.trim();
+          dialog.close('saved');
+          if (choice === 'rename' && value && value !== item.title) await change('subtask.update', item.id, { task_id: item.task_id, title: value });
+          if (choice === 'effort') await change('subtask.update', item.id, { task_id: item.task_id, effort_minutes: value ? Math.round(Number(value)) : null });
+        });
+      }
+    },
     'detail-progress'(_el, ctx) { logProgress(ctx.data); },
     'detail-edit'(el, ctx) { editTaskSheet(ctx.data, { focus: el.dataset.focus }); },
     'detail-reschedule'(_el, ctx) { rescheduleSheet(ctx.data); },
@@ -170,6 +270,11 @@ export default {
   },
   mount(root, task, ctx) {
     mountExecutionTimers(root, task?.execution_active || null, task);
+    if (stepDraft.focused && stepDraft.taskId === task?.id) {
+      const input = root.querySelector('[data-subtask-title]');
+      input?.focus();
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    }
     root.querySelector('[data-attachment-input]')?.addEventListener('change', async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;

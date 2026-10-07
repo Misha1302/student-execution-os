@@ -346,7 +346,9 @@ h2.status-unknown { color: var(--warn); }
 .travel-route { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .route { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .route .icon { color: var(--travel); width: 18px; height: 18px; }
-.mini-kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.mini-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.5em, 1fr)); gap: 6px; }
+.mini-kv > div { min-width: 0; }
+.mini-kv dd { overflow-wrap: anywhere; }
 .mini-kv dt { color: var(--text-3); font-size: 11px; }
 .mini-kv dd { font-weight: 650; font-size: 14px; }
 
@@ -642,3 +644,51 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .note-audio { width: 100%; margin-top: .6rem; }
 .note-row.archived { opacity: .68; }
 .event-now-card { border-inline-start: 3px solid var(--accent, currentColor); }
+
+/* ---- check-ins, checklists, places (schema v31–v33) ----------------------------------- */
+.checkin-row { flex-wrap: wrap; row-gap: 6px; }
+.checkin-row .row-main { min-width: 0; flex: 1 1 140px; }
+.checkin-row .row-main strong, .checkin-row .row-main small { overflow-wrap: anywhere; }
+.checkin-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.subtask-row { align-items: center; }
+.subtask-check { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.subtask-check input { width: 20px; height: 20px; flex: none; }
+.subtask-check span { overflow-wrap: anywhere; }
+.subtask-row.done .subtask-check span { text-decoration: line-through; color: var(--text-3); }
+.inline-add { display: flex; gap: 8px; margin-top: 10px; }
+.inline-add input { flex: 1 1 auto; min-width: 0; }
+.progress-history { margin: 10px 0 0; color: var(--accent, currentColor); }
+.progress-history svg { width: 100%; height: 56px; display: block; }
+.help.warn { color: var(--warn, inherit); }
+.field.toggle { display: flex; align-items: center; gap: 10px; }
+.field.inline { display: flex; align-items: center; gap: 8px; }
+/* Today: passive information folds away; the summary stays a comfortable tap target. */
+details.section.quiet > summary { min-height: 44px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 2px; color: var(--text-2); cursor: pointer; }
+details.section.quiet > summary .icon { width: 18px; height: 18px; }
+details.section.quiet[open] > summary { color: var(--text); font-weight: 650; }
+.attention > .banner, .attention > .hero-status, .attention > .travel-card { margin: 0; }
+details.section.quiet > summary { flex-wrap: nowrap; }
+details.section.quiet > summary .summary-copy { flex: 1; min-width: 0; }
+.group-title { font-size: 13px; font-weight: 650; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 6px 2px 0; }
+/* Phone layout: every tappable control is at least 44 CSS px tall (WCAG 2.5.5 / platform
+   guidance). Desktop keeps the denser 34 px small buttons. */
+@media (max-width: 899px) {
+  .button.small, .chip-toggle, button.chip, a.chip { min-height: 44px; }
+  a.chip { display: inline-flex; align-items: center; padding-inline: 14px; }
+  .icon-button { width: 44px; height: 44px; }
+  .link { min-height: 44px; min-width: 44px; justify-content: center; }
+  summary { min-height: 44px; display: flex; align-items: center; gap: 8px; }
+}
+.dot.quota, .agenda-item.quota { --tone: var(--ok); --tone-soft: var(--ok-soft); }
+.help.warn { color: var(--warn); }
+/* Narrow phones: «leave by» above the route, so wide fonts never push the card sideways. */
+@media (max-width: 359px) {
+  .travel-card { flex-direction: column; gap: 10px; }
+  .travel-leave { padding-right: 0; border-right: 0; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+}
+/* Desktop rail: a long label wraps onto a second line instead of being cut off. */
+@media (min-width: 900px) {
+  .tab, .rail-only.tab { height: auto; min-height: 42px; }
+  .tab span { white-space: normal; text-overflow: clip; line-height: 1.25; text-align: left; }
+}

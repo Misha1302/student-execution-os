@@ -59,7 +59,8 @@ const RU_MONTH = '(январ[ья]|феврал[ья]|марта?|апрел[ь
 const EN_MONTH = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
 
 // [window start, window end, reminder anchor] as [h, m]
-const PARTS = {
+// Shared with recurring.js (the same anchors as the server parser).
+export const PARTS = {
   morning: [[8, 0], [12, 0], [9, 0]],
   noon: [[12, 0], [12, 0], [12, 0]],
   afternoon: [[12, 0], [17, 0], [14, 0]],
@@ -166,7 +167,7 @@ function cueOf(preposition) {
   return null;
 }
 
-function hourOf(hour, suffix, explicit) {
+export function hourOf(hour, suffix, explicit) {
   const s = String(suffix || '').replaceAll('.', '');
   if (['pm', 'вечера', 'дня'].includes(s) && hour < 12) return hour + 12;
   if (s === 'ночи') return hour >= 9 && hour <= 11 ? hour + 12 : (hour === 12 ? 0 : hour);

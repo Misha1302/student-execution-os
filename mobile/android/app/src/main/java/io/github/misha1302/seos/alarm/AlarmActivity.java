@@ -79,10 +79,22 @@ public class AlarmActivity extends Activity {
         title.setPadding(0, pad / 2, 0, pad * 2);
         root.addView(title);
 
-        root.addView(button(AlarmStore.label(this, state.wakeCheck ? "alarm_up" : "alarm_done"), Color.rgb(46, 125, 50),
-                () -> answer(AlarmReceiver.ACTION_UP, state.id)));
-        root.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
-                () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
+        if (state.answersCheckin()) {
+            // A check-in prompt is answered right here; silencing it is not an answer, so
+            // there is no plain «Выключить»: «Отложить» or a real outcome stops the sound.
+            boolean med = state.isMedication();
+            root.addView(button(AlarmStore.label(this, med ? "alarm_taken" : "alarm_checkin_done"), Color.rgb(46, 125, 50),
+                    () -> answer(AlarmReceiver.ACTION_CHECKIN_DONE, state.id)));
+            root.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
+                    () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
+            root.addView(button(AlarmStore.label(this, med ? "alarm_not_taken" : "alarm_checkin_skip"), Color.rgb(90, 52, 52),
+                    () -> answer(AlarmReceiver.ACTION_CHECKIN_SKIP, state.id)));
+        } else {
+            root.addView(button(AlarmStore.label(this, state.wakeCheck ? "alarm_up" : "alarm_done"), Color.rgb(46, 125, 50),
+                    () -> answer(AlarmReceiver.ACTION_UP, state.id)));
+            root.addView(button(AlarmStore.label(this, "alarm_snooze"), Color.rgb(60, 66, 76),
+                    () -> answer(AlarmReceiver.ACTION_SNOOZE, state.id)));
+        }
         setContentView(root);
     }
 

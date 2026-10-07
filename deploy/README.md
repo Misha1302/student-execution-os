@@ -43,6 +43,7 @@ them (files, not environment variables: variables show up in
 | File | Container | Purpose |
 |---|---|---|
 | `secrets/worker/fcm-service-account.json` | reminder-worker | Firebase Admin SDK service account for FCM push |
+| `secrets/worker/routing-api.key` | reminder-worker | optional routing (travel time) API key; with `SEOS_ROUTING_PROVIDER=yandex` (ADR 0035) |
 | `secrets/api/credential.key` | api | master key that encrypts every account's own AI key (ADR 0017) |
 | `secrets/academic/academic-feed.key` | api + reminder-worker | dedicated master key for private iCalendar URLs (ADR 0028); the worker receives no LLM key |
 | `secrets/api/platform-groq-1.key` | api | primary platform LLM credential (never copied into `.env`) |
@@ -597,7 +598,9 @@ curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health   # previous revisi
 
 Data written by the newer build is kept (and used again on roll-forward, which needs no
 migration). While the older build runs, the newer features are inactive (for v30: planning
-preferences are kept but not applied), and **account export and account deletion answer
+preferences are kept but not applied; for v31–v33: check-ins, reminder series, place
+reminders, routing state and checklists are kept but not shown — reminders already
+materialized from a series or a check-in still fire as one-shot reminders), and **account export and account deletion answer
 `422 VALIDATION_ERROR` ("data lifecycle contract does not classify database tables")** —
 the lifecycle guard refuses to export or delete an account incompletely. Everything else
 (sign-in, today/plan, sync with exactly-once replay, reminders, backups) works. Verified for
@@ -608,8 +611,10 @@ keeps the contract.
 Stop the api and worker, take a verified backup, then in the api image apply
 `src/student_execution_os/persistence/rollback/<NNN>_*_down.sql` for every version newer than
 the old build, newest first (v30 → v29: `030`; v30 → v27: `030`, `029`, `028`), and start the
-old release. This **deletes** those tables' rows: planning preferences (030), Assistant undo
-history (029), sign-in rate-limit windows (028). A later roll-forward recreates them empty.
+old release. This **deletes** those tables' rows: checklists (033), place reminders and
+routing state, plus the per-place routing consent column (032), check-ins with their
+history, reminder series and v31+ delete tombstones (031), planning preferences (030),
+Assistant undo history (029), sign-in rate-limit windows (028). A later roll-forward recreates them empty.
 Never restore an older backup over newer legitimate writes to roll back; `restore` of a
 newer-schema backup into an older build is refused by design.
 
@@ -704,9 +709,30 @@ for row in c.execute("SELECT COUNT(*), metric_name, dimensions_json, ROUND(AVG(v
 STARTER exhaustion shows up as `reason: STARTER_QUOTA`; per-account request/token use is in
 `starter_llm_account_usage`, the global counter in `starter_llm_global_usage`.
 
+## Travel times (routing provider)
+
+Optional. Without it the planner uses only the travel times users enter themselves and
+reports UNKNOWN when a located event has none. To enable the Yandex Routing Distance
+Matrix adapter (public transport, driving and walking in Russian cities; ADR 0035):
+
+```bash
+install -o 10001 -g 10001 -m 0400 /path/to/routing.key "$S/worker/routing-api.key"
+# .env next to the compose file:
+SEOS_ROUTING_PROVIDER=yandex
+SEOS_ROUTING_DEFAULT_MODE=TRANSIT   # used when the user has not chosen a mode for a route
+```
+
+The worker asks only for routes of upcoming located events between places whose owner
+allowed routing, sends only the two map points and the mode, uses a 5 s connect / 10 s
+read timeout with one retry, backs off after failures, and stores answers as
+ROUTING_PROVIDER travel estimates that expire after 6 hours. The key stays in the worker's
+secret file: it is never written to SQLite, a client, an error or a log line. The worker
+log line `routing provider=…` shows whether it is configured.
+
 ## Not yet covered
 
 See [docs/ROADMAP.md](../docs/ROADMAP.md): password reset/change, email verification,
 per-account rate limits across several server processes (the limiter is in-process),
-routing, automated FCM credential rotation, and paid/managed AI. Local simulation
-is not presented as production delivery.
+automated FCM credential rotation, and paid/managed AI. The routing adapter is covered by
+contract tests with a mocked HTTP transport, not by a live-provider check. Local
+simulation is not presented as production delivery.

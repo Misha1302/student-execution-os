@@ -55,6 +55,13 @@ public final class AlarmState {
     public final boolean local;
     /** «Я встал» was answered for this episode, on this or another phone (server-owned). */
     public final boolean acknowledged;
+    /**
+     * The check-in occurrence this alarm prompts for (empty for an ordinary reminder). An
+     * answer on the alarm records that occurrence's outcome; silencing it records nothing.
+     */
+    public String checkinTemplate = "";
+    public String checkinRecurrence = "";
+    public String checkinKind = "";
     public String phase = SCHEDULED;
     public int round = 0;
     public long next;
@@ -79,6 +86,15 @@ public final class AlarmState {
     /** Same reminder and same moment: a server resync must not reset its progress. */
     public String key() {
         return id + "|" + at;
+    }
+
+    /** «Принял»/«Не принял» belong on the alarm: a medication or routine prompt, not a quota. */
+    public boolean answersCheckin() {
+        return !checkinTemplate.isEmpty() && !checkinRecurrence.isEmpty() && !"QUOTA".equals(checkinKind);
+    }
+
+    public boolean isMedication() {
+        return "MEDICATION".equals(checkinKind);
     }
 
     public boolean pending() {
@@ -130,6 +146,12 @@ public final class AlarmState {
 
     /** «Не сплю». */
     public void awake() {
+        phase = DONE;
+        nextKind = null;
+    }
+
+    /** The check-in prompt was answered on the alarm: nothing is left to ring or check. */
+    public void answered() {
         phase = DONE;
         nextKind = null;
     }
@@ -194,6 +216,20 @@ public final class AlarmState {
         return result;
     }
 
+    /** Copies of the account's check-in prompt alarms (kept when a sync does not carry them). */
+    public static List<AlarmState> checkinPromptsOf(List<AlarmState> current) {
+        List<AlarmState> result = new ArrayList<>();
+        for (AlarmState state : current) {
+            if (state.local || state.checkinTemplate.isEmpty()) continue;
+            try {
+                result.add(fromJson(state.toJson()));
+            } catch (JSONException impossible) {
+                // plain values only
+            }
+        }
+        return result;
+    }
+
     /** The local test alarm is device-owned; all other alarms belong to the session. */
     public static List<AlarmState> withoutAccountAlarms(List<AlarmState> current) {
         List<AlarmState> result = new ArrayList<>();
@@ -206,15 +242,23 @@ public final class AlarmState {
     public static AlarmState fromServer(JSONObject json) throws JSONException {
         String at = json.optString("at", "");
         String acknowledged = json.isNull("acknowledged_at") ? "" : json.optString("acknowledged_at", "");
-        return new AlarmState(json.getString("id"), Iso.parse(at.isEmpty() ? json.getString("remind_at") : at),
+        AlarmState state = new AlarmState(json.getString("id"), Iso.parse(at.isEmpty() ? json.getString("remind_at") : at),
                 json.optString("title", ""), json.optBoolean("wake_check", false), json.optBoolean("raise_volume", false),
                 false, !acknowledged.isEmpty());
+        JSONObject checkin = json.optJSONObject("checkin");
+        if (checkin != null) {
+            state.checkinTemplate = checkin.optString("template_id", "");
+            state.checkinRecurrence = checkin.optString("original_recurrence_id", "");
+            state.checkinKind = checkin.isNull("kind") ? "" : checkin.optString("kind", "");
+        }
+        return state;
     }
 
     public JSONObject toJson() throws JSONException {
         return new JSONObject().put("id", id).put("at", at).put("title", title).put("wake", wakeCheck)
                 .put("loud", raiseVolume).put("local", local).put("ack", acknowledged).put("phase", phase).put("round", round)
-                .put("next", next).put("nextKind", nextKind == null ? JSONObject.NULL : nextKind);
+                .put("next", next).put("nextKind", nextKind == null ? JSONObject.NULL : nextKind)
+                .put("ciTemplate", checkinTemplate).put("ciRecurrence", checkinRecurrence).put("ciKind", checkinKind);
     }
 
     public static AlarmState fromJson(JSONObject json) throws JSONException {
@@ -224,6 +268,10 @@ public final class AlarmState {
         state.round = json.optInt("round", 0);
         state.next = json.optLong("next", state.at);
         state.nextKind = json.isNull("nextKind") ? null : json.optString("nextKind", FIRE);
+        // Stored before check-in prompts existed: an ordinary reminder.
+        state.checkinTemplate = json.optString("ciTemplate", "");
+        state.checkinRecurrence = json.optString("ciRecurrence", "");
+        state.checkinKind = json.optString("ciKind", "");
         return state;
     }
 

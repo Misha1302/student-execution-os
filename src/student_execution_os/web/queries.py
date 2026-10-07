@@ -21,6 +21,7 @@ from .services import (
     AssistantService,
     OperationService,
     CommitmentQueries,
+    CheckInQueries,
 )
 # Re-exported for the host and tests.
 from .services.common import TEST_NOTIFICATION_LIMITER, _AccountLimiter
@@ -73,5 +74,6 @@ class UiService:
         self.account = AccountService(self.database, **context)
         self.assistant = AssistantService(self.database, **context)
         self.operations = OperationService(self.database, **context)
+        self.checkins = CheckInQueries(self.database, **context)
         self.commitments = CommitmentQueries(self.database, **context, tasks=self.tasks, events=self.events,
                                              notifications=self.notifications)

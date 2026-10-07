@@ -126,41 +126,36 @@ class SQLiteWorkRoutineRepository:
         return [self.get_template(account_id, row["id"]) for row in rows]
 
     def cancel_template(self, account_id: str, template_id: str, expected_version: int, actor: ActorCategory) -> WorkRoutineTemplate:
+        """Stop the series: nothing new materializes and untouched future Tasks go away.
+
+        Stopping is idempotent: an already stopped routine is returned unchanged, so a
+        second stop (another device, a double tap) cannot conflict on its stale version.
+        History is never erased (ADR 0024): occurrences whose Task the user touched and
+        occurrences that are already due stay ordinary Tasks.
+        """
         current = self.get_template(account_id, template_id)
-        if current.version != expected_version:
-            raise VersionConflict(f"expected routine version {expected_version}, current {current.version}")
         if current.status == "CANCELLED":
             return current
-        future_rows = self.connection.execute(
-            "SELECT original_recurrence_id,task_id FROM work_routine_occurrences "
-            "WHERE account_id=? AND template_id=? AND original_recurrence_id>=? ORDER BY original_recurrence_id",
-            (account_id, template_id, original_recurrence_id),
-        ).fetchall()
-        for row in future_rows:
-            task = self.canonical.get_task(account_id, row["task_id"])
-            linked = self.connection.execute(
-                "SELECT 1 FROM project_members WHERE account_id=? AND obligation_id=? LIMIT 1",
-                (account_id, row["task_id"]),
-            ).fetchone()
-            attachment = self.connection.execute(
-                "SELECT 1 FROM attachment_links WHERE account_id=? AND owner_kind='OBLIGATION' AND owner_id=? LIMIT 1",
-                (account_id, row["task_id"]),
-            ).fetchone()
-            if (
-                task.obligation.lifecycle_status not in {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
-                or task.obligation.version != 1
-                or task.started_at is not None
-                or task.last_progress_at is not None
-                or linked is not None
-                or attachment is not None
-            ):
-                raise VersionConflict("future routine occurrence has user history; split before an untouched occurrence")
+        if current.version != expected_version:
+            raise VersionConflict(f"expected routine version {expected_version}, current {current.version}")
         now = self.clock.now()
+        rows = self.connection.execute(
+            "SELECT original_recurrence_id,task_id FROM work_routine_occurrences "
+            "WHERE account_id=? AND template_id=? ORDER BY original_recurrence_id",
+            (account_id, template_id),
+        ).fetchall()
+        removable = []
+        for row in rows:
+            original = datetime.fromisoformat(row["original_recurrence_id"])
+            if resolve_local(original, current.timezone_name) <= now:
+                continue
+            task = self.canonical.get_task(account_id, row["task_id"])
+            if not self._has_user_history(account_id, task):
+                removable.append(task)
         with self.canonical._tx() as conn:
-            for row in future_rows:
-                task = self.canonical.get_task(account_id, row["task_id"])
+            for task in removable:
                 self.canonical.delete_obligation(
-                    account_id=account_id, obligation_id=row["task_id"],
+                    account_id=account_id, obligation_id=task.obligation.id,
                     expected_version=task.obligation.version, actor=actor,
                 )
             cur = conn.execute(
@@ -173,8 +168,28 @@ class SQLiteWorkRoutineRepository:
             self.canonical._record_change(
                 conn, account_id=account_id, entity_type="WORK_ROUTINE_TEMPLATE",
                 entity_id=template_id, action="CANCEL_WORK_ROUTINE", actor=actor,
+                payload={"removed_task_ids": [task.obligation.id for task in removable]},
             )
         return self.get_template(account_id, template_id)
+
+    def _has_user_history(self, account_id: str, task) -> bool:
+        """A generated Task the user interacted with is protected history."""
+        task_id = task.obligation.id
+        if (
+            task.obligation.lifecycle_status not in {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
+            or task.obligation.version != 1
+            or task.started_at is not None
+            or task.last_progress_at is not None
+        ):
+            return True
+        for sql in (
+            "SELECT 1 FROM project_members WHERE account_id=? AND obligation_id=? LIMIT 1",
+            "SELECT 1 FROM attachment_links WHERE account_id=? AND owner_kind='OBLIGATION' AND owner_id=? LIMIT 1",
+            "SELECT 1 FROM execution_sessions WHERE account_id=? AND task_id=? LIMIT 1",
+        ):
+            if self.connection.execute(sql, (account_id, task_id)).fetchone() is not None:
+                return True
+        return False
 
     def split_this_and_future(
         self,
@@ -235,29 +250,7 @@ class SQLiteWorkRoutineRepository:
             (account_id, template_id, original_recurrence_id),
         ).fetchall()
         for row in future_rows:
-            task = self.canonical.get_task(account_id, row["task_id"])
-            project_link = self.connection.execute(
-                "SELECT 1 FROM project_members WHERE account_id=? AND obligation_id=? LIMIT 1",
-                (account_id, row["task_id"]),
-            ).fetchone()
-            attachment = self.connection.execute(
-                "SELECT 1 FROM attachment_links WHERE account_id=? "
-                "AND owner_kind='OBLIGATION' AND owner_id=? LIMIT 1",
-                (account_id, row["task_id"]),
-            ).fetchone()
-            execution = self.connection.execute(
-                "SELECT 1 FROM execution_sessions WHERE account_id=? AND task_id=? LIMIT 1",
-                (account_id, row["task_id"]),
-            ).fetchone()
-            if (
-                task.obligation.lifecycle_status not in {LifecycleStatus.ACTIVE, LifecycleStatus.DRAFT}
-                or task.obligation.version != 1
-                or task.started_at is not None
-                or task.last_progress_at is not None
-                or project_link is not None
-                or attachment is not None
-                or execution is not None
-            ):
+            if self._has_user_history(account_id, self.canonical.get_task(account_id, row["task_id"])):
                 raise VersionConflict(
                     "future routine occurrence has user history; split before an untouched occurrence"
                 )
@@ -416,7 +409,13 @@ class SQLiteWorkRoutineRepository:
         original = datetime.fromisoformat(original_recurrence_id)
         if not self._contains_original(template, original):
             raise ValidationError("occurrence identity is not part of the work routine")
-        return self.get_occurrence(account_id, template_id, original_recurrence_id) or self._materialize(template, original)
+        existing = self.get_occurrence(account_id, template_id, original_recurrence_id)
+        if existing is not None:
+            return existing
+        if template.status != "ACTIVE":
+            # A stopped series never materializes again; its removed future stays removed.
+            raise VersionConflict("work routine is stopped; this occurrence no longer exists")
+        return self._materialize(template, original)
 
     def skip_occurrence(self, account_id: str, template_id: str, original_recurrence_id: str, actor: ActorCategory) -> WorkRoutineOccurrence:
         occurrence = self._require_occurrence(account_id, template_id, original_recurrence_id)

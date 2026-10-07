@@ -24,7 +24,12 @@ occurrence materializes exactly one canonical Task.
 - moving/editing one occurrence does not rewrite its original recurrence identity;
 - skipping an occurrence cancels its Task and marks the occurrence `SKIPPED`;
 - reopening restores the same Task; it never creates another occurrence Task;
-- stopping a routine prevents future materialization but does not erase history.
+- stopping a routine prevents future materialization but does not erase history:
+  it removes only generated Tasks that are untouched and not yet due, keeps completed,
+  started, edited, project-linked, attachment-bearing and past-due occurrences as ordinary
+  Tasks, is idempotent for an already stopped routine (a second stop with a stale version
+  is a NOOP, not a conflict), and a stopped series never materializes an occurrence again
+  (skip/reopen/edit of a removed occurrence is refused).
 
 The materializer jumps to the planning horizon rather than scanning the full history
 of an unbounded series. Civil-time resolution reuses the existing deterministic

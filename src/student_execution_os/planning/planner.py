@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import hashlib
-from time import monotonic
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from time import monotonic
 
 from student_execution_os.domain.clock import Clock, SystemClock
-from student_execution_os.domain.model import AttendancePolicy, CutoffState, Importance, LifecycleStatus, UserTimeConstraintType
+from student_execution_os.domain.model import (
+    AttendancePolicy,
+    CutoffState,
+    HardCutoff,
+    Importance,
+    LifecycleStatus,
+    Obligation,
+    ObligationCategory,
+    ObligationKind,
+    Task,
+    UserTimeConstraintType,
+)
 from student_execution_os.planning.feasibility import FeasibilityEngine
 from student_execution_os.planning.preferences import PreferenceGuide, relaxation_order
 from student_execution_os.planning.model import (
@@ -14,6 +26,7 @@ from student_execution_os.planning.model import (
     PlanBlockType,
     PlanSnapshot,
     PlanningSnapshot,
+    QuotaDemand,
 )
 
 _IMPORTANCE_RANK = {
@@ -35,6 +48,48 @@ class _PreferenceBudgetExhausted(Exception):
 def _block_id(*parts: object) -> str:
     raw = "|".join(str(part) for part in parts).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
+
+
+QUOTA_DEMAND_PREFIX = "quota-demand:"
+QUOTA_MIN_CHUNK = 15
+QUOTA_MAX_CHUNK = 60
+
+
+def _minute_up(value: datetime) -> datetime:
+    floor = value.replace(second=0, microsecond=0)
+    return floor if floor == value else floor + timedelta(minutes=1)
+
+
+def _quota_work(snapshot: PlanningSnapshot) -> dict[str, tuple[Task, QuotaDemand]]:
+    """Each open quota's remaining time as engine-only work, keyed by its work id.
+
+    These exist only inside one planner run so the feasibility engine can reserve the
+    time; they never leave the planner as Tasks (their placements become QUOTA blocks).
+    """
+    out: dict[str, tuple[Task, QuotaDemand]] = {}
+    for demand in snapshot.quota_demands:
+        # The engine works on whole minutes: start no earlier, end no later than allowed.
+        start = _minute_up(max(demand.available_from, snapshot.analysis_horizon_start))
+        due = demand.due_by.replace(second=0, microsecond=0)
+        if due > snapshot.analysis_horizon_end:
+            due = snapshot.analysis_horizon_end.replace(second=0, microsecond=0)
+        if due - start < timedelta(minutes=min(demand.remaining_minutes, QUOTA_MIN_CHUNK)):
+            continue
+        work_id = f"{QUOTA_DEMAND_PREFIX}{demand.template_id}:{demand.original_recurrence_id}"
+        minutes = demand.remaining_minutes
+        obligation = Obligation(
+            id=work_id, account_id=snapshot.account_id, kind=ObligationKind.TASK,
+            category=ObligationCategory.GENERAL, title=demand.title, description=None,
+            lifecycle_status=LifecycleStatus.ACTIVE, importance=Importance.NORMAL,
+            created_at=demand.available_from, updated_at=demand.available_from, completed_at=None, version=1,
+        )
+        task = Task(
+            obligation=obligation, estimated_total_effort_minutes=minutes, remaining_effort_minutes=minutes,
+            splittable=True, min_chunk_minutes=min(minutes, QUOTA_MIN_CHUNK), max_chunk_minutes=QUOTA_MAX_CHUNK,
+            actionable_from=start, actual_cutoff=HardCutoff.known(due), target_at=None,
+        )
+        out[work_id] = (task, demand)
+    return out
 
 
 @dataclass(frozen=True)
@@ -62,10 +117,25 @@ class Planner:
             timeout_seconds=self.timeout_seconds,
             task_tie_break=priority,
         )
-        feasibility = engine.evaluate(snapshot)
+        # Open quotas with a pace are reserved as derived demand, but only while every
+        # obligation still fits: a quota never makes the plan infeasible. When it would,
+        # the plan is made without it and says which quota does not fit.
+        quota_work = _quota_work(snapshot)
+        quota_notes: tuple[str, ...] = ()
+        planned = snapshot
+        feasibility = None
+        if quota_work:
+            planned = replace(snapshot, tasks=snapshot.tasks + tuple(task for task, _ in quota_work.values()))
+            feasibility = engine.evaluate(planned)
+            if feasibility.status is not FeasibilityStatus.FEASIBLE:
+                planned, feasibility = snapshot, None
+        if feasibility is None:
+            feasibility = engine.evaluate(snapshot)
+            if quota_work and feasibility.status is FeasibilityStatus.FEASIBLE:
+                quota_notes = tuple(sorted({f"QUOTA_DOES_NOT_FIT:{demand.template_id}" for _, demand in quota_work.values()}))
         preference_notes: tuple[str, ...] = ()
         if feasibility.status is FeasibilityStatus.FEASIBLE and snapshot.preference_windows and feasibility.witness:
-            feasibility, preference_notes = self._honour_preferences(engine, snapshot, feasibility)
+            feasibility, preference_notes = self._honour_preferences(engine, planned, feasibility)
 
         blocks: list[PlanBlock] = []
         for event in snapshot.events:
@@ -132,6 +202,7 @@ class Planner:
                     )
                 )
 
+        quota_blocks: list[PlanBlock] = []
         if feasibility.status is FeasibilityStatus.FEASIBLE:
             pins = [c for c in snapshot.constraints if c.type is UserTimeConstraintType.PINNED_WORK]
             for placement in feasibility.witness:
@@ -139,6 +210,17 @@ class Planner:
                     placement.starts_at < snapshot.plan_output_horizon_end
                     and snapshot.plan_output_horizon_start < placement.ends_at
                 ):
+                    continue
+                if placement.task_id in quota_work:
+                    demand = quota_work[placement.task_id][1]
+                    quota_blocks.append(PlanBlock(
+                        starts_at=placement.starts_at,
+                        ends_at=placement.ends_at,
+                        id=_block_id(snapshot.input_hash, "QUOTA", placement.task_id, placement.starts_at, placement.ends_at),
+                        type=PlanBlockType.QUOTA,
+                        explanation="DERIVED_QUOTA_DEMAND",
+                        checkin_occurrence=(demand.template_id, demand.original_recurrence_id),
+                    ))
                     continue
                 source_ids = tuple(sorted(
                     c.id for c in pins
@@ -157,7 +239,7 @@ class Planner:
                 ))
 
         plan_id = hashlib.sha256(("plan|" + snapshot.input_hash).encode("utf-8")).hexdigest()[:32]
-        explanations = list(feasibility.reasons) + list(preference_notes)
+        explanations = list(feasibility.reasons) + list(preference_notes) + list(quota_notes)
         for event in snapshot.events:
             if event.attendance_policy is AttendancePolicy.OPTIONAL and snapshot.policy.optional_event_policy in {
                 "OMIT_OPTIONAL", "OMIT_OPTIONAL_AND_PREFERRED"
@@ -179,6 +261,7 @@ class Planner:
             generated_at=self.clock.now(),
             blocks=tuple(sorted(blocks)),
             explanations=tuple(explanations),
+            quota_blocks=tuple(sorted(quota_blocks)),
         )
 
     @staticmethod

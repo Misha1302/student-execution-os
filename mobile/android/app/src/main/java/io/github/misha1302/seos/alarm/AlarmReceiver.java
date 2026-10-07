@@ -18,6 +18,8 @@ public class AlarmReceiver extends BroadcastReceiver {
     static final String ACTION_AWAKE = "io.github.misha1302.seos.ALARM_AWAKE";
     static final String ACTION_SNOOZE = "io.github.misha1302.seos.ALARM_SNOOZE";
     static final String ACTION_TIMEOUT = "io.github.misha1302.seos.ALARM_TIMEOUT";
+    static final String ACTION_CHECKIN_DONE = "io.github.misha1302.seos.ALARM_CHECKIN_DONE";
+    static final String ACTION_CHECKIN_SKIP = "io.github.misha1302.seos.ALARM_CHECKIN_SKIP";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -63,6 +65,18 @@ public class AlarmReceiver extends BroadcastReceiver {
                 AlarmNotifications.cancelAwakeCheck(context, state);
                 report(context, state, AlarmOps.awake(state), "AWAKE");
                 break;
+            case ACTION_CHECKIN_DONE:
+            case ACTION_CHECKIN_SKIP: {
+                // Only a ringing (or snoozed) prompt can be answered; a second tap is a no-op.
+                if (!state.answersCheckin()) break;
+                if (!AlarmState.RINGING.equals(state.phase) && !AlarmState.SNOOZED.equals(state.phase)) break;
+                boolean done = ACTION_CHECKIN_DONE.equals(action);
+                state.answered();
+                AlarmStore.put(context, state);
+                AlarmService.stop(context, id);
+                report(context, state, AlarmOps.checkin(state, done, now), done ? "CHECKIN_DONE" : "CHECKIN_SKIP");
+                break;
+            }
             case ACTION_SNOOZE:
                 state.snooze(now);
                 AlarmStore.put(context, state);

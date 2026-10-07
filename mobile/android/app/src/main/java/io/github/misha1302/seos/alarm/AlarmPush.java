@@ -12,6 +12,8 @@ public final class AlarmPush {
     /** "alarm-sync": an alarm was set or changed elsewhere; fetch the schedule. */
     public static void sync(Context context) {
         AlarmSyncWorker.enqueue(context);
+        // The same signal covers place reminders changed on another device.
+        io.github.misha1302.seos.geofence.GeofenceSyncWorker.enqueue(context);
     }
 
     /**

@@ -58,6 +58,33 @@ class CutoffReconciliationContext:
 
 
 @dataclass(frozen=True)
+class QuotaDemand:
+    """What an open daily quota still asks for, in time (ADR 0034/0036).
+
+    Derived from one check-in occurrence: the occurrence owns quantity and outcome, this
+    is only the remaining quantity at the user-given pace. A quota without a pace has no
+    demand here (time is never invented). The planner may reserve it as QUOTA blocks;
+    it is never a Task and is never persisted.
+    """
+    template_id: str
+    original_recurrence_id: str
+    title: str
+    remaining_quantity: int
+    unit: str | None
+    remaining_minutes: int
+    available_from: datetime
+    due_by: datetime
+
+    def __post_init__(self) -> None:
+        require_aware(self.available_from, "available_from")
+        require_aware(self.due_by, "due_by")
+        if not self.template_id or not self.original_recurrence_id:
+            raise ValueError("quota demand needs its occurrence identity")
+        if self.remaining_minutes <= 0 or self.remaining_quantity <= 0:
+            raise ValueError("quota demand must be positive")
+
+
+@dataclass(frozen=True)
 class PlanningSnapshot:
     account_id: str
     input_server_revision: int
@@ -79,6 +106,9 @@ class PlanningSnapshot:
     # Derived, UTC-expanded soft preference windows (planning.preferences). They steer
     # placement only; feasibility never reads them.
     preference_windows: tuple = ()
+    # Derived from open daily quotas with a known pace; reserved only while every
+    # obligation still fits (planner.Planner).
+    quota_demands: tuple[QuotaDemand, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -153,6 +183,9 @@ class PlanBlockType(StrEnum):
     EVENT_PROJECTION = "EVENT_PROJECTION"
     TRAVEL_TRANSITION = "TRAVEL_TRANSITION"
     BUFFER = "BUFFER"
+    # Time reserved for an open daily quota (derived; see QuotaDemand). Only ever in
+    # PlanSnapshot.quota_blocks, never in the persisted projection.
+    QUOTA = "QUOTA"
 
 
 @dataclass(frozen=True, order=True)
@@ -166,6 +199,8 @@ class PlanBlock:
     source_event_id: str | None = None
     travel_estimate_id: str | None = None
     explanation: str = ""
+    # QUOTA blocks: (check-in template id, original recurrence id) of the occurrence.
+    checkin_occurrence: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
         require_aware(self.starts_at, "starts_at")
@@ -200,6 +235,9 @@ class PlanSnapshot:
     generated_at: datetime
     blocks: tuple[PlanBlock, ...]
     explanations: tuple[str, ...] = ()
+    # Derived time for open daily quotas (PlanBlockType.QUOTA). Kept apart from
+    # ``blocks``: those are the persisted projection of canonical work and events.
+    quota_blocks: tuple[PlanBlock, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("horizon_start", "horizon_end", "generated_at"):

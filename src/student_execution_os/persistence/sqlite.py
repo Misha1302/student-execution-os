@@ -51,7 +51,7 @@ from student_execution_os.domain.model import (
     require_aware,
 )
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 33
 _UNSET = object()
 
 
@@ -140,6 +140,9 @@ class SQLiteCanonicalRepository:
             (28, Path(__file__).with_name("migrations") / "028_auth_rate_limits.sql"),
             (29, Path(__file__).with_name("migrations") / "029_assistant_action_history.sql"),
             (30, Path(__file__).with_name("migrations") / "030_planning_preferences.sql"),
+            (31, Path(__file__).with_name("migrations") / "031_checkins_and_reminder_series.sql"),
+            (32, Path(__file__).with_name("migrations") / "032_places_and_location_triggers.sql"),
+            (33, Path(__file__).with_name("migrations") / "033_task_subtasks.sql"),
         ]
         for version, path in migrations:
             if version in applied:
@@ -1010,6 +1013,51 @@ class SQLiteCanonicalRepository:
                 action="UPDATE_EVENT",
                 actor=actor,
             )
+        return self.get_event(account_id, obligation_id)
+
+    def update_event_location(
+        self,
+        *,
+        account_id: str,
+        obligation_id: str,
+        expected_version: int,
+        location_effect: LocationEffect,
+        arrival_requirement_minutes: int,
+        actor: ActorCategory,
+    ) -> Event:
+        """Where a single-location event happens (and how early to arrive).
+
+        Hybrid events keep their option model (``select_event_location_option``).
+        Places are validated in the event's own account, so an event can never name
+        another account's place.
+        """
+        current = self.get_event(account_id, obligation_id)
+        if current.obligation.version != expected_version:
+            raise VersionConflict(
+                f"expected obligation version {expected_version}, current {current.obligation.version}"
+            )
+        if current.location_options:
+            raise ValidationError("a hybrid event changes location through its options")
+        if arrival_requirement_minutes < 0 or arrival_requirement_minutes > 240:
+            raise ValidationError("arrival_requirement_minutes must be 0-240")
+        self._validate_location_effect_places(account_id=account_id, location_effect=location_effect)
+        now = self.clock.now()
+        with self._tx() as conn:
+            cur = conn.execute(
+                "UPDATE obligations SET updated_at=?,version=version+1 WHERE account_id=? AND id=? AND version=?",
+                (_iso(now), account_id, obligation_id, expected_version),
+            )
+            if cur.rowcount != 1:
+                raise VersionConflict("obligation version changed before commit")
+            conn.execute(
+                "UPDATE events SET location_effect_kind=?,origin_place_id=?,destination_place_id=?,"
+                "arrival_requirement_minutes=? WHERE obligation_id=?",
+                (location_effect.kind.value, location_effect.origin_place_id, location_effect.destination_place_id,
+                 arrival_requirement_minutes, obligation_id),
+            )
+            self._record_change(conn, account_id=account_id, entity_type="OBLIGATION", entity_id=obligation_id,
+                                action="UPDATE_EVENT_LOCATION", actor=actor,
+                                payload={"kind": location_effect.kind.value})
         return self.get_event(account_id, obligation_id)
 
     def get_event(self, account_id: str, obligation_id: str) -> Event:

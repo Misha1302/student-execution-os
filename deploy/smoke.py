@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import secrets
+from datetime import datetime, timedelta, timezone
 import sys
 
 import httpx
@@ -153,6 +154,71 @@ def main() -> int:
             expected_source = "PLATFORM_MANAGED" if starter_available else "NONE"
             check(removed["source"] == expected_source and removed["credential"] is None, "AI key removed", removed)
             report["byok"] = "ok"
+        # Daily execution (schema v31-v33): one pass over each owner, in the smoke account.
+        def sync(op_id: str, kind: str, entity_id: str, payload: dict | None = None) -> dict:
+            return call("POST", "/api/v1/sync", json={"operations": [
+                {"op_id": op_id, "type": kind, "entity_id": entity_id, "payload": payload or {}}]})["results"][0]
+
+        now = datetime.now(timezone.utc)
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%dT18:00")
+        routine_id = f"routine-smoke-{suffix}"
+        routine = sync(f"op-routine-{suffix}", "routine.create", routine_id, {
+            "title": "Smoke recurring work", "dtstart_local": tomorrow, "effort_minutes": 30,
+            "recurrence_rule": "FREQ=DAILY;COUNT=3", "timezone_name": "UTC"})
+        check(routine["status"] == "APPLIED", "create recurring work", routine)
+        stopped = sync(f"op-routine-stop-{suffix}", "routine.cancel", routine_id,
+                       {"expected_version": routine["entity"]["version"]})
+        check(stopped["status"] == "APPLIED" and stopped["entity"]["status"] == "CANCELLED", "stop recurring work", stopped)
+        again_stop = sync(f"op-routine-stop2-{suffix}", "routine.cancel", routine_id,
+                          {"expected_version": routine["entity"]["version"]})
+        check(again_stop["status"] == "NOOP", "stopping twice changes nothing", again_stop)
+
+        start = now.replace(minute=0, second=0, microsecond=0)
+        medication_id = f"checkin-smoke-med-{suffix}"
+        med = sync(f"op-med-{suffix}", "checkin.create", medication_id, {
+            "kind": "MEDICATION", "title": "Smoke vitamin", "dtstart_local": start.strftime("%Y-%m-%dT%H:%M"),
+            "recurrence_rule": "FREQ=DAILY", "timezone_name": "UTC", "remind": False})
+        check(med["status"] == "APPLIED", "create medication check-in", med)
+        rid = start.strftime("%Y-%m-%dT%H:%M:00")
+        taken = sync(f"op-med-taken-{suffix}", "checkin.occurrence.done", medication_id,
+                     {"original_recurrence_id": rid, "occurred_at": now.isoformat()})
+        check(taken["status"] == "APPLIED" and taken["entity"]["status"] == "DONE", "medication taken", taken)
+
+        quota_id = f"checkin-smoke-quota-{suffix}"
+        quota = sync(f"op-quota-{suffix}", "checkin.create", quota_id, {
+            "kind": "QUOTA", "title": "Smoke quota", "target_quantity": 20, "unit": "tasks", "unit_effort_seconds": 180,
+            "dtstart_local": start.strftime("%Y-%m-%dT%H:%M"), "recurrence_rule": "FREQ=DAILY", "timezone_name": "UTC",
+            "remind": False})
+        check(quota["status"] == "APPLIED", "create quota", quota)
+        five = sync(f"op-quota-5-{suffix}", "checkin.occurrence.progress", quota_id,
+                    {"original_recurrence_id": rid, "count": 5})
+        check(five["status"] == "APPLIED" and five["entity"]["quantity_done"] == 5
+              and five["entity"]["remaining_effort_minutes"] == 45, "quota progress and remaining time", five)
+        plan = call("GET", "/api/v1/today")["plan"]
+        planned = [b for b in plan.get("quota_blocks", []) if b["template_id"] == quota_id]
+        unfit = f"QUOTA_DOES_NOT_FIT:{quota_id}" in plan["explanations"]
+        check(bool(planned) or unfit or plan["feasibility_status"] != "FEASIBLE", "quota time is planned or explained",
+              {"blocks": planned, "explanations": plan["explanations"]})
+        if planned:
+            check(sum(b["duration_minutes"] for b in planned if b["original_recurrence_id"] == rid) == 45
+                  and all(b["ownership"] == "DERIVED" for b in planned), "only the remaining quota is planned", planned)
+
+        step_id = f"subtask-smoke-{suffix}"
+        step = sync(f"op-step-{suffix}", "subtask.create", step_id, {"task_id": task_id, "title": "Smoke step"})
+        check(step["status"] == "APPLIED", "add checklist step", step)
+        ticked = sync(f"op-step-done-{suffix}", "subtask.complete", step_id, {})
+        check(ticked["status"] == "APPLIED" and ticked["entity"]["done"] is True, "check off step", ticked)
+
+        place_id = f"place-smoke-{suffix}"
+        place = sync(f"op-place-{suffix}", "place.create", place_id, {"display_name": "Smoke place"})
+        check(place["status"] == "APPLIED", "create place", place)
+        reminder = sync(f"op-reminder-{suffix}", "reminder.create", f"reminder-smoke-{suffix}", {
+            "title": "Smoke reminder", "remind_at": (now + timedelta(hours=2)).isoformat()})
+        check(reminder["status"] == "APPLIED", "create reminder", reminder)
+        report["daily_execution"] = {"plan_status": plan["feasibility_status"],
+                                     "quota_planned_minutes": sum(b["duration_minutes"] for b in planned),
+                                     "quota_does_not_fit": unfit}
+
         diagnostics = call("GET", "/api/v1/settings/diagnostics")
         report["diagnostics"] = {k: diagnostics.get(k) for k in ("schema_version", "reminder_worker", "external_capabilities")}
         if args.expect_worker:

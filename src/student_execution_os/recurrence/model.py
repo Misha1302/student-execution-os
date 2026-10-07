@@ -48,12 +48,18 @@ class OverrideReason(StrEnum):
     SOURCE = "SOURCE"
 
 
+WEEKDAY_CODES = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
 @dataclass(frozen=True)
 class RecurrenceRule:
     frequency: RecurrenceFrequency
     interval: int = 1
     count: int | None = None
     until_local: datetime | None = None
+    # WEEKLY only: the local weekdays (0=Monday) an occurrence falls on, at DTSTART's
+    # time of day. ``None`` keeps the original "every N weeks on DTSTART's weekday".
+    by_weekdays: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.interval < 1:
@@ -62,9 +68,22 @@ class RecurrenceRule:
             raise ValidationError("recurrence count must be >= 1")
         if self.until_local is not None and self.until_local.tzinfo is not None:
             raise ValidationError("recurrence UNTIL local value must be naive local civil time")
+        if self.by_weekdays is not None:
+            if self.frequency is not RecurrenceFrequency.WEEKLY:
+                raise ValidationError("BYDAY is supported for WEEKLY rules only")
+            if (not self.by_weekdays or len(set(self.by_weekdays)) != len(self.by_weekdays)
+                    or any(not 0 <= day <= 6 for day in self.by_weekdays)
+                    or tuple(sorted(self.by_weekdays)) != self.by_weekdays):
+                raise ValidationError("BYDAY must list distinct weekdays in Monday-first order")
 
     @classmethod
-    def parse(cls, value: str) -> "RecurrenceRule":
+    def parse(cls, value: str, *, allow_weekdays: bool = False) -> "RecurrenceRule":
+        """Parse the supported RRULE subset.
+
+        ``allow_weekdays`` admits ``BYDAY`` for owners whose expansion uses
+        ``recurrence.expansion`` (check-ins, reminder series). Older owners keep
+        their own step iterators and therefore reject it.
+        """
         if not value or not value.strip():
             raise ValidationError("recurrence_rule is required")
         parts: dict[str, str] = {}
@@ -75,7 +94,8 @@ class RecurrenceRule:
             if not key or key in parts:
                 raise ValidationError("invalid or duplicate RRULE component")
             parts[key] = item
-        unsupported = set(parts) - {"FREQ", "INTERVAL", "COUNT", "UNTIL"}
+        supported = {"FREQ", "INTERVAL", "COUNT", "UNTIL"} | ({"BYDAY"} if allow_weekdays else set())
+        unsupported = set(parts) - supported
         if unsupported:
             raise ValidationError(f"unsupported RRULE components: {','.join(sorted(unsupported))}")
         if "FREQ" not in parts:
@@ -87,7 +107,16 @@ class RecurrenceRule:
         interval = int(parts.get("INTERVAL", "1"))
         count = int(parts["COUNT"]) if "COUNT" in parts else None
         until_local = datetime.fromisoformat(parts["UNTIL"]) if "UNTIL" in parts else None
-        return cls(frequency=frequency, interval=interval, count=count, until_local=until_local)
+        by_weekdays = None
+        if "BYDAY" in parts:
+            codes = parts["BYDAY"].split(",")
+            if any(code not in WEEKDAY_CODES for code in codes):
+                raise ValidationError("BYDAY accepts MO,TU,WE,TH,FR,SA,SU only")
+            by_weekdays = tuple(sorted({WEEKDAY_CODES.index(code) for code in codes}))
+            if len(by_weekdays) != len(codes):
+                raise ValidationError("BYDAY lists a weekday twice")
+        return cls(frequency=frequency, interval=interval, count=count, until_local=until_local,
+                   by_weekdays=by_weekdays)
 
     def canonical(self) -> str:
         items = [f"FREQ={self.frequency.value}"]
@@ -97,6 +126,8 @@ class RecurrenceRule:
             items.append(f"COUNT={self.count}")
         if self.until_local is not None:
             items.append(f"UNTIL={self.until_local.isoformat()}")
+        if self.by_weekdays is not None:
+            items.append("BYDAY=" + ",".join(WEEKDAY_CODES[day] for day in self.by_weekdays))
         return ";".join(items)
 
 

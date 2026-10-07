@@ -33,14 +33,17 @@ from student_execution_os.domain.model import ActorCategory
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository, _iso
 
 from .handlers import (
+    CheckInCommandHandler,
     EventCommandHandler,
     ExecutionCommandHandler,
     NoteCommandHandler,
+    PlaceCommandHandler,
     PlanningCommandHandler,
     ProjectCommandHandler,
     ReminderCommandHandler,
     RoutineCommandHandler,
     SeriesCommandHandler,
+    SubtaskCommandHandler,
     TaskCommandHandler,
 )
 from .handlers.base import Handler
@@ -53,7 +56,13 @@ __all__ = ["APPLIED", "CONFLICT", "NOOP", "OPEN", "REJECTED", "Commands", "Outco
 MAX_BATCH = 100
 _REMINDER_ACTIONS = {"task.start": "START", "execution.start": "START", "task.complete": "DONE", "reminder.snooze": "SNOOZE",
                      "task.defer": "RESCHEDULE", "task.update": "RESCHEDULE", "task.progress": "PROGRESS",
-                     "reminder.done": "DONE", "reminder.ack": "DONE", "reminder.update": "RESCHEDULE"}
+                     "reminder.done": "DONE", "reminder.ack": "DONE", "reminder.update": "RESCHEDULE",
+                     "checkin.occurrence.done": "DONE", "checkin.occurrence.skip": "SKIP",
+                     "checkin.occurrence.progress": "PROGRESS"}
+# Operation prefixes of the entity kinds that keep their delete tombstones in
+# deleted_entities (schema v31+); the entity id of these operations is the owner id.
+_TOMBSTONED = {"checkin.": "CHECKIN", "reminder_series.": "REMINDER_SERIES", "place.": "PLACE",
+               "location_trigger.": "LOCATION_TRIGGER", "subtask.": "SUBTASK"}
 
 
 class Commands:
@@ -80,9 +89,12 @@ class Commands:
         self.events = EventCommandHandler(repo, **context)
         self.series = SeriesCommandHandler(repo, **context, events=self.events)
         self.reminders = ReminderCommandHandler(repo, **context)
+        self.checkins = CheckInCommandHandler(repo, **context)
+        self.places = PlaceCommandHandler(repo, **context)
+        self.subtasks = SubtaskCommandHandler(repo, **context)
         self.handlers: dict[str, Handler] = {}
         for owner in (self.tasks, self.execution, self.projects, self.routines, self.planning, self.notes,
-                      self.events, self.series, self.reminders):
+                      self.events, self.series, self.reminders, self.checkins, self.places, self.subtasks):
             for op_type, handler in owner.operations().items():
                 if op_type in self.handlers:
                     raise RuntimeError(f"operation type {op_type} has two owners")
@@ -94,6 +106,13 @@ class Commands:
             raise ValidationError(f"unknown operation type {op_type}")
         if op_type.startswith("note.") and entity_id and self.notes._notes().is_deleted(self.account_id, entity_id):
             return Outcome(NOOP, {"kind": "NOTE", "id": entity_id, "deleted": True}, "DELETED", "note was deleted")
+        for prefix, kind in _TOMBSTONED.items():
+            if op_type.startswith(prefix) and entity_id and self.repo.connection.execute(
+                    "SELECT 1 FROM deleted_entities WHERE account_id=? AND entity_kind=? AND entity_id=?",
+                    (self.account_id, kind, entity_id)).fetchone() is not None:
+                return Outcome(NOOP, {"kind": kind, "id": entity_id, "deleted": True}, "DELETED", "item was deleted")
+            if op_type.startswith(prefix):
+                return handler(entity_id, payload)
         if op_type.startswith("reminder.") and entity_id and self.reminders._reminders().is_deleted(self.account_id, entity_id):
             return Outcome(NOOP, {"kind": "REMINDER", "id": entity_id, "deleted": True}, "DELETED", "reminder was deleted")
         if entity_id and self.repo.is_deleted_obligation(self.account_id, entity_id):

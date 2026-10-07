@@ -38,22 +38,41 @@ expires entitlements, monetary reconciliation, plan policy, and operator alerts.
 
 ### Progress beyond time
 
-Implemented: counted progress per task (x of y with a unit, percentage; remaining time
-shrinks proportionally). Planned:
+Implemented: counted progress per task; checklists inside Tasks with order, optional
+step effort and done share (ADR 0036), editable through the Assistant (typed
+`CHECKLIST_STEP`, RU/EN phrases without a model); milestone progress and a history by
+completion dates for projects; daily quotas as quantity check-ins whose remaining time at
+the user's pace is reserved by the planner as derived QUOTA blocks (ADR 0034/0036).
+Planned:
 
-- Subtasks / checklists with their own effort and order, progress = done share.
-- Milestone-based progress for long projects (per-milestone deadlines already exist in
-  the domain) and progress history charts.
-- Recurring "N units per day" goals (reading, problem sets) planned as daily quotas.
+- A stored per-day progress series (today reconstructed).
+- Quota time in the week/month outlook (today only the 36-hour plan reserves it); the
+  plan's quota time follows offline quota progress only after the next online plan.
 
 ### Offline and events
 
-- Offline creation of recurring series and offline attachments (today online-only).
-- Event location/travel choices and hybrid selection offline.
+- Offline attachments (online-only: the bytes need a durable owner, retry/restart, limits,
+  orphan cleanup and upload idempotency before they can be queued). Class series,
+  check-ins, reminder series, places, place reminders, an event's place and checklists are
+  offline-first.
+- Choosing one of a hybrid event's location options: only the REST endpoint exists (no
+  screen yet); the screen and its offline sync operation come together. A place for
+  imported class series needs a user layer over the source-owned template.
+
+### Daily execution (open items)
+
+- Current location from place-reminder crossings (opt-in) is not built; the planner uses
+  only the user's statement with an expiry.
+- Check-in history: the detail shows the last 30 days and says so; older days are kept
+  but not browsable yet.
 
 ### Other open items
 
-- Password reset/change and e-mail verification.
-- Per-account rate limits shared across several server processes.
-- Routing (travel time) and OAuth connector providers in production.
+- Password reset/change and e-mail verification (hosted-scale: registration is open, but
+  accounts are login-based and there is no e-mail channel yet).
+- Per-account rate limits shared across several server processes (production runs one
+  api process; per-process limits apply).
+- Routing: the provider boundary and Yandex Distance Matrix adapter exist (ADR 0035);
+  a live-provider check needs a key in production. OAuth connector providers in
+  production.
 - Automated FCM credential rotation.

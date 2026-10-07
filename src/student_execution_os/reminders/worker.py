@@ -23,6 +23,8 @@ from student_execution_os.academic.credentials import academic_feed_cipher_from_
 from student_execution_os.academic.service import refresh_due_academic_schedules
 
 from student_execution_os.reliability.retention import purge_expired
+from student_execution_os.travel.routing import provider_from_environment as routing_from_environment
+from student_execution_os.travel.routing import refresh_due_routes
 
 from .engine import ReminderEngine
 from .push import PushDispatcher, provider_from_environment
@@ -96,6 +98,7 @@ def main() -> int:
         return check_push(args.database, devices=args.check_push_devices)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     provider = provider_from_environment()
+    routing = routing_from_environment()
     engine = ReminderEngine(args.database)
     dispatcher = PushDispatcher(args.database, provider)
     stopping = False
@@ -106,8 +109,8 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    log.info("reminder worker %s started; push provider=%s configured=%s",
-             args.worker_id, provider.name, provider.configured)
+    log.info("reminder worker %s started; push provider=%s configured=%s; routing provider=%s",
+             args.worker_id, provider.name, provider.configured, routing.name)
     next_tick = 0.0
     next_purge = 0.0
     while not stopping:
@@ -127,6 +130,11 @@ def main() -> int:
                     )
                 except Exception:
                     log.exception("academic schedule refresh pass failed")
+                # Travel times for upcoming located events; a slow provider never delays reminders.
+                try:
+                    summary["routing"] = refresh_due_routes(args.database, routing, _now())
+                except Exception:
+                    log.exception("route refresh pass failed")
             summary["dispatch"] = dispatcher.run_once(_now(), args.worker_id)
             if started >= next_purge:
                 # Expired assistant input and old operation logs are deleted, not kept.

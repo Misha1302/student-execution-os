@@ -26,6 +26,8 @@ public class ReminderActionReceiver extends BroadcastReceiver {
     static final String EXTRA_TASK_TITLE = "seos.task_title";
     static final String EXTRA_LABELS = "seos.labels";
     static final String EXTRA_REMINDER_ID = "seos.reminder_id";
+    static final String EXTRA_CHECKIN_TEMPLATE = "seos.checkin_template";
+    static final String EXTRA_CHECKIN_RECURRENCE = "seos.checkin_recurrence";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -38,12 +40,18 @@ public class ReminderActionReceiver extends BroadcastReceiver {
         if (action == null || messageId == null || (taskIds.length == 0 && !standalone)) return;
         ReminderNotifications.Reminder reminder = fromIntent(intent, action, messageId, Arrays.asList(taskIds), reminderId);
         long pressedAt = System.currentTimeMillis();
-        String operations = standalone
+        String operations = reminder.isCheckin()
+                ? ReminderActions.checkinOperations(action, messageId, reminder.checkinTemplateId,
+                        reminder.checkinRecurrenceId, reminderId, pressedAt)
+                : standalone
                 ? ReminderActions.reminderOperations(action, messageId, reminderId, pressedAt)
                 : ReminderActions.operations(action, messageId, reminder.taskIds, pressedAt);
         enqueue(context, "seos-" + messageId + "-" + action, operations, reminder);
 
-        if (ReminderActions.START.equals(action)) {
+        if (ReminderActions.CHECKIN_DONE.equals(action) || ReminderActions.CHECKIN_SKIP.equals(action)) {
+            String key = ReminderActions.CHECKIN_DONE.equals(action) ? "checkin_done" : "checkin_skipped";
+            ReminderNotifications.showInfo(context, reminder, ReminderActions.fill(reminder.label(key), reminder.taskTitle, null));
+        } else if (ReminderActions.START.equals(action)) {
             ReminderNotifications.showStarted(context, reminder);
         } else if (ReminderActions.snoozeMinutes(action) > 0) {
             long until = ReminderActions.snoozeUntil(action, pressedAt);
@@ -69,8 +77,11 @@ public class ReminderActionReceiver extends BroadcastReceiver {
         String tag = intent.getStringExtra(EXTRA_TAG);
         String title = intent.getStringExtra(EXTRA_TASK_TITLE);
         String subject = reminderId != null && !reminderId.isEmpty() ? reminderId : taskIds.get(0);
-        String link = reminderId != null && !reminderId.isEmpty() ? "/reminder/" + reminderId : "/task/" + subject;
+        String template = intent.getStringExtra(EXTRA_CHECKIN_TEMPLATE);
+        String recurrence = intent.getStringExtra(EXTRA_CHECKIN_RECURRENCE);
+        String link = template != null && !template.isEmpty() ? "/checkin/" + template
+                : reminderId != null && !reminderId.isEmpty() ? "/reminder/" + reminderId : "/task/" + subject;
         return new ReminderNotifications.Reminder(messageId, "", "", link, title == null ? "" : title,
-                tag == null ? "seos:" + subject : tag, taskIds, new JSONArray(), labels, reminderId);
+                tag == null ? "seos:" + subject : tag, taskIds, new JSONArray(), labels, reminderId, template, recurrence);
     }
 }

@@ -359,6 +359,16 @@ class PushDispatcher:
             ).fetchone()
             payload.update(reminder_id=row["reminder_id"], delivery=row["delivery"], collapse_key=row["reminder_id"],
                            task_title=reminder["title"] if reminder else row["title"])
+            occurrence = repo.connection.execute(
+                "SELECT o.template_id,o.original_recurrence_id,t.kind FROM checkin_occurrences o JOIN checkin_templates t "
+                "ON t.account_id=o.account_id AND t.id=o.template_id WHERE o.account_id=? AND o.reminder_id=?",
+                (row["account_id"], row["reminder_id"]),
+            ).fetchone()
+            if occurrence is not None:
+                # The buttons of a check-in prompt record the outcome of this occurrence.
+                payload["checkin"] = {"template_id": occurrence["template_id"],
+                                      "original_recurrence_id": occurrence["original_recurrence_id"],
+                                      "kind": occurrence["kind"]}
             if reminder is not None and row["delivery"] in ("ALARM", "PUSH_AND_ALARM"):
                 payload["alarm"] = {"id": reminder["id"], "at": reminder["remind_at"], "title": reminder["title"],
                                     "wake_check": bool(reminder["wake_check"]), "raise_volume": bool(reminder["raise_volume"])}

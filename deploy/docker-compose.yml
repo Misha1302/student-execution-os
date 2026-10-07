@@ -66,6 +66,10 @@ services:
     environment:
       SEOS_REVISION: ${SEOS_REVISION:-unknown}
       SEOS_FCM_SERVICE_ACCOUNT_JSON: ${SEOS_FCM_SERVICE_ACCOUNT_JSON:-}
+      # Travel times (ADR 0035): off unless the routing key file is installed.
+      SEOS_ROUTING_PROVIDER: ${SEOS_ROUTING_PROVIDER:-}
+      SEOS_ROUTING_API_KEY_FILE: /run/secrets/seos/routing-api.key
+      SEOS_ROUTING_DEFAULT_MODE: ${SEOS_ROUTING_DEFAULT_MODE:-TRANSIT}
       SEOS_FCM_SERVICE_ACCOUNT_FILE: /run/secrets/seos/fcm-service-account.json
       SEOS_ACADEMIC_FEED_KEY_FILE: /run/secrets/academic/academic-feed.key
     volumes:

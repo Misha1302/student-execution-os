@@ -12,5 +12,6 @@ from .account import AccountService
 from .assistant import AssistantService
 from .operations import OperationService
 from .commitments import CommitmentQueries
+from .checkins import CheckInQueries
 
-__all__ = ["PlanningQueries", "ExecutionQueries", "TaskService", "ProjectQueries", "EventService", "RoutineQueries", "ConnectorService", "NotificationService", "NoteService", "AccountService", "AssistantService", "OperationService", "CommitmentQueries"]
+__all__ = ["PlanningQueries", "ExecutionQueries", "TaskService", "ProjectQueries", "EventService", "RoutineQueries", "ConnectorService", "NotificationService", "NoteService", "AccountService", "AssistantService", "OperationService", "CommitmentQueries", "CheckInQueries"]

@@ -147,8 +147,23 @@ for progress or effort:
   placements once the hard model is FEASIBLE; each is reported APPLIED / RELAXED /
   UNSATISFIABLE. Rollback script drops the table (and the preferences in it).
 
-Rolling back across v28–v30 is normally an **application** rollback only: v28–v30 add
-tables, and an older build starts on the newer database and ignores them. While it runs,
+## v31 – v33
+
+- **v31** — tracked check-ins and recurring reminders ([ADR 0034](adr/0034-checkins-and-recurring-reminders.md)):
+  `checkin_templates`, `checkin_occurrences` (the outcome owner), `reminder_series`,
+  `reminder_series_occurrences` (series occurrence → standalone reminder), and
+  `deleted_entities` (tombstones for the kinds added from v31 on). Rollback drops them;
+  materialized reminders remain valid one-shot reminders.
+- **v32** — places as a product surface, typed location triggers and routing
+  bookkeeping ([ADR 0035](adr/0035-places-location-triggers-routing.md)): `places.routing_allowed`,
+  `location_triggers`, `route_refresh_state`. Rollback drops the tables and rebuilds
+  `places` without the consent column.
+- **v33** — checklists inside Tasks ([ADR 0036](adr/0036-checklists-quotas-project-progress.md)):
+  `task_subtasks`. Rollback drops it; Tasks are unchanged.
+
+Rolling back across v28–v33 is normally an **application** rollback only: v28–v33 add
+tables (v32 also a column with a default), and an older build starts on the newer
+database and ignores them. While it runs,
 its account export/deletion refuse the tables it cannot classify (422) rather than
 skipping them; the rollback scripts are needed only if those must work on the old build.
 See deploy/README.md, "Rollback".

@@ -2,7 +2,7 @@ import { api, session, restoreSession, refreshHealth, onUnauthenticated } from '
 import { initDeviceStorage } from './js/device-storage.js';
 import { t, fmtTime, getLocale } from './js/i18n.js';
 import { $, esc, icon, toast, errorMessage, closeTopSheet, closeAllSheets, openSheet, setBusy } from './js/ui.js';
-import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, prefGet, onAppLink, alarmsSupported } from './js/native.js';
+import { isNative, onBackButton, exitApp, onResume, hideSplash, setupPush, prefSet, prefGet, onAppLink, alarmsSupported, refreshGeofences } from './js/native.js';
 import { refreshLocalStatus } from './js/health.js';
 import { applyTheme } from './js/theme.js';
 import { peek, load, invalidate, setCacheFirst } from './js/store.js';
@@ -33,12 +33,15 @@ import notes from './js/views/notes.js';
 import note from './js/views/note-detail.js';
 import connect from './js/views/connect.js';
 import groups, { group } from './js/views/groups.js';
+import checkins from './js/views/checkins.js';
+import checkin from './js/views/checkin.js';
+import { CHECKIN_ACTIONS } from './js/checkins.js';
 import { installQuickActions } from './js/quick.js';
 import { openSearch } from './js/search.js';
 import { reminderSheet, syncDeviceAlarms } from './js/reminders.js';
 import { appUpdateService, startUpdateRuntime, UpdateState } from './js/update-service.js';
 
-const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect, groups, group };
+const VIEWS = { today, plan, tasks, task, reminder, notes, note, more, calendar, notifications, evidence, places, projects, project, routines, reflection, settings, welcome, connect, groups, group, checkins, checkin };
 
 let route = { name: 'today', params: [], query: {} };
 let current = null; // { view, data, stale, fetchedAt }
@@ -106,7 +109,7 @@ function updateChrome(view) {
   $('#page-subtitle').textContent = subtitle;
   $('#page-subtitle').hidden = !subtitle;
   document.title = `${view.title()} · ${t('app.name')}`;
-  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id === 'project' ? 'projects' : view.id;
+  const active = view.id === 'task' || view.id === 'reminder' ? 'tasks' : view.id === 'project' ? 'projects' : view.id === 'checkin' ? 'checkins' : view.id;
   document.querySelectorAll('#tabbar [data-nav]').forEach((b) => {
     const on = b.dataset.nav === active || (b.classList.contains('mobile-only') && view.tab === 'more' && b.dataset.nav === 'more');
     b.classList.toggle('active', on);
@@ -300,6 +303,7 @@ function syncSheet() {
 }
 
 const GLOBAL_ACTIONS = {
+  ...CHECKIN_ACTIONS,
   'sync-status': () => syncSheet(),
   compose: () => openCapture(),
   'compose-task': () => openCapture(),
@@ -385,13 +389,14 @@ function handleBack() {
 // Offline-first needs every main screen cached, not only the ones already opened:
 // while online, the core read models are refreshed in the background.
 const PREFETCH = ['/api/v1/today', '/api/v1/tasks', '/api/v1/events', '/api/v1/notes', '/api/v1/plan/agenda?days=7', '/api/v1/calendar',
-  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/reflection?days=7', '/api/v1/notifications/health'];
+  '/api/v1/reminders', '/api/v1/execution/active', '/api/v1/reflection?days=7', '/api/v1/notifications/health',
+  '/api/v1/checkins', '/api/v1/places'];
 let lastPrefetch = 0;
 function prefetch() {
   if (needsLogin() || (isNative() && !session.server) || Date.now() - lastPrefetch < 15000) return;
   lastPrefetch = Date.now();
   // Not fresh: what is already in memory (just loaded, not invalidated) is kept.
-  Promise.all(PREFETCH.map((path) => load(path).catch(() => {}))).then(() => syncDeviceAlarms());
+  Promise.all(PREFETCH.map((path) => load(path).catch(() => {}))).then(() => { syncDeviceAlarms(); refreshGeofences(); });
 }
 
 // Registers this device's FCM token with the signed-in account (no-op in browsers

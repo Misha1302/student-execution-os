@@ -297,12 +297,14 @@ export async function openDeviceSettings(target) {
 // schedule, so clearing that schedule forgets it.
 let lastAlarmList = '';
 
-export async function syncAlarms(alarms, labels = {}) {
+// withCheckinPrompts: the list is the server's full alarm feed (check-in prompts
+// included); without it the phone keeps the check-in alarms it already has.
+export async function syncAlarms(alarms, labels = {}, { withCheckinPrompts = false } = {}) {
   const native = seos();
   if (!native) return { supported: false };
-  const signature = JSON.stringify({ alarms, labels });
+  const signature = JSON.stringify({ alarms, labels, withCheckinPrompts });
   if (signature === lastAlarmList) return { unchanged: true };
-  const result = await native.syncAlarms({ alarms, labels });
+  const result = await native.syncAlarms({ alarms, labels, with_checkin_prompts: withCheckinPrompts });
   lastAlarmList = signature;
   return result;
 }
@@ -341,4 +343,22 @@ export async function clearExecutionNotification() {
   if (!native?.clearExecution) return false;
   await native.clearExecution();
   return true;
+}
+
+// ---- place reminders (Android geofences, schema v32) ------------------------------------
+// The phone fetches the armed triggers itself (with positions) and registers platform
+// proximity alerts; a browser cannot watch location in the background.
+export async function geofenceStatus() {
+  if (!isNative()) return null;
+  try { return await cap().Plugins.SeosNative.geofenceStatus(); } catch { return null; }
+}
+
+export async function refreshGeofences() {
+  if (!isNative()) return;
+  try { await cap().Plugins.SeosNative.refreshGeofences(); } catch { /* older app build */ }
+}
+
+export async function requestLocation(background = false) {
+  if (!isNative()) return null;
+  try { return await cap().Plugins.SeosNative.requestLocation({ background }); } catch { return null; }
 }

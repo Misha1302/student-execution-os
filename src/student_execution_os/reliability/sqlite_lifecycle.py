@@ -231,6 +231,14 @@ _DIRECT_ACCOUNT_TABLES = (
     "series_extra_events",
     "event_details",
     "external_identities",
+    "checkin_templates",
+    "checkin_occurrences",
+    "reminder_series",
+    "reminder_series_occurrences",
+    "deleted_entities",
+    "location_triggers",
+    "route_refresh_state",
+    "task_subtasks",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

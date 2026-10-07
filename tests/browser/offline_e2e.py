@@ -158,6 +158,8 @@ class OfflineEndToEndTest(unittest.TestCase):
     # ---- scenarios ------------------------------------------------------------------
 
     def test_offline_day_create_edit_start_snooze_done_restart_reconnect(self):
+        # Other scenarios share this server: only operations applied during this one count.
+        before = {r["op_id"] for r in self._db("SELECT op_id FROM client_operations WHERE account_id=?", ACCOUNT)}
         page = self._page()
         self._ready(page, "today")
         self._wait_cached(page)
@@ -211,7 +213,8 @@ class OfflineEndToEndTest(unittest.TestCase):
         self.assertEqual([op["type"] for op in sent],
                          ["task.create", "task.update", "execution.start", "task.defer", "task.complete", "event.create"])
         self.assertEqual(len({op["op_id"] for op in sent}), len(sent))
-        applied = self._db("SELECT op_id, status FROM client_operations WHERE account_id=?", ACCOUNT)
+        applied = [r for r in self._db("SELECT op_id, status FROM client_operations WHERE account_id=?", ACCOUNT)
+                   if r["op_id"] not in before]
         self.assertEqual(sorted(r["op_id"] for r in applied), sorted(op["op_id"] for op in sent))
         self.assertTrue(all(r["status"] == "APPLIED" for r in applied))
         tasks = self._task_row("Прочитать главу")
@@ -271,6 +274,37 @@ class OfflineEndToEndTest(unittest.TestCase):
         self._wait_synced(page)
         self.assertEqual(self._task_row("Сдать справку")[0]["lifecycle_status"], "ACTIVE")
         self.assertEqual(self.errors, [])
+        page.close()
+
+
+    def test_offline_class_series_survives_restart_and_is_created_once(self):
+        page = self._page("#/calendar")
+        self._ready(page, "calendar")
+        page.wait_for_timeout(700)  # let the calendar read model reach the device cache
+        self.online = False
+        page.locator('[data-action="cal-new-recurring"]').click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.locator('[data-f="title"]').fill("Линейная алгебра")
+        sheet.locator('[data-f="start"]').fill("2026-09-29T12:00")
+        sheet.locator('[data-f="location"]').fill("R301")
+        sheet.locator("[data-save]").click()
+        page.locator("dialog.sheet[open]").wait_for(state="detached")
+        self.assertEqual(self._pending(page), 1)
+        # The app is closed and opened again with no network: the series is still there.
+        page.close()
+        page = self._page("#/calendar")
+        self._ready(page, "calendar")
+        page.locator('[data-action="cal-item"]', has_text="Линейная алгебра").first.wait_for()
+        self.assertEqual(self._db("SELECT count(*) AS n FROM recurring_templates")[0]["n"], 0)
+        self.online = True
+        page.evaluate("window.dispatchEvent(new Event('online'))")
+        self._wait_synced(page)
+        rows = self._db("SELECT title, location_text FROM recurring_templates")
+        self.assertEqual([tuple(r) for r in rows], [("Линейная алгебра", "R301")])
+        creates = [op for r in self.sync_requests for op in r["operations"] if op["type"] == "series.create"]
+        self.assertGreaterEqual(len(creates), 1)
+        self.assertEqual(len({op["op_id"] for op in creates}), 1, "one operation, however often it was sent")
+        self.assertEqual([e for e in self.errors if "internetdisconnected" not in e and "Failed to fetch" not in e], [])
         page.close()
 
 
