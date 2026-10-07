@@ -14,6 +14,7 @@
 
 import { projectCheckins, projectCheckinDetail, projectTodayCheckins, applySeriesOccurrenceToReminders } from './checkin-overlay.js';
 import { projectPlaces } from './place-overlay.js';
+import { projectSubtasks, projectChecklistSummaries } from './subtask-overlay.js';
 
 const OPEN = new Set(['ACTIVE', 'DRAFT']);
 
@@ -969,7 +970,8 @@ export function project(path, data, items, { fetchedAt = 0, now = new Date() } =
   if (!ops.length || data == null) return data;
   const route = String(path).split('?')[0];
   const base = clone(data);
-  if (route === '/api/v1/tasks') return projectTasks(base, ops);
+  if (route === '/api/v1/tasks') return projectChecklistSummaries(projectTasks(base, ops), ops);
+  if (/^\/api\/v1\/tasks\/[^/]+\/subtasks$/.test(route)) return projectSubtasks(base, ops);
   if (route === '/api/v1/events') return projectEvents(base, eventOps(ops));
   if (route === '/api/v1/notes') return projectNotes(base, noteOps(ops));
   if (route.startsWith('/api/v1/notes/')) {

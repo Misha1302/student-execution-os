@@ -12,6 +12,7 @@ from student_execution_os.persistence.product import SQLiteAttachmentRepository,
 from student_execution_os.reminders import ReminderStore
 from student_execution_os.planning import PlanningService, SQLitePlanningStateSource
 from student_execution_os.reconciliation import SQLiteReconciliationRepository
+from student_execution_os.subtasks import SQLiteSubtaskRepository
 from student_execution_os.sync.commands import SyncService
 
 from .common import _dt, _cutoff
@@ -33,14 +34,15 @@ class TaskService(ApplicationService):
                 risks = {}
             reminders = ReminderStore(repo).pending_reminders(self.account_id)
             counts = extras.progress_counts(repo, self.account_id)
+            checklists = SQLiteSubtaskRepository(repo).summaries(self.account_id)
             return [
-                self._task(
+                {**self._task(
                     task,
                     risk=risks.get(task.obligation.id),
                     effective=reconciliation.get_effective_cutoff(self.account_id, task.obligation.id),
                     remind_at=reminders.get(task.obligation.id),
                     count=counts.get(task.obligation.id),
-                )
+                ), "checklist": checklists.get(task.obligation.id)}
                 for task in source.list_tasks(self.account_id)
             ]
 
@@ -48,8 +50,19 @@ class TaskService(ApplicationService):
         """One task in any lifecycle state (completed/cancelled tasks stay openable)."""
         for item in self.tasks():
             if item["id"] == task_id:
-                return item
+                with self._repo() as repo:
+                    # The checklist steps live with the task (offline-cached with it).
+                    return {**item, "subtasks": SQLiteSubtaskRepository(repo).for_task(self.account_id, task_id)}
         raise EntityNotFound("task not found")
+
+    def subtasks(self, task_id: str) -> dict[str, Any]:
+        """The checklist of one task (cached per task on the device, so it works offline)."""
+        with self._repo() as repo:
+            row = repo.connection.execute("SELECT kind FROM obligations WHERE account_id=? AND id=?",
+                                          (self.account_id, task_id)).fetchone()
+            if row is None or row["kind"] != "TASK":
+                raise EntityNotFound("task not found")
+            return {"task_id": task_id, "subtasks": SQLiteSubtaskRepository(repo).for_task(self.account_id, task_id)}
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_effort = payload.get("estimated_total_effort_minutes")

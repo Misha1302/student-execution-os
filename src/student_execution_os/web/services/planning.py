@@ -188,15 +188,17 @@ class PlanningQueries(ApplicationService):
             reconciliation = SQLiteReconciliationRepository(repo)
             reminders = ReminderStore(repo).pending_reminders(self.account_id)
             counts = extras.progress_counts(repo, self.account_id)
+            from student_execution_os.subtasks import SQLiteSubtaskRepository
+            checklists = SQLiteSubtaskRepository(repo).summaries(self.account_id)
             tasks = []
             for task in snapshot.tasks:
-                tasks.append(self._task(
+                tasks.append({**self._task(
                     task,
                     risk=risks.get(task.obligation.id),
                     effective=reconciliation.get_effective_cutoff(self.account_id, task.obligation.id),
                     remind_at=reminders.get(task.obligation.id),
                     count=counts.get(task.obligation.id),
-                ))
+                ), "checklist": checklists.get(task.obligation.id)})
             events = self._events_payload(repo, snapshot.events)
             transitions = []
             travel_repo = SQLiteTravelRepository(repo)
@@ -326,6 +328,12 @@ class PlanningQueries(ApplicationService):
                 "occupied_minutes": occupied_minutes,
                 "safe_reserve_minutes": max(0, capacity_minutes - occupied_minutes),
             }
+            # Daily quotas are not placed as work blocks; with a user-given pace their
+            # remaining time is reserved from the free time here, the rest stays unknown.
+            quota_known = int(checkins["quota_demand"]["known_minutes"])
+            day_capacity["quota_known_minutes"] = quota_known
+            day_capacity["quota_unknown_count"] = int(checkins["quota_demand"]["unknown_effort_count"])
+            day_capacity["safe_reserve_after_quotas_minutes"] = max(0, day_capacity["safe_reserve_minutes"] - quota_known)
             return {
                 "now": _jsonify(self._now()),
                 "local_date": local_date,

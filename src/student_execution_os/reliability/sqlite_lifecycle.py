@@ -238,6 +238,7 @@ _DIRECT_ACCOUNT_TABLES = (
     "deleted_entities",
     "location_triggers",
     "route_refresh_state",
+    "task_subtasks",
 )
 
 _CHILD_TABLE_QUERIES: dict[str, str] = {

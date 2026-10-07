@@ -80,6 +80,21 @@ function addMilestone(project) {
   });
 }
 
+// Progress by the dates work was actually finished (no interpolated points).
+function historyChart(points) {
+  if (points.length < 2) return '';
+  const width = 280;
+  const height = 56;
+  const first = new Date(points[0].date).getTime();
+  const last = new Date(points[points.length - 1].date).getTime();
+  const x = (p) => (last === first ? width : ((new Date(p.date).getTime() - first) / (last - first)) * width);
+  const y = (p) => height - (p.percent / 100) * height;
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(p).toFixed(1)}`).join(' ');
+  return `<figure class="progress-history" aria-label="${esc(t('project.historyAria', { from: points[0].percent, to: points[points.length - 1].percent }))}">
+    <svg viewBox="0 0 ${width} ${height}" role="img" preserveAspectRatio="none"><path d="${path}" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+    <figcaption class="muted">${esc(t('project.historyCaption', { from: fmtDateTime(points[0].date), n: points[points.length - 1].percent }))}</figcaption></figure>`;
+}
+
 export default {
   id: 'project',
   tab: 'more',
@@ -100,6 +115,9 @@ export default {
         ${chip(t('project.percent', { n: progress.percent || 0 }), 'accent')}</div>
       <div class="progress-row"><span class="progress"><span data-w="${Number(progress.percent || 0)}"></span></span>
         <small>${esc(t('project.tasksProgress', { done: progress.tasks_completed || 0, total: progress.tasks_total || 0 }))}</small></div>
+      <p class="muted">${esc(t(`project.basis.${progress.basis || 'EMPTY'}`))}</p>
+      ${progress.milestones_total ? `<p class="muted">${esc(t('project.milestonesProgress', { done: progress.milestones_done, total: progress.milestones_total }))}${progress.milestones_overdue ? ` · ${esc(t('project.milestonesOverdue', { n: progress.milestones_overdue }))}` : ''}${progress.next_milestone ? ` · ${esc(t('project.nextMilestone', { title: progress.next_milestone.title, when: fmtDateTime(progress.next_milestone.marker_at) }))}` : ''}</p>` : ''}
+      ${historyChart(project.progress_history || [])}
     </section>
 
     <section class="card">

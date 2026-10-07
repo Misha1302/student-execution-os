@@ -441,6 +441,10 @@ def create_app(
         return service.tasks.saved_views()
 
     # Declared after /tasks/saved-views so that literal path keeps precedence.
+    @app.get("/api/v1/tasks/{task_id}/subtasks")
+    async def task_subtasks(task_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
+        return service.tasks.subtasks(task_id)
+
     @app.get("/api/v1/tasks/{task_id}")
     async def get_task(task_id: str, service: UiService = Depends(current_service)) -> dict[str, Any]:
         return service.tasks.task(task_id)

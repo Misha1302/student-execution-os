@@ -9,8 +9,9 @@ from .projects import ProjectCommandHandler
 from .reminders import ReminderCommandHandler
 from .routines import RoutineCommandHandler
 from .series import SeriesCommandHandler
+from .subtasks import SubtaskCommandHandler
 from .tasks import TaskCommandHandler
 
 __all__ = ["CheckInCommandHandler", "EventCommandHandler", "ExecutionCommandHandler", "NoteCommandHandler", "PlaceCommandHandler", "PlanningCommandHandler",
-           "ProjectCommandHandler", "ReminderCommandHandler", "RoutineCommandHandler", "SeriesCommandHandler",
+           "ProjectCommandHandler", "ReminderCommandHandler", "RoutineCommandHandler", "SeriesCommandHandler", "SubtaskCommandHandler",
            "TaskCommandHandler"]

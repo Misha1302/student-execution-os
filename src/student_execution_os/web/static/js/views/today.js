@@ -356,6 +356,8 @@ export default {
       </section>` : ''}
 
       ${todayCheckinsSection(data.checkins || [])}
+      ${data.day_capacity?.quota_known_minutes || data.day_capacity?.quota_unknown_count ? `<p class="help pad" data-quota-demand>${esc(t('checkin.quotaDemand', {
+        known: fmtDuration(data.day_capacity.quota_known_minutes || 0), free: fmtDuration(data.day_capacity.safe_reserve_after_quotas_minutes ?? 0) }))}${data.day_capacity.quota_unknown_count ? ` ${esc(t('checkin.quotaUnknown', { n: data.day_capacity.quota_unknown_count }))}` : ''}</p>` : ''}
 
       ${upcoming.length ? `<section class="section" data-soon>
         ${sectionHead(t('today.soon'))}
