@@ -38,22 +38,35 @@ expires entitlements, monetary reconciliation, plan policy, and operator alerts.
 
 ### Progress beyond time
 
-Implemented: counted progress per task (x of y with a unit, percentage; remaining time
-shrinks proportionally). Planned:
+Implemented: counted progress per task; checklists inside Tasks with order, optional
+step effort and done share (ADR 0036); milestone progress and a history by completion
+dates for projects; daily quotas as quantity check-ins whose user-given pace is reserved
+from the day's free time (ADR 0034/0036). Planned:
 
-- Subtasks / checklists with their own effort and order, progress = done share.
-- Milestone-based progress for long projects (per-milestone deadlines already exist in
-  the domain) and progress history charts.
-- Recurring "N units per day" goals (reading, problem sets) planned as daily quotas.
+- Daily quotas placed as plan blocks (today they are reported next to capacity, not
+  scheduled), and a stored per-day progress series (today reconstructed).
+- Checklist editing through the Assistant.
 
 ### Offline and events
 
-- Offline creation of recurring series and offline attachments (today online-only).
-- Event location/travel choices and hybrid selection offline.
+- Offline creation of class series (`series.create`) and offline attachments (today
+  online-only). Check-ins, reminder series, places, place reminders, an event's place
+  and checklists are offline-first (v31–v33).
+- Hybrid event location-option selection offline (today an online request); a place for
+  imported class series (source-owned templates).
+
+### Daily execution (open items)
+
+- An alarm dismissal on a medication prompt is not an outcome by design; an optional
+  «Принял» on the alarm screen is not built yet.
+- Current location from place-reminder crossings (opt-in) is not built; the planner uses
+  only the user's statement with an expiry.
 
 ### Other open items
 
 - Password reset/change and e-mail verification.
 - Per-account rate limits shared across several server processes.
-- Routing (travel time) and OAuth connector providers in production.
+- Routing: the provider boundary and Yandex Distance Matrix adapter exist (ADR 0035);
+  a live-provider check needs a key in production. OAuth connector providers in
+  production.
 - Automated FCM credential rotation.

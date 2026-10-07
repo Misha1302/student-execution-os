@@ -57,7 +57,7 @@ say / type / import something
 
 ## Current status
 
-Schema **v30** (`persistence/sqlite.py::SCHEMA_VERSION`, migrations in
+Schema **v33** (`persistence/sqlite.py::SCHEMA_VERSION`, migrations in
 `src/student_execution_os/persistence/migrations/`). What each version added is in
 [docs/SCHEMA_HISTORY.md](docs/SCHEMA_HISTORY.md).
 
@@ -65,6 +65,18 @@ Implemented and covered by the test suites:
 
 - canonical Tasks, Events, Reminders, Notes, Projects, recurring work and class series,
   with tri-state feasibility, derived plans, actual Execution Sessions and reflection;
+- daily execution beyond Tasks (ADR 0034): tracked **check-ins** (habits, medication
+  adherence «Принял / Не принял», daily quotas «7 из 20 задач») whose occurrence owns the
+  outcome while reminders only draw attention (snooze keeps it open; an unanswered day is
+  recorded «Не отмечено» by an explicit window, never a medical claim), and **recurring
+  reminders** («каждый вечер в 22:30 вынести мусор») that are not Tasks;
+- **places** as a product surface (ADR 0035): create/edit/delete, a place on an event,
+  «где я сейчас» with an expiry, manual travel times and an optional routing provider
+  (Yandex Distance Matrix adapter) feeding the planner's TravelEstimate input; typed
+  **place reminders** («когда приду домой — напомни…») fired by native Android
+  proximity alerts; exact addresses/positions never reach the Assistant;
+- **checklists** inside Tasks and project progress from real data — milestones and a
+  history by completion dates (ADR 0036);
 - offline-first clients (browser and Android) with a durable operation queue and
   server-side exactly-once replay (`/api/v1/sync`);
 - external sources (academic iCalendar schedules, groups) on the SOURCE/USER model,
@@ -98,6 +110,9 @@ Known limits:
   WebView storage by design. See [mobile/README.md](mobile/README.md).
 - Undo covers Assistant-originated creates, updates, reschedules and snoozes, not
   every manual operation (manual operations have their own short-lived undo).
+- The routing adapter is verified with contract tests against a mocked transport, not
+  against the live provider (it needs a key); place reminders need the Android app with
+  location access «всегда» (a browser cannot watch location in the background).
 
 ## Architecture boundaries
 
@@ -226,6 +241,9 @@ Architecture decisions:
 - [ADR 0031 — Connecting ChatGPT/Codex: OAuth consent that issues capability grants (schema v26)](docs/adr/0031-oauth-connect-chatgpt-codex.md)
 - [ADR 0032 — Collaborative academic groups on the SOURCE/USER model (schema v27)](docs/adr/0032-collaborative-groups.md)
 - [ADR 0033 — Explicit reminders follow source-driven changes](docs/adr/0033-reminders-follow-source-changes.md)
+- [ADR 0034 — Tracked check-ins and recurring reminders are their own owners (schema v31)](docs/adr/0034-checkins-and-recurring-reminders.md)
+- [ADR 0035 — Places, location triggers and the routing provider (schema v32)](docs/adr/0035-places-location-triggers-routing.md)
+- [ADR 0036 — Checklists, quotas in the day budget, progress from real data (schema v33)](docs/adr/0036-checklists-quotas-project-progress.md)
 
 ## License
 

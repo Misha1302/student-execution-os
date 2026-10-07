@@ -111,6 +111,22 @@ console, not committed) exists at `npm run sync` time: the sync script then writ
 `PushNotifications.register()` (which would crash the native bridge without Firebase)
 and runs with in-app reminders only.
 
+Check-in prompts (ADR 0034) use the same path: «Принял / Не принял» queue
+`checkin.occurrence.done/skip` for exactly that occurrence with the press time, and
+«Через 15 минут» only snoozes the prompt.
+
+Place reminders (ADR 0035, `app/src/main/java/.../geofence`) use the platform's own
+`LocationManager` proximity alerts — no Google Play services dependency. The phone fetches
+its armed triggers (with the places' points) from `/api/v1/location-triggers/armed`,
+registers them, restores them after a reboot or an app update, refreshes them on start and
+on the alarm-sync push, and clears them on sign-out or an account switch. A crossing in the
+trigger's direction shows a notification at once (offline too) and queues
+`location_trigger.fire` (op id fixed per trigger, transition and ten-minute bucket).
+Location access is requested only when a place reminder is created — while in use, then
+«всегда» (Android 10+); without «всегда» the Places screen says alerts work only while the
+app is in use. `GeofenceDeviceTest` checks a mock-GPS crossing on an emulator
+(`./gradlew connectedDebugAndroidTest`).
+
 Reminder notifications are rendered by the app itself (`app/src/main/java/.../reminders`):
 a data-only FCM message becomes a notification with Start / Done / Snooze buttons that run in
 the background as `/api/v1/sync` operations queued in WorkManager (retried offline, applied

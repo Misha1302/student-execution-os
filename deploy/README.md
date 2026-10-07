@@ -598,7 +598,9 @@ curl -fsS https://seos.185-102-139-43.sslip.io/api/v1/health   # previous revisi
 
 Data written by the newer build is kept (and used again on roll-forward, which needs no
 migration). While the older build runs, the newer features are inactive (for v30: planning
-preferences are kept but not applied), and **account export and account deletion answer
+preferences are kept but not applied; for v31–v33: check-ins, reminder series, place
+reminders, routing state and checklists are kept but not shown — reminders already
+materialized from a series or a check-in still fire as one-shot reminders), and **account export and account deletion answer
 `422 VALIDATION_ERROR` ("data lifecycle contract does not classify database tables")** —
 the lifecycle guard refuses to export or delete an account incompletely. Everything else
 (sign-in, today/plan, sync with exactly-once replay, reminders, backups) works. Verified for
@@ -609,8 +611,10 @@ keeps the contract.
 Stop the api and worker, take a verified backup, then in the api image apply
 `src/student_execution_os/persistence/rollback/<NNN>_*_down.sql` for every version newer than
 the old build, newest first (v30 → v29: `030`; v30 → v27: `030`, `029`, `028`), and start the
-old release. This **deletes** those tables' rows: planning preferences (030), Assistant undo
-history (029), sign-in rate-limit windows (028). A later roll-forward recreates them empty.
+old release. This **deletes** those tables' rows: checklists (033), place reminders and
+routing state, plus the per-place routing consent column (032), check-ins with their
+history, reminder series and v31+ delete tombstones (031), planning preferences (030),
+Assistant undo history (029), sign-in rate-limit windows (028). A later roll-forward recreates them empty.
 Never restore an older backup over newer legitimate writes to roll back; `restore` of a
 newer-schema backup into an older build is refused by design.
 
