@@ -24,7 +24,7 @@ from student_execution_os.persistence.metrics import SQLiteOperationalMetrics
 
 from .model import AgentCommand, AuthenticatedPrincipal
 from .commands import parse_command, reschedule_change
-from . import checkin_actions, place_actions
+from . import checkin_actions, checklist_actions, place_actions
 from .location_phrases import parse_location_trigger, parse_place_create
 from .disambiguation import judge
 from .nlparse import parse_task
@@ -92,6 +92,13 @@ class DeterministicAssistantParser:
         outcome = checkin_actions.parse_outcome(clean, list(context.get("checkins") or []))
         if outcome is not None:
             return [outcome]
+        step = checklist_actions.parse(clean, list(context.get("obligations") or []))
+        if step is not None:
+            return [step]
+        reopen = checklist_actions.follow_up(clean, context.get("assistant_session"),  # type: ignore[arg-type]
+                                             list(context.get("obligations") or []))
+        if reopen is not None:
+            return [reopen]
         place = parse_place_create(clean)
         if place is not None:
             return [place_actions.place_action(place)]
@@ -206,6 +213,7 @@ _PAYLOAD_KEYS = {
     AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: {"when", "target_local"} | checkin_actions.OCCURRENCE_FIELDS | _TARGET,
     AgentCommand.CREATE_PLACE.value: set(place_actions.CREATE_PLACE_FIELDS),
     AgentCommand.CREATE_LOCATION_TRIGGER.value: set(place_actions.CREATE_TRIGGER_FIELDS),
+    AgentCommand.CHECKLIST_STEP.value: set(checklist_actions.FIELDS) | _TARGET,
 }
 _REQUIRED = {
     AgentCommand.CREATE_NOTE.value: ("content",),
@@ -223,6 +231,7 @@ _REQUIRED = {
     AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: ("when",),
     AgentCommand.CREATE_PLACE.value: ("display_name",),
     AgentCommand.CREATE_LOCATION_TRIGGER.value: ("title", "transition"),
+    AgentCommand.CHECKLIST_STEP.value: ("change",),
 }
 # Which kinds of item each command may address ("REMINDER" = a standalone reminder).
 _TARGET_KINDS = {
@@ -239,6 +248,7 @@ _TARGET_KINDS = {
     AgentCommand.CHECKIN_OUTCOME.value: {"CHECKIN"},
     AgentCommand.CHECKIN_PROGRESS.value: {"CHECKIN"},
     AgentCommand.MOVE_CHECKIN_OCCURRENCE.value: {"CHECKIN"},
+    AgentCommand.CHECKLIST_STEP.value: {"TASK"},
 }
 
 
@@ -406,6 +416,8 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
         place_actions.validate(command, payload, unresolved, canonical, account_id)
     if command == AgentCommand.CREATE_EVENT.value:
         place_actions.validate_event_location(payload, canonical, account_id)
+    if command == AgentCommand.CHECKLIST_STEP.value:
+        checklist_actions.validate(payload, unresolved)
     expected = raw["expected_version"]
     if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
         raise ValidationError("assistant expected_version must be an integer")
@@ -418,6 +430,9 @@ def validate_proposal(raw: object, canonical: SQLiteCanonicalRepository, account
     if command in checkin_actions.TARGETED and not _target_unresolved(unresolved):
         # The server, not the model, decides which day's occurrence is meant.
         resolution = checkin_actions.resolve_occurrence(canonical, account_id, command, payload)
+    if command == AgentCommand.CHECKLIST_STEP.value and not _target_unresolved(unresolved):
+        # ... and which step of the task: a reference that fits several stays for the user.
+        resolution = checklist_actions.resolve_step(canonical, account_id, payload, unresolved)
     if command == AgentCommand.RESCHEDULE.value and payload.get("temporal_transform") is not None and not _target_unresolved(unresolved):
         target = target_of(canonical, account_id, payload)
         assert target is not None
@@ -578,12 +593,18 @@ class SQLiteAssistantService:
                 zone = requested  # the device's zone: "в 18:00" means 18:00 where the user is
             except (ZoneInfoNotFoundError, ValueError):
                 pass
+        # Open tasks' checklist steps (titles and state only), so a step can be named.
+        checklists = checklist_actions.context_steps(
+            self.canonical, self.principal.account_id,
+            [row["id"] for row in rows if row["kind"] == "TASK" and row["lifecycle_status"] in {"ACTIVE", "DRAFT"}])
         context: dict[str, object] = {
             "now": _iso(self.canonical.clock.now()), "timezone": zone,
             "obligations": [{"id": row["id"], "kind": row["kind"], "title": row["title"], "version": int(row["version"]),
                              "status": row["lifecycle_status"],
                              **({"due": row["cutoff_at"]} if row["cutoff_at"] else {}),
-                             **({"starts_at": row["starts_at"]} if row["starts_at"] else {})} for row in rows],
+                             **({"starts_at": row["starts_at"]} if row["starts_at"] else {}),
+                             **({"checklist": checklists[row["id"]]} if row["id"] in checklists else {})}
+                            for row in rows],
             "reminders": [{"id": row["id"], "kind": "REMINDER", "title": row["title"], "version": int(row["version"]),
                            "status": row["status"], "remind_at": row["remind_at"]} for row in reminder_rows],
             # Check-ins by name and today's open days (their prompts are not separate reminders).
@@ -1555,6 +1576,8 @@ class SQLiteAssistantService:
         fields = {key: value for key, value in data.items() if key not in _TARGET and key != _RELATIVE}
         if command in {AgentCommand.CREATE_PLACE, AgentCommand.CREATE_LOCATION_TRIGGER}:
             return place_actions.operation(command.value, data, lambda kind: f"{kind}-{uuid4()}")
+        if command is AgentCommand.CHECKLIST_STEP:
+            return checklist_actions.operation(data, lambda kind: f"{kind}-{uuid4()}")
         if command.value in checkin_actions.TARGETED or command in {AgentCommand.CREATE_CHECKIN,
                                                                      AgentCommand.CREATE_REMINDER_SERIES}:
             return checkin_actions.operation(command.value, data, lambda kind: f"{kind}-{uuid4()}")
@@ -1604,6 +1627,8 @@ class SQLiteAssistantService:
         kind, entity_id, _version = target
         if kind == "CHECKIN":
             return None  # an outcome is undone with «снять отметку», not by the Assistant's undo
+        if command is AgentCommand.CHECKLIST_STEP:
+            return checklist_actions.inverse(self.canonical, self.principal.account_id, data)
         requested = {key for key in data if key not in _TARGET}
         if command in {AgentCommand.RESCHEDULE, AgentCommand.SNOOZE}:
             if kind == "EVENT":
@@ -1681,7 +1706,7 @@ class SQLiteAssistantService:
                        "checkin": ("checkin_templates", "id"), "reminder_series": ("reminder_series", "id"),
                        "place": ("places", "id"), "location_trigger": ("location_triggers", "id"),
                        "constraint": ("user_time_constraints", "id"),
-                       "preference": ("planning_preferences", "id")}
+                       "preference": ("planning_preferences", "id"), "subtask": ("task_subtasks", "id")}
 
     def _current_version(self, operation: str, entity_id: str) -> int | None:
         table, key = self._VERSION_TABLES.get(operation.split(".", 1)[0], ("obligations", "id"))
@@ -1704,6 +1729,8 @@ class SQLiteAssistantService:
             AgentCommand.CREATE_PLACE.value: "place.delete",
             AgentCommand.CREATE_LOCATION_TRIGGER.value: "location_trigger.delete",
         }.get(action["command"])
+        if action["command"] == AgentCommand.CHECKLIST_STEP.value and action["payload"].get("change") == "ADD":
+            operation = "subtask.delete"
         return None if operation is None else {"operation": operation, "payload": {}}
 
     def _undo_latest(self, expected_apply: object = None) -> dict[str, Any]:

@@ -26,7 +26,11 @@ const KINDS = {
   RESCHEDULE: ['TASK', 'EVENT', 'REMINDER'], SNOOZE: ['TASK', 'REMINDER'], LOG_PROGRESS: ['TASK'],
   UPDATE_TASK: ['TASK'], UPDATE_EVENT: ['EVENT'], UPDATE_REMINDER: ['REMINDER'], REFINE_TASK: ['TASK'],
   CHECKIN_OUTCOME: ['CHECKIN'], CHECKIN_PROGRESS: ['CHECKIN'], MOVE_CHECKIN_OCCURRENCE: ['CHECKIN'],
+  CHECKLIST_STEP: ['TASK'],
 };
+// Deleting a checklist step is destructive like closing a task: it asks for confirmation.
+const isDestructive = (action) => DESTRUCTIVE.has(action.command)
+  || (action.command === 'CHECKLIST_STEP' && action.payload?.change === 'DELETE');
 // Recurring creations: a check-in (outcome recorded) or a reminder series (attention only).
 const RECURRING = new Set(['CREATE_CHECKIN', 'CREATE_REMINDER_SERIES']);
 
@@ -50,7 +54,7 @@ export const isCommand = (action) => Boolean(KINDS[action?.command]);
 const PLACE_COMMANDS = new Set(['CREATE_PLACE', 'CREATE_LOCATION_TRIGGER']);
 const PLAN_ONLY = new Set(['UNDO_LAST', 'CREATE_TIME_CONSTRAINT', 'CREATE_PLANNING_PREFERENCE', ...RECURRING, ...PLACE_COMMANDS]);
 // What the server can revert for [Отменить] (it stores an inverse for these).
-const REVERSIBLE = new Set(['RESCHEDULE', 'SNOOZE', 'UPDATE_TASK', 'UPDATE_EVENT', 'UPDATE_REMINDER',
+const REVERSIBLE = new Set(['CHECKLIST_STEP', 'RESCHEDULE', 'SNOOZE', 'UPDATE_TASK', 'UPDATE_EVENT', 'UPDATE_REMINDER',
   'CREATE_TASK', 'CREATE_EVENT', 'CREATE_REMINDER', 'CREATE_NOTE', 'CREATE_TIME_CONSTRAINT',
   'CREATE_PLANNING_PREFERENCE', 'CREATE_CHECKIN', 'CREATE_REMINDER_SERIES', 'CREATE_PLACE', 'CREATE_LOCATION_TRIGGER']);
 // A time the server derives from an earlier action («после неё») — known once that
@@ -81,6 +85,11 @@ function targetOf(action, picks, index) {
   return knownItems().find((x) => x.id === id && (kindOf ? x.kind === kindOf : !['REMINDER', 'CHECKIN'].includes(x.kind)))
     || (kindOf === 'CHECKIN' ? { id, kind: 'CHECKIN', title: action.resolution?.title || action.payload.target_text || '', version: action.expected_version } : null);
 }
+
+// Which checklist step the user picked when the server found several that fit.
+const stepPicks = new Map();
+const stepPickTitle = (action) => (action.resolution?.step_candidates || []).find((c) => c.id === stepPicks.get(action.id))?.title;
+const needsStep = (action) => action.command === 'CHECKLIST_STEP' && (action.unresolved_fields || []).includes('subtask_id');
 
 // The words the user used for the item (the server parser keeps them in obligation_id
 // while the target is unresolved).
@@ -117,6 +126,9 @@ function describe(action, item) {
       return t(p.outcome === 'SKIPPED' ? 'cmd.checkinSkipped' : action.resolution?.checkin_kind === 'MEDICATION' ? 'cmd.checkinTaken' : 'cmd.checkinDone', { title, time: at });
     }
     case 'CHECKIN_PROGRESS': return t('cmd.checkinProgress', { title, n: p.count });
+    case 'CHECKLIST_STEP': return t(`cmd.checklist.${p.change || 'ADD'}`, {
+      task: title, step: action.resolution?.step?.title || stepPickTitle(action) || p.step_text || '…', title: p.title || '',
+      d: p.effort_minutes ? fmtDuration(p.effort_minutes) : t('card.effort.unknown') });
     case 'CREATE_PLACE': return p.address ? t('cmd.createPlaceAddress', { name: p.display_name, address: p.address }) : t('cmd.createPlace', { name: p.display_name });
     case 'CREATE_LOCATION_TRIGGER': {
       const place = cachedPlaces().find((x) => x.id === p.place_id);
@@ -232,11 +244,13 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
       const item = targetOf(action, picks, index);
       const choosing = !item && isCommand(action);
       const missingWhen = (action.unresolved_fields || []).includes('when');
-      return `<li class="command-row ${DESTRUCTIVE.has(action.command) ? 'destructive' : ''}">
+      return `<li class="command-row ${isDestructive(action) ? 'destructive' : ''}">
         <span>${esc(describe(action, item))}</span>
         ${choosing ? `<div class="command-pick"><small class="help">${esc(t('cmd.which'))}</small>
           <div class="chip-row">${candidatesFor(action).map((x) => `<button type="button" class="chip-toggle" data-pick="${index}" data-kind="${esc(x.kind)}" data-pid="${esc(x.id)}">${esc(x.when ? `${x.title} · ${fmtDateTime(x.when)}` : x.title)}</button>`).join('') || `<small class="muted">${esc(t('cmd.nothingFits'))}</small>`}</div></div>` : ''}
         ${missingWhen ? `<small class="help">${esc(t('cmd.whenMissing'))}</small>` : ''}
+        ${needsStep(action) ? `<div class="command-pick"><small class="help">${esc(t('cmd.whichStep'))}</small>
+          <div class="chip-row">${(action.resolution?.step_candidates || []).map((c) => `<button type="button" class="chip-toggle ${stepPicks.get(action.id) === c.id ? 'on' : ''}" data-step-pick="${esc(action.id)}" data-sid="${esc(c.id)}">${esc(c.title)}${c.done ? ' ✓' : ''}</button>`).join('')}</div></div>` : ''}
         ${action.command === 'CREATE_LOCATION_TRIGGER' && (action.unresolved_fields || []).includes('place_id') ? `<div class="command-pick"><small class="help">${esc(t('cmd.whichPlace'))}</small>
           <div class="chip-row">${cachedPlaces().map((x) => `<button type="button" class="chip-toggle ${placePicks[index] === x.id ? 'on' : ''}" data-place-pick="${index}" data-pid="${esc(x.id)}">${esc(placeName(x))}</button>`).join('')}
           ${action.payload?.place_text ? `<button type="button" class="chip-toggle ${placePicks[index] === NEW_PLACE ? 'on' : ''}" data-place-pick="${index}" data-pid="${NEW_PLACE}">${esc(t('cmd.newPlace', { name: action.payload.place_text }))}</button>` : ''}</div></div>` : ''}
@@ -250,9 +264,9 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
     // A change the server will refuse (e.g. moving an imported calendar event) is
     // explained, never offered as if it could succeed.
     const ready = state.actions.every((a, i) => !a.blocked && (isCommand(a)
-      ? targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when')
+      ? targetOf(a, picks, i) && !(a.unresolved_fields || []).includes('when') && (!needsStep(a) || stepPicks.has(a.id))
       : !blocking(a).filter((f) => !(f === 'dtstart_local' && completed(a, i)) && !(f === 'place_id' && placePicks[i])).length));
-    const destructive = state.actions.some((a) => DESTRUCTIVE.has(a.command));
+    const destructive = state.actions.some(isDestructive);
     box.innerHTML = `<article class="capture-card command-card">
       <span class="eyebrow">${icon('spark')} ${esc(t('capture.commandTitle'))}</span>
       <ul class="plain command-list">${rows}</ul>
@@ -270,6 +284,10 @@ export function renderCommands(box, state, { onDone = () => {}, onRefine = null 
       draw();
     }));
     box.querySelector('[data-refine]')?.addEventListener('click', () => onRefine(state));
+    box.querySelectorAll('[data-step-pick]').forEach((b) => b.addEventListener('click', () => {
+      stepPicks.set(b.dataset.stepPick, b.dataset.sid);
+      draw();
+    }));
     box.querySelectorAll('[data-place-pick]').forEach((b) => b.addEventListener('click', () => {
       placePicks[Number(b.dataset.placePick)] = b.dataset.pid;
       draw();
@@ -341,6 +359,7 @@ async function applyServer(state, picks) {
   for (const [index, action] of state.actions.entries()) {
     const start = state.completed?.(action, index);
     if (start) edits[action.id] = { dtstart_local: start };
+    if (needsStep(action) && stepPicks.has(action.id)) edits[action.id] = { ...(edits[action.id] || {}), subtask_id: stepPicks.get(action.id) };
     const placePick = state.placePicks?.[index];
     if (placePick && placePick !== NEW_PLACE) edits[action.id] = { ...(edits[action.id] || {}), place_id: placePick };
     const item = picks[index];
@@ -351,11 +370,11 @@ async function applyServer(state, picks) {
   const body = {
     batch_id: state.batchId, action_ids: state.actions.map((a) => a.id),
     // The user pressed the explicit confirmation button for exactly these actions.
-    confirmed_action_ids: state.actions.filter((a) => a.requires_confirmation || DESTRUCTIVE.has(a.command)).map((a) => a.id),
+    confirmed_action_ids: state.actions.filter((a) => a.requires_confirmation || isDestructive(a)).map((a) => a.id),
     idempotency_key: `assistant-${state.batchId}-${Object.keys(edits).length}`,
   };
   if (Object.keys(edits).length) body.edits = edits;
-  const reversible = state.actions.some((a) => REVERSIBLE.has(a.command));
+  const reversible = state.actions.some((a) => REVERSIBLE.has(a.command) && !isDestructive(a));
   const result = await mutate(() => api('/api/v1/assistant/apply', { method: 'POST', body }),
     { success: reversible ? null : t('capture.commandDone') });
   syncDeviceAlarms();

@@ -100,6 +100,22 @@ export function rescheduleChange(kind, entity, when, keepTime) {
 
 // parseCommand(text, now, items) → one typed action, or null (read it as something new).
 // items: [{ id, kind: TASK|EVENT|REMINDER, title, status, version }]
+// «добавь к задаче "лаба" шаг "написать тесты"», «отметь в лабе шаг "парсер" выполненным»:
+// a checklist edit. The server (agent/checklist_actions.py, same grammar) reads which task
+// and which step; the device only recognizes that this is a command and not a new task.
+const Q = '[«"“\']';
+const QE = '[»"”\']';
+const CHECKLIST_PHRASES = [
+  new RegExp(`^(?:добавь|добавить|add)\\s+(?:в\\s+|к\\s+|to\\s+)?(?:задач[еуи]|task\\s+)?\\s*${Q}[^»"”']+${QE}\\s*(?:шаг|пункт|step|item)\\s+${Q}[^»"”']+${QE}\\s*$`, 'iu'),
+  new RegExp(`^(?:добавь|добавить|add)\\s+(?:шаг|пункт|step|item)\\s+${Q}[^»"”']+${QE}\\s+(?:в|к|to)\\s+`, 'iu'),
+  new RegExp(`^(?:отметь|отметить|закрой|mark|check off|верни|открой снова|снова открой|reopen|uncheck|удали|delete|remove)\\s+(?:в\\s+\\S+(?:\\s+\\S+)?\\s+)?(?:шаг|пункт|step|item)\\s+${Q}`, 'iu'),
+];
+
+export function isChecklistStepPhrase(text) {
+  const clean = String(text || '').trim().replace(/\s+/g, ' ');
+  return CHECKLIST_PHRASES.some((re) => re.test(clean));
+}
+
 export function parseCommand(text, now = new Date(), items = []) {
   const raw = String(text || '').split(/\s+/u).filter(Boolean).join(' ').replace(/^[\s.!]+|[\s.!]+$/gu, '');
   if (!raw) return null;

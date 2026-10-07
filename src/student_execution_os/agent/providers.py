@@ -36,7 +36,7 @@ _log = logging.getLogger("student_execution_os.llm")
 
 
 SYSTEM_PROMPT = """You interpret what a student wants to do for Student Execution OS. Return JSON only:
-{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST|CREATE_CHECKIN|CREATE_REMINDER_SERIES|CHECKIN_OUTCOME|CHECKIN_PROGRESS|MOVE_CHECKIN_OCCURRENCE|CREATE_PLACE|CREATE_LOCATION_TRIGGER","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
+{"message":"short helpful response","actions":[{"client_ref":"optional-local-name","depends_on":["earlier-client-ref"],"command":"CREATE_TASK|CREATE_EVENT|CREATE_REMINDER|CREATE_NOTE|UPDATE_TASK|UPDATE_EVENT|UPDATE_REMINDER|RESCHEDULE|SNOOZE|LOG_PROGRESS|COMPLETE_OBLIGATION|CANCEL_OBLIGATION|ARCHIVE_OBLIGATION|REFINE_TASK|CREATE_TIME_CONSTRAINT|CREATE_PLANNING_PREFERENCE|UNDO_LAST|CREATE_CHECKIN|CREATE_REMINDER_SERIES|CHECKIN_OUTCOME|CHECKIN_PROGRESS|MOVE_CHECKIN_OCCURRENCE|CREATE_PLACE|CREATE_LOCATION_TRIGGER|CHECKLIST_STEP","payload":{},"confidence":0.0,"unresolved_fields":[],"expected_version":null,"requires_confirmation":false,"field_provenance":{"field":"MODEL_EXPLICIT|MODEL_INFERRED"}}],"read_query":null}
 Never claim an action was executed; every action is only a proposal the user reviews.
 Later explicit corrections replace earlier propositions, preserving unrelated facts.
 When context.assistant_session is present, its previous_actions are the bounded prior
@@ -136,6 +136,14 @@ Answers about a check-in in context.checkins take checkin_id and expected_versio
   MOVE_CHECKIN_OCCURRENCE {checkin_id, when: ISO instant, local_date?, day_part?} — "перенеси только
     сегодняшний приём на 22:00" (one day only; the series stays).
   Do not pick the day's occurrence yourself: the server chooses it from local_date/day_part.
+Checklist steps inside a task (context.obligations[].checklist lists a task's steps: id, title, done):
+  CHECKLIST_STEP {obligation_id, change, step_text?, subtask_id?, title?, effort_minutes?} with the task's
+    expected_version. change: ADD {title, effort_minutes?} — "добавь к задаче «лаба» шаг «написать тесты»";
+    RENAME {step, title}; COMPLETE {step} — "отметь в лабе шаг «парсер» выполненным"; REOPEN {step} —
+    "нет, верни этот шаг"; DELETE {step} (always requires_confirmation true); SET_EFFORT {step, effort_minutes}.
+    {step} = subtask_id from that task's checklist when one step clearly fits, else step_text with the
+    user's words: the server decides which step is meant and asks the user when several fit. Never
+    change the order of steps; never invent a subtask_id.
 Places (context.places lists the user's places by name; you never get or send coordinates):
   CREATE_PLACE {display_name, alias?, address?} — "добавь место Спортзал"; an address only if the
     user said it, verbatim.
@@ -199,7 +207,7 @@ _TOP_LEVEL_SCHEMA = {
                             "COMPLETE_OBLIGATION", "CANCEL_OBLIGATION", "ARCHIVE_OBLIGATION", "REFINE_TASK",
                             "CREATE_TIME_CONSTRAINT", "CREATE_PLANNING_PREFERENCE", "UNDO_LAST",
                             "CREATE_CHECKIN", "CREATE_REMINDER_SERIES", "CHECKIN_OUTCOME", "CHECKIN_PROGRESS",
-                            "MOVE_CHECKIN_OCCURRENCE", "CREATE_PLACE", "CREATE_LOCATION_TRIGGER",
+                            "MOVE_CHECKIN_OCCURRENCE", "CREATE_PLACE", "CREATE_LOCATION_TRIGGER", "CHECKLIST_STEP",
                         )]},
                         "payload": {"type": "object", "additionalProperties": True},
                         "client_ref": {"type": "string", "maxLength": 64},

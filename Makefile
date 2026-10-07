@@ -21,6 +21,7 @@ static:
 	TZ=Europe/Moscow node tests/js/checkin_overlay_cases.mjs
 	node tests/js/place_overlay_cases.mjs
 	node tests/js/subtask_overlay_cases.mjs
+	node tests/js/checklist_phrase_cases.mjs
 	node --check deploy/cloudflare-groq-relay/src/index.js
 
 worker:

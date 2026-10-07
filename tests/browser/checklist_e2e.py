@@ -60,5 +60,43 @@ class ChecklistEndToEndTest(RealServerTestCase):
         self.assertEqual([e for e in self.errors if "internetdisconnected" not in e and "Failed to fetch" not in e], [])
 
 
+    def test_assistant_adds_checks_and_asks_which_step(self):
+        """No language model: the typed Assistant reads checklist phrases on the server."""
+        page = self._page()
+        self._ready(page, "today")
+        page.evaluate("""(id) => fetch('/api/v1/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operations: [
+            { op_id: 'op-e2e-lab-1', type: 'task.create', entity_id: id,
+              payload: { title: 'Лаба по ОС', estimated_total_effort_minutes: 120, actual_cutoff: { state: 'ABSENT' } } },
+            { op_id: 'op-e2e-lab-s1', type: 'subtask.create', entity_id: 'subtask-e2e-tests-p',
+              payload: { task_id: id, title: 'Написать тесты для парсера' } },
+            { op_id: 'op-e2e-lab-s2', type: 'subtask.create', entity_id: 'subtask-e2e-tests-l',
+              payload: { task_id: id, title: 'Написать тесты для лексера' } }] }) })""", "task-assistant-lab-1")
+        self._wait_db(page, "SELECT * FROM task_subtasks WHERE task_id='task-assistant-lab-1'", want=lambda rows: len(rows) == 2)
+        page.evaluate("location.reload()")
+        self._ready(page, "today")
+        sheet = self._say(page, 'добавь к задаче "лаба" шаг "написать отчёт"')
+        card = sheet.locator(".command-card")
+        card.filter(has_text="написать отчёт").wait_for()
+        self.assertIn("Лаба по ОС", card.inner_text())
+        card.locator("[data-run]").click()
+        self._wait_db(page, "SELECT * FROM task_subtasks WHERE title='написать отчёт' AND task_id='task-assistant-lab-1'")
+        page.locator("dialog.sheet[open]").wait_for(state="detached")
+        # Two steps fit «написать тесты» equally: the card asks which one, nothing is guessed.
+        sheet = self._say(page, 'отметь в лабе шаг "написать тесты" выполненным')
+        card = sheet.locator(".command-card")
+        card.locator("[data-step-pick]").first.wait_for()
+        self.assertEqual(card.locator("[data-step-pick]").count(), 2)
+        self.assertTrue(card.locator("[data-run]").is_disabled())
+        self._no_overflow(page)
+        card.locator("[data-step-pick]", has_text="лексера").click()
+        card.locator("[data-run]").click()
+        self._wait_db(page, "SELECT * FROM task_subtasks WHERE id='subtask-e2e-tests-l' AND done_at IS NOT NULL")
+        self.assertEqual(self._db("SELECT done_at FROM task_subtasks WHERE id='subtask-e2e-tests-p'")[0]["done_at"], None)
+        self.assertEqual(self._db("SELECT count(*) AS n FROM obligations WHERE kind='TASK'")[0]["n"], 1,
+                         "a checklist phrase never becomes a new task")
+        self.assertEqual([e for e in self.errors if "Failed to fetch" not in e], [])
+
+
 if __name__ == "__main__":
     unittest.main()

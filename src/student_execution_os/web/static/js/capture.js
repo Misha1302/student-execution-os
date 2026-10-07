@@ -18,7 +18,7 @@ import { newEntityId, settled } from './sync.js';
 import { parseTask, correctedText, reminderTurn } from './nlparse.js';
 import { startDictation, voiceSupported } from './native.js';
 import { reachWarning } from './health.js';
-import { parseCommand } from './commands.js';
+import { parseCommand, isChecklistStepPhrase } from './commands.js';
 import { parseRecurring, recurringActions, parseCheckinOutcome } from './recurring.js';
 import { parseLocationTrigger, parsePlaceCreate } from './location-phrases.js';
 import { cachedPlaces } from './places.js';
@@ -444,7 +444,8 @@ export function openCapture({ text = '', listen: listenNow = false, sourceNoteId
     const raw = input.value.trim();
     const revision = captureSession.revision;
     const seq = ++serverSeq;
-    const command = Boolean(parseCommand(raw, now(), knownItems()));
+    // A checklist edit is read by the server's typed Assistant (no model needed for it).
+    const command = Boolean(parseCommand(raw, now(), knownItems())) || isChecklistStepPhrase(raw);
     // A recurring request or a check-in answer the device already read: a server answer
     // that is not a plan (e.g. a task card) must not replace that card.
     const localRecurring = Boolean(parseRecurring(raw, now())
