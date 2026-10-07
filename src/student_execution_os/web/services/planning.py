@@ -264,7 +264,7 @@ class PlanningQueries(ApplicationService):
                 "status": outcome.plan.feasibility_status.value,
                 "reasons": list(outcome.plan.explanations),
             }]
-            plan_payload = self._plan_payload(outcome.plan, tasks, events, snapshot.constraints)
+            plan_payload = self._plan_payload(outcome.plan, tasks, events, snapshot.constraints, snapshot.quota_demands)
             reflection = SQLiteReflectionStore(repo)
             local_date = reflection.local_date(self.account_id, self._now())
             daily_intent = reflection.intent(self.account_id, local_date)
@@ -320,6 +320,19 @@ class PlanningQueries(ApplicationService):
                     (max(interval[0], window[0]), min(interval[1], window[1]))
                     for window in windows if overlap_minutes(interval, window)
                 ])
+            # Quota time the planner reserved is occupied like work; only the part it could
+            # not place is still subtracted below — never both (no double counting).
+            # Only today's occurrences, like quota_known_minutes (tomorrow's are planned too).
+            today_quotas = {(item["template_id"], item["original_recurrence_id"]) for item in checkins["items"]}
+            quota_parts: list[tuple[datetime, datetime]] = []
+            for block in outcome.plan.quota_blocks:
+                if block.checkin_occurrence not in today_quotas:
+                    continue
+                quota_parts.extend([
+                    (max(block.starts_at, window[0]), min(block.ends_at, window[1]))
+                    for window in windows if overlap_minutes((block.starts_at, block.ends_at), window)
+                ])
+            occupied_parts.extend(quota_parts)
             planned_work_minutes = self._merged_minutes(work_parts)
             occupied_minutes = self._merged_minutes(occupied_parts)
             day_capacity = {
@@ -328,12 +341,15 @@ class PlanningQueries(ApplicationService):
                 "occupied_minutes": occupied_minutes,
                 "safe_reserve_minutes": max(0, capacity_minutes - occupied_minutes),
             }
-            # Daily quotas are not placed as work blocks; with a user-given pace their
-            # remaining time is reserved from the free time here, the rest stays unknown.
+            # Daily quotas with a user-given pace are reserved by the planner as QUOTA
+            # blocks (counted as occupied above); without a pace their time stays unknown.
             quota_known = int(checkins["quota_demand"]["known_minutes"])
+            quota_planned = self._merged_minutes(quota_parts)
             day_capacity["quota_known_minutes"] = quota_known
+            day_capacity["quota_planned_minutes"] = quota_planned
             day_capacity["quota_unknown_count"] = int(checkins["quota_demand"]["unknown_effort_count"])
-            day_capacity["safe_reserve_after_quotas_minutes"] = max(0, day_capacity["safe_reserve_minutes"] - quota_known)
+            day_capacity["safe_reserve_after_quotas_minutes"] = max(
+                0, day_capacity["safe_reserve_minutes"] - max(0, quota_known - quota_planned))
             return {
                 "now": _jsonify(self._now()),
                 "local_date": local_date,
@@ -363,8 +379,10 @@ class PlanningQueries(ApplicationService):
                 "active_execution": SQLiteExecutionStore(repo).active(self.account_id, self._now()),
             }
 
-    def _plan_payload(self, plan, tasks: list[dict[str, Any]], events: list[dict[str, Any]], constraints) -> dict[str, Any]:
+    def _plan_payload(self, plan, tasks: list[dict[str, Any]], events: list[dict[str, Any]], constraints,
+                      quota_demands=()) -> dict[str, Any]:
         task_names = {t["id"]: t["title"] for t in tasks}
+        demands = {(q.template_id, q.original_recurrence_id): q for q in quota_demands}
         event_names = {e["id"]: e["title"] for e in events}
         blocks = []
         for b in plan.blocks:
@@ -404,6 +422,22 @@ class PlanningQueries(ApplicationService):
                 for item in plan.explanations if item.startswith("PREFERENCE_")
             },
             "blocks": blocks,
+            # Time reserved for open daily quotas at the user's pace (derived from the
+            # check-in occurrence, which keeps quantity and outcome). Not Tasks, not work.
+            "quota_blocks": [{
+                "id": b.id,
+                "type": b.type.value,
+                "starts_at": _jsonify(b.starts_at),
+                "ends_at": _jsonify(b.ends_at),
+                "duration_minutes": b.duration_minutes,
+                "label": demands[b.checkin_occurrence].title if b.checkin_occurrence in demands else b.type.value,
+                "template_id": b.checkin_occurrence[0] if b.checkin_occurrence else None,
+                "original_recurrence_id": b.checkin_occurrence[1] if b.checkin_occurrence else None,
+                "remaining_quantity": demands[b.checkin_occurrence].remaining_quantity if b.checkin_occurrence in demands else None,
+                "unit": demands[b.checkin_occurrence].unit if b.checkin_occurrence in demands else None,
+                "explanation": b.explanation,
+                "ownership": "DERIVED",
+            } for b in plan.quota_blocks],
             "canonical_events": events,
             "constraints": [{
                 "id": c.id,
@@ -448,7 +482,7 @@ class PlanningQueries(ApplicationService):
             events = self._events_payload(repo, snapshot.events)
             return {
                 "now": _jsonify(now), "days": days, "timezone": profile.timezone_name,
-                "plan": self._plan_payload(outcome.plan, tasks, events, snapshot.constraints),
+                "plan": self._plan_payload(outcome.plan, tasks, events, snapshot.constraints, snapshot.quota_demands),
                 "tasks": tasks,
             }
 

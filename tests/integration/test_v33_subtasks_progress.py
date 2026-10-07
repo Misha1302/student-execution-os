@@ -48,6 +48,11 @@ class Harness(unittest.TestCase):
     def ui(self, at=T0):
         return UiService(self.db, account_id="a", principal_id="u-a", now=lambda: at)
 
+    def sql(self, query, params=()):
+        with sqlite3.connect(self.db) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+
     def task(self, task_id="task-essay-001", effort=120):
         return self.ok("task.create", task_id, {"title": "Курсовая", "estimated_total_effort_minutes": effort,
                                                 "actual_cutoff": {"state": "ABSENT"}})
@@ -167,8 +172,90 @@ class QuotaCapacityTests(Harness):
         capacity = today["day_capacity"]
         self.assertEqual(capacity["quota_known_minutes"], 60)
         self.assertEqual(capacity["quota_unknown_count"], 1)
-        self.assertEqual(capacity["safe_reserve_after_quotas_minutes"], max(0, capacity["safe_reserve_minutes"] - 60))
+        # The known pace is reserved once: as planned quota time (occupied) or, for the
+        # part the plan could not place, subtracted from what is left — never both.
+        self.assertEqual(capacity["quota_planned_minutes"], 60)
+        self.assertEqual(capacity["safe_reserve_after_quotas_minutes"],
+                         max(0, capacity["safe_reserve_minutes"] - (60 - capacity["quota_planned_minutes"])))
         self.assertEqual({item["title"] for item in today["checkins"]}, {"Задачи по матану", "Anki"})
+        # Anki has no pace: no time is invented for it.
+        self.assertEqual({b["template_id"] for b in today["plan"]["quota_blocks"]}, {"checkin-matan-1"})
+
+    def quota(self, **extra):
+        payload = {"kind": "QUOTA", "title": "Решать задачи", "target_quantity": 20, "unit": "задач",
+                   "unit_effort_seconds": 180, "dtstart_local": "2026-10-06T08:00", "recurrence_rule": "FREQ=DAILY",
+                   "timezone_name": "Europe/Moscow", "remind": False, **extra}
+        self.ok("checkin.create", "checkin-solve-1", payload)
+        return "2026-10-06T08:00:00"
+
+    @staticmethod
+    def minutes(blocks, rid="2026-10-06T08:00:00"):
+        """Planned minutes for one day's occurrence (tomorrow's is reserved too)."""
+        return sum(b["duration_minutes"] for b in blocks if b["original_recurrence_id"] == rid)
+
+    def test_quota_remaining_is_planned_as_derived_time_and_shrinks_with_progress(self):
+        rid = self.quota()
+        self.ok("checkin.occurrence.progress", "checkin-solve-1", {"original_recurrence_id": rid, "count": 5})
+        today = self.ui().planning.today()
+        blocks = today["plan"]["quota_blocks"]
+        # 20 asked, 5 done, 3 min each: only the remaining 15 are planned — 45 minutes.
+        self.assertEqual(self.minutes(blocks), 45)
+        self.assertTrue(all(b["type"] == "QUOTA" and b["ownership"] == "DERIVED" for b in blocks))
+        self.assertEqual({b["template_id"] for b in blocks}, {"checkin-solve-1"})
+        todays = [b for b in blocks if b["original_recurrence_id"] == rid]
+        self.assertEqual(todays[0]["label"], "Решать задачи")
+        self.assertEqual(todays[0]["remaining_quantity"], 15)
+        # Derived only: no Task, no work block, no canonical record of the plan's time.
+        self.assertEqual(self.sql("SELECT count(*) AS n FROM obligations")[0]["n"], 0)
+        self.assertFalse([b for b in today["plan"]["blocks"] if b["type"] in {"WORK", "QUOTA"}])
+        self.assertEqual(today["day_capacity"]["quota_planned_minutes"], 45)
+        first_hash = today["plan"]["input_hash"]
+        # +5 more: the plan asks only for the 10 still open; nothing is counted twice.
+        later = T0 + timedelta(minutes=30)
+        self.ok("checkin.occurrence.progress", "checkin-solve-1", {"original_recurrence_id": rid, "count": 5}, at=later)
+        today = self.ui(later).planning.today()
+        self.assertEqual(self.minutes(today["plan"]["quota_blocks"]), 30)
+        self.assertNotEqual(today["plan"]["input_hash"], first_hash)
+        occurrence = self.sql("SELECT * FROM checkin_occurrences WHERE template_id='checkin-solve-1'")[0]
+        self.assertEqual((occurrence["quantity_done"], occurrence["status"]), (10, "PENDING"),
+                         "planned time never writes quantity")
+        # Done: today's quota asks for nothing more.
+        self.ok("checkin.occurrence.progress", "checkin-solve-1", {"original_recurrence_id": rid, "count": 10}, at=later)
+        self.assertEqual(self.minutes(self.ui(later).planning.today()["plan"]["quota_blocks"]), 0)
+
+    def test_unknown_pace_is_never_turned_into_planned_time(self):
+        self.quota(unit_effort_seconds=None)
+        today = self.ui().planning.today()
+        self.assertEqual(today["plan"]["quota_blocks"], [])
+        self.assertEqual(today["day_capacity"]["quota_unknown_count"], 1)
+        self.assertEqual(today["day_capacity"]["quota_known_minutes"], 0)
+
+    def test_a_quota_never_makes_obligations_infeasible(self):
+        # 20 × 60 min = 20 h: cannot fit today next to a task due tonight.
+        self.quota(unit_effort_seconds=3600)
+        self.ok("task.create", "task-due-tonight", {"title": "Сдать отчёт", "estimated_total_effort_minutes": 120,
+                                                   "actual_cutoff": {"state": "KNOWN", "at": "2026-10-06T18:00:00Z"}})
+        plan = self.ui().planning.today()["plan"]
+        self.assertEqual(plan["feasibility_status"], "FEASIBLE")
+        self.assertIn("QUOTA_DOES_NOT_FIT:checkin-solve-1", plan["explanations"])
+        self.assertEqual(plan["quota_blocks"], [])
+        capacity = self.ui().planning.today()["day_capacity"]
+        self.assertEqual(capacity["quota_planned_minutes"], 0)
+        self.assertEqual(capacity["safe_reserve_after_quotas_minutes"],
+                         max(0, capacity["safe_reserve_minutes"] - capacity["quota_known_minutes"]))
+        self.assertTrue([b for b in plan["blocks"] if b["type"] == "WORK" and b["obligation_id"] == "task-due-tonight"])
+
+    def test_planned_quota_time_moves_flexible_work_instead_of_overlapping_it(self):
+        self.quota()
+        self.ok("task.create", "task-flex-0001", {"title": "Читать статью", "estimated_total_effort_minutes": 60,
+                                                 "actual_cutoff": {"state": "ABSENT"}})
+        plan = self.ui().planning.today()["plan"]
+        work = [(b["starts_at"], b["ends_at"]) for b in plan["blocks"] if b["type"] == "WORK"]
+        quota = [(b["starts_at"], b["ends_at"]) for b in plan["quota_blocks"]]
+        self.assertEqual(self.minutes(plan["quota_blocks"]), 60)
+        for qs, qe in quota:
+            for ws, we in work:
+                self.assertFalse(qs < we and ws < qe, "quota time and task work never overlap")
 
 
 class MigrationTests(Harness):

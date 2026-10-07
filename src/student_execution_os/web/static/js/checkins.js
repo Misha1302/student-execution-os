@@ -61,12 +61,21 @@ function dataAttrs(occ) {
 }
 
 // One row with the buttons that record the outcome.
-export function checkinRow(occ, { showDate = false } = {}) {
+// When the plan keeps time for this quota today ("по плану 11:00–11:45"), from the
+// planner's derived QUOTA blocks; the count itself stays on the occurrence.
+function plannedSlots(occ, quotaBlocks = []) {
+  const mine = quotaBlocks.filter((b) => b.template_id === occ.template_id && b.original_recurrence_id === occ.original_recurrence_id);
+  if (!mine.length) return '';
+  return t('checkin.plannedAt', { slots: mine.map((b) => `${fmtTime(b.starts_at)}–${fmtTime(b.ends_at)}`).join(', ') });
+}
+
+export function checkinRow(occ, { showDate = false, quotaBlocks = [] } = {}) {
   const med = isMedication(occ);
   const open = occ.status === 'PENDING' || occ.status === 'MISSED';
   const label = `${med ? '💊 ' : ''}${occ.title}`;
   const when = showDate ? fmtDateTime(occ.scheduled_at) : fmtTime(occ.scheduled_at);
-  const extra = [occ.dose_text, occ.moved_to_local ? t('checkin.movedHint') : '', occ._pending ? t('checkin.pendingSync') : '']
+  const extra = [occ.dose_text, open && isQuota(occ) ? plannedSlots(occ, quotaBlocks) : '',
+    occ.moved_to_local ? t('checkin.movedHint') : '', occ._pending ? t('checkin.pendingSync') : '']
     .filter(Boolean).join(' · ');
   const buttons = !open ? `<button class="button small ghost" data-action="checkin-menu" ${dataAttrs(occ)} aria-label="${esc(t('checkin.changeOutcome', { title: occ.title }))}">${esc(t('checkin.change'))}</button>`
     : isQuota(occ)
@@ -81,14 +90,14 @@ export function checkinRow(occ, { showDate = false } = {}) {
   </div>`;
 }
 
-export function todayCheckinsSection(items = []) {
+export function todayCheckinsSection(items = [], { quotaBlocks = [] } = {}) {
   if (!items.length) return '';
   const counted = items.filter((x) => x.status !== 'CANCELLED');
   const done = counted.filter((x) => x.status === 'DONE').length;
   return `<section class="section" data-checkins>
     <div class="section-head"><h2>${esc(t('checkin.today'))}</h2><span class="muted">${esc(t('checkin.progress', { done, total: counted.length }))}</span>
       <button class="link" data-nav="checkins">${esc(t('checkin.all'))}</button></div>
-    <div class="list">${items.map((x) => checkinRow(x)).join('')}</div>
+    <div class="list">${items.map((x) => checkinRow(x, { quotaBlocks })).join('')}</div>
   </section>`;
 }
 

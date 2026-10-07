@@ -15,6 +15,7 @@ from student_execution_os.planning.model import PlanningPolicy
 from student_execution_os.planning.preference_store import derived_preference_windows
 from student_execution_os.planning.outlook import SQLitePlanningProfileRepository, off_hours_constraints
 from student_execution_os.work_routines import SQLiteWorkRoutineRepository
+from student_execution_os.checkins import SQLiteCheckInRepository, quota_demands
 
 from .common import _occurrence_details, _jsonify, _dt
 
@@ -48,6 +49,9 @@ class ApplicationService:
         SQLiteWorkRoutineRepository(repo).ensure_horizon(
             self.account_id, now, now + timedelta(hours=hours)
         )
+        # Materialize today's check-ins before the snapshot reads its stable revision.
+        checkins = SQLiteCheckInRepository(repo)
+        checkins.ensure_horizon(self.account_id, now)
         profile = SQLitePlanningProfileRepository(repo).get(self.account_id)
         return build_planning_snapshot(
             SQLitePlanningStateSource(repo),
@@ -61,6 +65,7 @@ class ApplicationService:
             ),
             derived_constraints=lambda start, end: off_hours_constraints(profile, self.account_id, start, end),
             derived_preferences=derived_preference_windows(repo, profile, self.account_id),
+            derived_quotas=lambda start, end: quota_demands(checkins, self.account_id, start, end, now),
             assume_attendance=profile.optional_event_policy == "FAIL_CLOSED",
         )
 

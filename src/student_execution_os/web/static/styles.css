@@ -678,3 +678,5 @@ details.section.quiet > summary .summary-copy { flex: 1; min-width: 0; }
   .link { min-height: 44px; min-width: 44px; justify-content: center; }
   summary { min-height: 44px; display: flex; align-items: center; gap: 8px; }
 }
+.dot.quota, .agenda-item.quota { --tone: var(--ok); --tone-soft: var(--ok-soft); }
+.help.warn { color: var(--warn); }

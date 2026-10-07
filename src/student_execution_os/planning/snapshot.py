@@ -17,7 +17,7 @@ def _iso(value: datetime | None) -> str | None:
 
 def _stable_payload(*, account_id, revision, analysis_start, analysis_end, output_start, output_end,
                     tasks, events, constraints, dependencies, milestones, cutoff_reconciliation, travel_projection, policy,
-                    soft_priority_task_ids, effort_multipliers, preference_windows=()) -> dict[str, object]:
+                    soft_priority_task_ids, effort_multipliers, preference_windows=(), quota_demands=()) -> dict[str, object]:
     payload = _hard_payload(
         account_id=account_id, revision=revision, analysis_start=analysis_start, analysis_end=analysis_end,
         output_start=output_start, output_end=output_end, tasks=tasks, events=events, constraints=constraints,
@@ -30,6 +30,14 @@ def _stable_payload(*, account_id, revision, analysis_start, analysis_end, outpu
         payload["preference_windows"] = [
             [w.preference_id, w.kind.value, w.target, w.minutes, _iso(w.starts_at), _iso(w.ends_at)]
             for w in preference_windows
+        ]
+    if quota_demands:
+        # Only present when a quota with a pace is open, so other plan hashes are unchanged.
+        # Progress changes the remaining time and therefore the plan identity.
+        payload["quota_demands"] = [
+            [q.template_id, q.original_recurrence_id, q.remaining_quantity, q.remaining_minutes,
+             _iso(q.available_from), _iso(q.due_by)]
+            for q in quota_demands
         ]
     return payload
 
@@ -263,6 +271,7 @@ def build_planning_snapshot(
     policy: PlanningPolicy | None = None,
     derived_constraints=None,
     derived_preferences=None,
+    derived_quotas=None,
     assume_attendance: bool = False,
 ) -> PlanningSnapshot:
     """Materialize one immutable, revision-bound planning input.
@@ -328,6 +337,11 @@ def build_planning_snapshot(
         tuple(derived_preferences(analysis_horizon_start, effective_analysis_end, events))
         if derived_preferences is not None else ()
     )
+    quota_demands = (
+        tuple(sorted(derived_quotas(analysis_horizon_start, effective_analysis_end),
+                     key=lambda q: (q.due_by, q.template_id, q.original_recurrence_id)))
+        if derived_quotas is not None else ()
+    )
     output_start = plan_output_horizon_start or analysis_horizon_start
     output_end = plan_output_horizon_end or min(analysis_horizon_end, effective_analysis_end)
     if output_end > effective_analysis_end:
@@ -351,6 +365,7 @@ def build_planning_snapshot(
         soft_priority_task_ids=soft_priority_task_ids,
         effort_multipliers=effort_multipliers,
         preference_windows=preference_windows,
+        quota_demands=quota_demands,
     )
     input_hash = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -374,4 +389,5 @@ def build_planning_snapshot(
         cutoff_reconciliation=cutoff_reconciliation,
         travel_projection=travel_projection,
         preference_windows=preference_windows,
+        quota_demands=quota_demands,
     )

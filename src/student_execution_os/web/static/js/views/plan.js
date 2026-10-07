@@ -7,7 +7,7 @@ import { queueOperation } from '../sync.js';
 import { previewPlanControl, pinOperation, avoidOperation, moveConstraintOperation, deleteConstraintOperation, moveWorkSheet, shiftItem, controlSummary } from '../plan-control.js';
 
 const BLOCK_CLASS = {
-  WORK: 'work', EVENT_PROJECTION: 'event-projection', TRAVEL_TRANSITION: 'travel', BUFFER: 'buffer',
+  WORK: 'work', EVENT_PROJECTION: 'event-projection', TRAVEL_TRANSITION: 'travel', BUFFER: 'buffer', QUOTA: 'quota',
 };
 
 let selectedDay = null;
@@ -66,6 +66,12 @@ export function agendaItems(plan) {
     items.push({ kind: b.type, cls: BLOCK_CLASS[b.type] || 'buffer', ownership: 'DERIVED', starts_at: b.starts_at, ends_at: b.ends_at,
       label: b.label || code('block', b.type), detail: control ? t('plan.pinned') : code('block', b.type), ref: b, control });
   }
+  // Time the plan keeps for an open daily quota. Derived: the check-in keeps the count,
+  // so this block offers the check-in, never a "done" of its own.
+  for (const q of plan.quota_blocks || []) {
+    items.push({ kind: 'QUOTA', cls: 'quota', ownership: 'DERIVED', starts_at: q.starts_at, ends_at: q.ends_at,
+      label: q.label, detail: q.remaining_quantity ? t('plan.quotaLeft', { n: q.remaining_quantity, unit: q.unit || '' }) : code('block', 'QUOTA'), ref: q });
+  }
   return items.sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at) || (a.ownership === 'CANONICAL' ? -1 : 1));
 }
 
@@ -99,6 +105,8 @@ function openItem(item) {
         <button type="button" class="button ghost wide" data-control-move>${esc(t('plan.moveConstraint'))}</button>
         <button type="button" class="button ghost wide" data-control-unpin>${esc(t('plan.removeConstraint'))}</button>
       </div>` : ''}
+      ${item.kind === 'QUOTA' ? `<p class="help">${esc(t('plan.quotaHelp'))}</p>
+        <button type="button" class="button ghost wide" data-nav="checkin/${esc(b.template_id)}" data-close-sheet>${esc(t('plan.openCheckin'))}</button>` : ''}
       ${derived && b.obligation_id ? `<button type="button" class="button ghost wide" data-action="open-task" data-id="${esc(b.obligation_id)}" data-close-sheet>${esc(t('plan.openTask'))}</button>` : ''}`,
   });
   dialog.querySelector('[data-control-pin]')?.addEventListener('click', async () => {

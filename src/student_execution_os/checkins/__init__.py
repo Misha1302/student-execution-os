@@ -1,4 +1,5 @@
 from .model import RESOLVED, CheckInKind, CheckInOccurrence, CheckInTemplate, OccurrenceStatus
+from .demand import quota_demands
 from .repository import (
     SQLiteCheckInRepository,
     Transition,
@@ -18,6 +19,7 @@ __all__ = [
     "Transition",
     "clean_template_fields",
     "occurrence_payload",
+    "quota_demands",
     "reminder_id_for",
     "template_payload",
 ]

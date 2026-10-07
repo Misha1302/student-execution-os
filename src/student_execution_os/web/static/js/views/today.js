@@ -40,7 +40,7 @@ export function explainReason(reason, tasks = [], events = []) {
 }
 
 // Plan notes that are information, not a problem to solve.
-const INFO_REASONS = /^(OPTIONAL_EVENT_OMITTED|PREFERRED_EVENT_OMITTED|REPLAN_INPUT_CHANGED)/;
+const INFO_REASONS = /^(OPTIONAL_EVENT_OMITTED|PREFERRED_EVENT_OMITTED|REPLAN_INPUT_CHANGED|QUOTA_DOES_NOT_FIT)/;
 
 export function statusCopy(status, reasons = [], tasks = [], events = []) {
   if (status === 'FEASIBLE') return { text: t('status.copy.FEASIBLE'), task: null };
@@ -136,6 +136,24 @@ function sourceLine(source) {
 
 // What needs the user's decision before the plan can be trusted. Empty when nothing
 // does: a plan that fits is not news and lives in the day details below.
+// What the open quotas still ask for today, in the plan's terms: time it keeps for
+// them, time that does not fit next to obligations, and quotas without a pace.
+function quotaDemandLine(data) {
+  const cap = data.day_capacity || {};
+  if (!cap.quota_known_minutes && !cap.quota_unknown_count) return '';
+  const unfit = (data.plan?.explanations || []).filter((r) => r.startsWith('QUOTA_DOES_NOT_FIT:'))
+    .map((r) => (data.checkins || []).find((c) => c.template_id === r.split(':')[1])?.title).filter(Boolean);
+  const parts = [];
+  if (cap.quota_known_minutes) {
+    parts.push(t(cap.quota_planned_minutes ? 'checkin.quotaPlanned' : 'checkin.quotaDemand', {
+      known: fmtDuration(cap.quota_known_minutes), planned: fmtDuration(cap.quota_planned_minutes || 0),
+      free: fmtDuration(cap.safe_reserve_after_quotas_minutes ?? 0) }));
+  }
+  if (unfit.length) parts.push(t('checkin.quotaUnfit', { titles: unfit.map((x) => `«${x}»`).join(', ') }));
+  if (cap.quota_unknown_count) parts.push(t('checkin.quotaUnknown', { n: cap.quota_unknown_count }));
+  return `<p class="help pad${unfit.length ? ' warn' : ''}" data-quota-demand>${esc(parts.join(' '))}</p>`;
+}
+
 export function attentionItems(data, cur = now()) {
   const plan = data.plan || {};
   const items = [];
@@ -408,9 +426,8 @@ export default {
         }).join('')}</div>
       </section>` : ''}
 
-      ${todayCheckinsSection(data.checkins || [])}
-      ${data.day_capacity?.quota_known_minutes || data.day_capacity?.quota_unknown_count ? `<p class="help pad" data-quota-demand>${esc(t('checkin.quotaDemand', {
-        known: fmtDuration(data.day_capacity.quota_known_minutes || 0), free: fmtDuration(data.day_capacity.safe_reserve_after_quotas_minutes ?? 0) }))}${data.day_capacity.quota_unknown_count ? ` ${esc(t('checkin.quotaUnknown', { n: data.day_capacity.quota_unknown_count }))}` : ''}</p>` : ''}
+      ${todayCheckinsSection(data.checkins || [], { quotaBlocks: plan.quota_blocks || [] })}
+      ${quotaDemandLine(data)}
 
       ${upcoming.length ? `<section class="section" data-soon>
         ${sectionHead(t('today.soon'))}

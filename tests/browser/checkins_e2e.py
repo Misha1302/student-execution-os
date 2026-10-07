@@ -133,5 +133,44 @@ class CheckInsEndToEndTest(RealServerTestCase):
         self.assertEqual(self.errors, [])
 
 
+    def test_4_quota_time_is_planned_and_shown_as_derived(self):
+        """Scenario 7 with a pace: 20 tasks at 3 min, 5 already done -> 45 min in the plan."""
+        page = self._page()
+        self._ready(page, "today")
+        ops = [{"op_id": "e2e-quota-create", "type": "checkin.create", "entity_id": "checkin-e2e-quota", "payload": {
+                    "kind": "QUOTA", "title": "Задачи по матану", "target_quantity": 20, "unit": "задач",
+                    "unit_effort_seconds": 180, "dtstart_local": "2026-10-06T08:00", "recurrence_rule": "FREQ=DAILY",
+                    "timezone_name": "Europe/Moscow", "remind": False}},
+               {"op_id": "e2e-quota-five", "type": "checkin.occurrence.progress", "entity_id": "checkin-e2e-quota",
+                "payload": {"original_recurrence_id": "2026-10-06T08:00:00", "count": 5}}]
+        statuses = page.evaluate("""async (operations) => {
+            const r = await fetch('/api/v1/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                     body: JSON.stringify({ operations }) });
+            return (await r.json()).results.map((x) => x.status); }""", ops)
+        self.assertEqual(statuses, ["APPLIED", "APPLIED"])
+        page.evaluate("location.reload()")
+        self._ready(page, "today")
+        row = page.locator("[data-checkins] .checkin-row", has_text="Задачи по матану")
+        row.wait_for()
+        self.assertIn("5 из 20", row.inner_text())
+        self.assertRegex(row.inner_text(), r"по плану \d\d:\d\d–\d\d:\d\d")
+        demand = page.locator("[data-quota-demand]")
+        self.assertIn("45 мин", demand.inner_text())
+        self._no_overflow(page)
+        # The plan shows it as its own derived item; opening it leads to the quota, not a task.
+        self._go(page, "plan")
+        item = page.locator(".agenda-item.quota").first
+        item.wait_for()
+        self.assertIn("Задачи по матану", item.inner_text())
+        item.click()
+        sheet = page.locator("dialog.sheet[open]")
+        self.assertIn("количеством", sheet.inner_text())
+        self.assertEqual(sheet.locator('[data-action="open-task"]').count(), 0)
+        sheet.locator('[data-nav^="checkin/"]').click()
+        self._ready(page, "checkin")
+        self.assertEqual(self._db("SELECT count(*) AS n FROM obligations")[0]["n"], 0)
+        self.assertEqual(self.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

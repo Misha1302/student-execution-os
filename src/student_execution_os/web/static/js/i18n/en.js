@@ -1963,4 +1963,13 @@ export default {
   'project.historyCaption': 'By completion dates since {from}: now {n}%',
   'checkin.quotaDemand': 'Today’s quotas need about {known} more by your own pace; after them {free} is free.',
   'checkin.quotaUnknown': 'Quotas without a pace: {n} — no time is invented for them.',
+  'checkin.plannedAt': 'planned {slots}',
+  'checkin.quotaPlanned': 'Your quotas need {known} more at your pace; the plan keeps {planned} for them, leaving {free} free.',
+  'checkin.quotaUnfit': 'Does not fit next to required work today: {titles}.',
+  'plan.quotaLeft': 'quota: {n} {unit} left',
+  'plan.quotaHelp': 'I kept this time for a daily quota at your pace. Mark what you did as a count — the time itself never counts as done.',
+  'plan.openCheckin': 'Open the quota',
+  'block.QUOTA': 'Quota time',
+  'explain.DERIVED_QUOTA_DEMAND': 'What is left of a daily quota, at your pace',
+  'reason.QUOTA_DOES_NOT_FIT': 'a daily quota does not fit next to required work',
 };
