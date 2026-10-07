@@ -249,11 +249,15 @@ export function remindAboutSheet(entity) {
 async function checkinPromptAlarms() {
   let feed;
   try { feed = (await load('/api/v1/reminders/alarms', { fresh: true })).data; } catch { return null; }
+  // Today's check-ins as this device knows them, queued answers included (offline too).
+  const known = async (path) => {
+    try { return (await load(path, { cached: true })).data; } catch { return null; }
+  };
+  const today = await known('/api/v1/today');
+  const lists = await known('/api/v1/checkins');
   const answered = new Set();
-  for (const checkin of peek('/api/v1/checkins')?.checkins || []) {
-    for (const occ of checkin.today || []) {
-      if (occ.status !== 'PENDING') answered.add(`${occ.template_id}|${occ.original_recurrence_id}`);
-    }
+  for (const occ of [...(today?.checkins || []), ...(lists?.checkins || []).flatMap((c) => c.today || [])]) {
+    if (occ.status !== 'PENDING') answered.add(`${occ.template_id}|${occ.original_recurrence_id}`);
   }
   return (feed?.alarms || []).filter((r) => r.checkin && isOpen(r)
     && !answered.has(`${r.checkin.template_id}|${r.checkin.original_recurrence_id}`));

@@ -338,7 +338,7 @@ export default {
   'status.title.FEASIBLE': 'Everything fits',
   'status.title.INFEASIBLE': 'Not everything fits',
   'status.title.UNKNOWN': 'The plan is approximate',
-  'status.copy.FEASIBLE': 'Everything fits into your schedule today. Start with the task below.',
+  'status.copy.FEASIBLE': 'Everything fits into your schedule today. Start with the task under “Now”.',
   'status.copy.INFEASIBLE': 'With the current deadlines the work doesn\'t fit your free time. Move something or reduce the scope.',
   'status.copy.INFEASIBLE.reason': 'Hard contradiction: {reason}.',
   'status.copy.UNKNOWN': 'I don\'t have enough information to be sure everything fits.',

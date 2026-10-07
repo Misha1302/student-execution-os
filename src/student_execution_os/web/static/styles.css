@@ -346,7 +346,9 @@ h2.status-unknown { color: var(--warn); }
 .travel-route { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .route { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .route .icon { color: var(--travel); width: 18px; height: 18px; }
-.mini-kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.mini-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.5em, 1fr)); gap: 6px; }
+.mini-kv > div { min-width: 0; }
+.mini-kv dd { overflow-wrap: anywhere; }
 .mini-kv dt { color: var(--text-3); font-size: 11px; }
 .mini-kv dd { font-weight: 650; font-size: 14px; }
 
@@ -680,3 +682,13 @@ details.section.quiet > summary .summary-copy { flex: 1; min-width: 0; }
 }
 .dot.quota, .agenda-item.quota { --tone: var(--ok); --tone-soft: var(--ok-soft); }
 .help.warn { color: var(--warn); }
+/* Narrow phones: «leave by» above the route, so wide fonts never push the card sideways. */
+@media (max-width: 359px) {
+  .travel-card { flex-direction: column; gap: 10px; }
+  .travel-leave { padding-right: 0; border-right: 0; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+}
+/* Desktop rail: a long label wraps onto a second line instead of being cut off. */
+@media (min-width: 900px) {
+  .tab, .rail-only.tab { height: auto; min-height: 42px; }
+  .tab span { white-space: normal; text-overflow: clip; line-height: 1.25; text-align: left; }
+}

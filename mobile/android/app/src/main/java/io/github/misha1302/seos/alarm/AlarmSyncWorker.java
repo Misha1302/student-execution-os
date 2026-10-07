@@ -78,12 +78,11 @@ public class AlarmSyncWorker extends Worker {
      * was fetched for. The check and the write happen under the store's lock, the same
      * lock {@link AlarmStore#clearAccountAlarms} takes, so a response that races a logout
      * or an account switch can never bring the previous account's alarms back.
-     */
-    /**
-     * Replaces the account's alarms with {@code alarms}. {@code withCheckinPrompts}: the list
-     * is the server's full alarm feed, check-in prompts included. A list without them (the
-     * page's own reminders) leaves the check-in alarms this phone already has untouched, so
-     * opening the app can never silence a medication alarm.
+     *
+     * <p>{@code withCheckinPrompts}: the list is the server's full alarm feed, check-in
+     * prompts included. A list without them (the page's own reminders) leaves the check-in
+     * alarms this phone already has untouched, so opening the app can never silence a
+     * medication alarm.
      */
     static int apply(Context context, JSONArray alarms, String owner, boolean withCheckinPrompts) throws JSONException {
         synchronized (AlarmStore.class) {

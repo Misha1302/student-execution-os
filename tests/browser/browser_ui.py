@@ -54,6 +54,7 @@ class BrowserUiTest(unittest.TestCase):
             "/api/v1/evidence": service.account.evidence(),
             "/api/v1/places": service.events.places(),
             "/api/v1/checkins": service.checkins.checkins(),
+            "/api/v1/work-routines": service.routines.work_routines(),
             "/api/v1/outlook?range=week": service.planning.outlook("week", None),
             "/api/v1/outlook?range=month": service.planning.outlook("month", None),
             "/api/v1/settings/diagnostics": service.account.diagnostics(),
@@ -381,6 +382,27 @@ class BrowserUiTest(unittest.TestCase):
                 found[view] = small
             page.close()
         self.assertEqual(found, {}, "controls under 44 px on a phone")
+
+    def test_layout_matrix_wide_font_no_sideways_scroll_and_phone_targets(self):
+        """CI renders with DejaVu Sans, wider than most local fonts: force it everywhere."""
+        found = []
+        views = ("today", "plan", "more", "checkins", "places", "tasks", "settings", "notifications", "routines", "calendar")
+        for width, locale, theme in ((320, "ru", "light"), (375, "en", "dark"), (412, "ru", "dark"), (768, "en", "light"),
+                                     (1280, "ru", "light")):
+            for view in views:
+                page = self._open(width=width, height=800, locale=locale, theme=theme, hash_=f"#/{view}")
+                self._ready(page, view)
+                page.evaluate("(f) => document.querySelectorAll('*').forEach((e) => e.style.setProperty('font-family', f, 'important'))",
+                              "DejaVu Sans")
+                page.wait_for_timeout(30)
+                if page.evaluate("document.documentElement.scrollWidth") > width:
+                    found.append((width, locale, view, "scrolls sideways"))
+                if width < 900 and page.evaluate(TOUCH_AUDIT_JS):
+                    found.append((width, locale, view, page.evaluate(TOUCH_AUDIT_JS)[:3]))
+                if self.page_errors:
+                    found.append((width, locale, view, self.page_errors[:2]))
+                page.close()
+        self.assertEqual(found, [])
 
     def test_task_detail_is_human_and_progress_conflict_is_visible(self):
         page = self._open()

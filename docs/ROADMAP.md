@@ -39,33 +39,39 @@ expires entitlements, monetary reconciliation, plan policy, and operator alerts.
 ### Progress beyond time
 
 Implemented: counted progress per task; checklists inside Tasks with order, optional
-step effort and done share (ADR 0036); milestone progress and a history by completion
-dates for projects; daily quotas as quantity check-ins whose user-given pace is reserved
-from the day's free time (ADR 0034/0036). Planned:
+step effort and done share (ADR 0036), editable through the Assistant (typed
+`CHECKLIST_STEP`, RU/EN phrases without a model); milestone progress and a history by
+completion dates for projects; daily quotas as quantity check-ins whose remaining time at
+the user's pace is reserved by the planner as derived QUOTA blocks (ADR 0034/0036).
+Planned:
 
-- Daily quotas placed as plan blocks (today they are reported next to capacity, not
-  scheduled), and a stored per-day progress series (today reconstructed).
-- Checklist editing through the Assistant.
+- A stored per-day progress series (today reconstructed).
+- Quota time in the week/month outlook (today only the 36-hour plan reserves it); the
+  plan's quota time follows offline quota progress only after the next online plan.
 
 ### Offline and events
 
-- Offline creation of class series (`series.create`) and offline attachments (today
-  online-only). Check-ins, reminder series, places, place reminders, an event's place
-  and checklists are offline-first (v31–v33).
-- Hybrid event location-option selection offline (today an online request); a place for
-  imported class series (source-owned templates).
+- Offline attachments (online-only: the bytes need a durable owner, retry/restart, limits,
+  orphan cleanup and upload idempotency before they can be queued). Class series,
+  check-ins, reminder series, places, place reminders, an event's place and checklists are
+  offline-first.
+- Choosing one of a hybrid event's location options: only the REST endpoint exists (no
+  screen yet); the screen and its offline sync operation come together. A place for
+  imported class series needs a user layer over the source-owned template.
 
 ### Daily execution (open items)
 
-- An alarm dismissal on a medication prompt is not an outcome by design; an optional
-  «Принял» on the alarm screen is not built yet.
 - Current location from place-reminder crossings (opt-in) is not built; the planner uses
   only the user's statement with an expiry.
+- Check-in history: the detail shows the last 30 days and says so; older days are kept
+  but not browsable yet.
 
 ### Other open items
 
-- Password reset/change and e-mail verification.
-- Per-account rate limits shared across several server processes.
+- Password reset/change and e-mail verification (hosted-scale: registration is open, but
+  accounts are login-based and there is no e-mail channel yet).
+- Per-account rate limits shared across several server processes (production runs one
+  api process; per-process limits apply).
 - Routing: the provider boundary and Yandex Distance Matrix adapter exist (ADR 0035);
   a live-provider check needs a key in production. OAuth connector providers in
   production.

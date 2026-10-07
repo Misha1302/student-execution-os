@@ -69,5 +69,13 @@ needs small repeated actions whose real outcome matters — a medication at 09:0
 * Account export/deletion/backup cover the four new tables and `deleted_entities`;
   rollback 031 drops them and leaves already-materialized reminders as valid one-shot
   reminders.
-* Not done: alarms dismissing a medication prompt do not record an outcome (by design);
-  check-in history beyond 35 days is materialized only when a day was in a horizon.
+* Alarm answers (stabilization, 2026-10): a check-in prompt delivered as an alarm carries
+  its occurrence identity and kind in `/api/v1/reminders/alarms`. The ringing screen and
+  its notification offer «Принял»/«Сделал», «Отложить» and «Не принял»/«Пропущу»; an
+  answer records `checkin.occurrence.done/skip` for exactly that occurrence with the
+  moment of the press through the durable WorkManager queue (op id fixed by alarm, moment
+  and answer). Silencing is still not an outcome, so such an alarm has no plain
+  «Выключить». A quota prompt keeps the ordinary buttons (it needs a count). The page's own
+  alarm sync no longer drops check-in alarms the phone already has.
+* Not done: check-in history beyond 35 days is materialized only when a day was in a
+  horizon; the detail screen shows (and says) the last 30 days.

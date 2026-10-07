@@ -459,7 +459,7 @@ export default {
       ${transientSources.length ? `<details class="section quiet" data-source-status><summary>${esc(t('today.sourceStatus'))}</summary>${transientSources.map(sourceLine).join('')}</details>` : ''}
 
       ${nothingYet ? '' : `<details class="section quiet" data-planner-status data-day-details>
-        <summary>${feasible ? icon(statusIcon(plan.feasibility_status)) : ''}<span class="summary-copy">${esc(feasible ? statusCopy(plan.feasibility_status, plan.explanations, data.tasks || [], events).text : t('today.dayDetails'))}${folded ? ` <small class="muted">· ${esc(folded)}</small>` : ''}</span></summary>
+        <summary>${feasible ? icon(statusIcon(plan.feasibility_status)) : ''}<span class="summary-copy">${esc(feasible ? t('status.title.FEASIBLE') : t('today.dayDetails'))}${folded ? ` <small class="muted">· ${esc(folded)}</small>` : ''}</span></summary>
         ${feasible ? heroStatus(plan, data.tasks || []) : ''}
 
         ${inbox.length ? `<section class="section">

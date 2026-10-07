@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from time import monotonic
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from time import monotonic
 
 from student_execution_os.domain.clock import Clock, SystemClock
-from datetime import datetime, timedelta
-
 from student_execution_os.domain.model import (
     AttendancePolicy,
     CutoffState,
@@ -69,8 +68,8 @@ def _quota_work(snapshot: PlanningSnapshot) -> dict[str, tuple[Task, QuotaDemand
     """
     out: dict[str, tuple[Task, QuotaDemand]] = {}
     for demand in snapshot.quota_demands:
-        start = max(_minute_up(demand.available_from), snapshot.analysis_horizon_start.replace(second=0, microsecond=0))
-        start = _minute_up(start)
+        # The engine works on whole minutes: start no earlier, end no later than allowed.
+        start = _minute_up(max(demand.available_from, snapshot.analysis_horizon_start))
         due = demand.due_by.replace(second=0, microsecond=0)
         if due > snapshot.analysis_horizon_end:
             due = snapshot.analysis_horizon_end.replace(second=0, microsecond=0)
