@@ -23,14 +23,19 @@ public class GeofenceReceiver extends BroadcastReceiver {
     static final String EXTRA_TRIGGER = "seos.trigger";
     static final String EXTRA_DONE = "seos.trigger_done";
 
+    /** Notification tag and WorkManager tag of everything one trigger queued or shows. */
+    static String sourceTag(String triggerId) {
+        return "seos:geo:" + triggerId;
+    }
+
     @Override
     public void onReceive(Context context, Intent intent) {
         String triggerId = intent.getStringExtra(EXTRA_TRIGGER);
         if (triggerId == null) return;
         if (intent.getBooleanExtra(EXTRA_DONE, false)) {
             ReminderActionWorker.enqueue(context, "geo-done-" + triggerId, GeofenceDecisions.doneOperations(triggerId),
-                    "seos:geo:" + triggerId, "", "/places");
-            NotificationManagerCompat.from(context).cancel("seos:geo:" + triggerId, NOTIFICATION_ID);
+                    sourceTag(triggerId), "", "/places");
+            NotificationManagerCompat.from(context).cancel(sourceTag(triggerId), NOTIFICATION_ID);
             return;
         }
         if (!intent.hasExtra(LocationManager.KEY_PROXIMITY_ENTERING)) return;
@@ -47,7 +52,7 @@ public class GeofenceReceiver extends BroadcastReceiver {
         GeofenceStore.setLastFired(context, triggerId, now);
         String operations = GeofenceDecisions.fireOperations(triggerId, spec.transition, now);
         ReminderActionWorker.enqueue(context, "geo-fire-" + triggerId + "-" + (now / 600_000L), operations,
-                "seos:geo:" + triggerId, "", "/places");
+                sourceTag(triggerId), "", "/places");
         if (!spec.repeat) GeofenceRegistrar.forget(context, triggerId);  // one-shot: stop watching here
         show(context, spec);
     }
@@ -73,7 +78,7 @@ public class GeofenceReceiver extends BroadcastReceiver {
                 .setAutoCancel(true)
                 .addAction(0, ru ? "Готово" : "Done", doneIntent);
         try {
-            NotificationManagerCompat.from(context).notify("seos:geo:" + spec.id, NOTIFICATION_ID, builder.build());
+            NotificationManagerCompat.from(context).notify(sourceTag(spec.id), NOTIFICATION_ID, builder.build());
         } catch (SecurityException denied) {
             // Notifications not allowed: the firing still reaches the server and the app.
         }

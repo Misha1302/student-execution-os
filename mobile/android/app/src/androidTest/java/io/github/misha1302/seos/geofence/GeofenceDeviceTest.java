@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.content.Intent;
 import android.location.Criteria;
 import android.location.Location;
 import android.location.LocationManager;
@@ -15,6 +16,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.work.WorkInfo;
 import androidx.work.WorkManager;
 import io.github.misha1302.seos.alarm.AlarmSyncWorker;
+import io.github.misha1302.seos.reminders.ReminderActionWorker;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.Collections;
@@ -30,7 +32,8 @@ import org.junit.runner.RunWith;
  * receiver when a (mock) position crosses into the trigger's area, the phone records it
  * once, queues the firing for the server, and a second crossing of a one-shot trigger
  * does nothing, and another account's trigger never fires. No server is needed: the
- * queued sync operation is checked in WorkManager. (Revoking a runtime permission kills
+ * queued sync operation is checked in WorkManager, scoped to the trigger's own tag so
+ * jobs other device tests queued (same worker, same shared tag) are never counted. (Revoking a runtime permission kills
  * the app process, so the denied path is covered by the registrar's permission check.)
  */
 @RunWith(AndroidJUnit4.class)
@@ -73,7 +76,13 @@ public class GeofenceDeviceTest {
                 android.location.provider.ProviderProperties.ACCURACY_FINE);
         manager.setTestProviderEnabled(provider, true);
         GeofenceRegistrar.clear(context);
-        WorkManager.getInstance(context).cancelAllWork();
+        // Earlier device tests (the wake alarm's «Я встал», notification buttons) queue
+        // ReminderActionWorker jobs too. Cancel what is pending and drop finished records
+        // so nothing from another test is in the database; the assertions below are in
+        // any case scoped to the trigger under test.
+        WorkManager work = WorkManager.getInstance(context);
+        work.cancelAllWork().getResult().get();
+        work.pruneWork().getResult().get();
         move(LAT + 0.05, LON);  // ~5.5 km away
     }
 
@@ -123,10 +132,55 @@ public class GeofenceDeviceTest {
         move(LAT, LON);
         Thread.sleep(5000);
         assertEquals(first, GeofenceStore.lastFired(context, home.id));
-        List<WorkInfo> work = WorkManager.getInstance(context).getWorkInfosByTag("seos-reminder-action").get();
-        int fires = 0;
-        for (WorkInfo info : work) if (info.getState() != WorkInfo.State.CANCELLED) fires++;
-        assertEquals("the firing is queued once for the server", 1, fires);
+        assertEquals("the firing is queued once for the server", 1, queuedFor(home.id));
+    }
+
+    /** Sync jobs this trigger queued, across every ten-minute bucket and retry. */
+    private int queuedFor(String triggerId) throws Exception {
+        List<WorkInfo> work = WorkManager.getInstance(context).getWorkInfosByTag(GeofenceReceiver.sourceTag(triggerId)).get();
+        int queued = 0;
+        for (WorkInfo info : work) {
+            assertTrue("a place trigger only queues the shared sync action", info.getTags().contains(ReminderActionWorker.QUEUE_TAG));
+            if (info.getState() != WorkInfo.State.CANCELLED) queued++;
+        }
+        return queued;
+    }
+
+    private Intent crossing(String triggerId, boolean entering) {
+        return new Intent(context, GeofenceReceiver.class)
+                .putExtra(GeofenceReceiver.EXTRA_TRIGGER, triggerId)
+                .putExtra(LocationManager.KEY_PROXIMITY_ENTERING, entering);
+    }
+
+    /**
+     * The platform may deliver one crossing twice, or deliver the other direction. Fed
+     * straight into the receiver (no location timing involved): a one-shot trigger fires
+     * and queues exactly once, a doubled callback adds nothing, and the opposite
+     * transition of an EXIT trigger is ignored.
+     */
+    @Test
+    public void aDoubledCallbackOrTheWrongTransitionQueuesNothingMore() throws Exception {
+        String owner = AlarmSyncWorker.sessionOwnerOf(context);
+        Assume.assumeTrue("no session owner", owner != null);
+        GeofenceStore.setOwner(context, owner);
+        GeofenceSpec once = new GeofenceSpec("trigger-device-once", "Купить хлеб", "ENTER", LAT, LON, 200f, false, "Магазин");
+        GeofenceSpec leave = new GeofenceSpec("trigger-device-leave", "Выключить свет", "EXIT", LAT, LON, 200f, true, "Дом");
+        GeofenceStore.save(context, java.util.Arrays.asList(once, leave));
+        GeofenceReceiver receiver = new GeofenceReceiver();
+
+        receiver.onReceive(context, crossing(once.id, true));
+        long first = GeofenceStore.lastFired(context, once.id);
+        assertTrue("the first crossing fires", first > 0);
+        receiver.onReceive(context, crossing(once.id, true));
+        assertEquals(first, GeofenceStore.lastFired(context, once.id));
+        assertEquals("a doubled callback is one queued operation", 1, queuedFor(once.id));
+
+        receiver.onReceive(context, crossing(leave.id, true));  // entering an EXIT trigger
+        assertEquals(0, GeofenceStore.lastFired(context, leave.id));
+        assertEquals(0, queuedFor(leave.id));
+        receiver.onReceive(context, crossing(leave.id, false));
+        receiver.onReceive(context, crossing(leave.id, false));  // inside the repeat cool-down
+        assertEquals("a repeating trigger waits for its cool-down", 1, queuedFor(leave.id));
     }
 
     @Test

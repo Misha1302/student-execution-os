@@ -42,6 +42,8 @@ public class ReminderActionWorker extends Worker {
     static final String KEY_DEEP_LINK = "deep_link";
     static final String PREFERENCES = "CapacitorStorage";
     static final int MAX_ATTEMPTS = 12;
+    /** Every queued notification action; the per-source tag is the notification tag. */
+    public static final String QUEUE_TAG = "seos-reminder-action";
 
     /**
      * Queues sync operations for delivery (survives process death, waits for network).
@@ -55,12 +57,14 @@ public class ReminderActionWorker extends Worker {
                 .putString(KEY_FAILED_LABEL, failedLabel)
                 .putString(KEY_DEEP_LINK, deepLink)
                 .build();
-        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(ReminderActionWorker.class)
+        OneTimeWorkRequest.Builder builder = new OneTimeWorkRequest.Builder(ReminderActionWorker.class)
                 .setInputData(input)
                 .setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.SECONDS)
-                .addTag("seos-reminder-action")
-                .build();
+                .addTag(QUEUE_TAG);
+        // The source (one reminder, one place trigger) can find exactly its own queued work.
+        if (tag != null && !tag.isEmpty()) builder.addTag(tag);
+        OneTimeWorkRequest request = builder.build();
         WorkManager.getInstance(context).enqueueUniqueWork(uniqueName, ExistingWorkPolicy.KEEP, request);
     }
 

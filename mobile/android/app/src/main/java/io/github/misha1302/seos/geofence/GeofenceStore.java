@@ -57,7 +57,8 @@ final class GeofenceStore {
     }
 
     static synchronized void setLastFired(Context context, String id, long at) {
-        prefs(context).edit().putLong("fired." + id, at).apply();
+        // Synchronous: the one-shot guard must survive the receiver's process being killed.
+        prefs(context).edit().putLong("fired." + id, at).commit();
     }
 
     static synchronized String owner(Context context) {

@@ -23,6 +23,7 @@ import com.getcapacitor.annotation.PermissionCallback;
 import com.getcapacitor.PermissionState;
 import io.github.misha1302.seos.geofence.GeofenceRegistrar;
 import io.github.misha1302.seos.geofence.GeofenceSyncWorker;
+import io.github.misha1302.seos.reminders.ReminderActionWorker;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -152,7 +153,7 @@ public class SeosNativePlugin extends Plugin {
         int removed = AlarmStore.clearAccountAlarms(getContext());
         WorkManager work = WorkManager.getInstance(getContext());
         work.cancelUniqueWork("seos-alarm-sync");
-        work.cancelAllWorkByTag("seos-reminder-action");
+        work.cancelAllWorkByTag(ReminderActionWorker.QUEUE_TAG);
         JSObject out = new JSObject();
         out.put("removed", removed);
         call.resolve(out);
