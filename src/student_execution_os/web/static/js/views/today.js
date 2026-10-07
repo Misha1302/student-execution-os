@@ -88,15 +88,27 @@ function boundaries(data) {
   return items.filter((b) => new Date(b.at) >= cur).sort((a, b) => new Date(a.at) - new Date(b.at)).slice(0, 5);
 }
 
-function travelCard(travel) {
+// Travel the plan cannot work out is a problem to solve; a known route is a time to leave.
+function travelProblems(travel) {
   if (travel?.unknown_reasons?.length) {
     return `<div class="banner warn">${icon('alert')}<div><strong>${esc(t('travel.unknown'))}</strong><p>${esc([...new Set(travel.unknown_reasons.map((r) => explainReason(r).text))].join(' · '))}</p></div></div>`;
   }
   if (travel?.infeasible_reasons?.length) {
     return `<div class="banner danger">${icon('alert')}<div><strong>${esc(t('travel.infeasible'))}</strong><p>${esc([...new Set(travel.infeasible_reasons.map((r) => explainReason(r).text))].join(' · '))}</p></div></div>`;
   }
-  const upcoming = (travel?.transitions || []).filter((x) => new Date(x.travel_ends_at) >= now());
-  return upcoming.map((x) => `
+  return '';
+}
+
+// Departures within this window are "leave soon" — an action, shown with the problems.
+const LEAVE_SOON_MS = 2 * 3600000;
+
+function travelTransitions(travel, cur = now()) {
+  if (travel?.unknown_reasons?.length || travel?.infeasible_reasons?.length) return [];
+  return (travel?.transitions || []).filter((x) => new Date(x.travel_ends_at) >= cur);
+}
+
+function travelCard(x) {
+  return `
     <article class="card travel-card">
       <div class="travel-leave">
         <span class="eyebrow">${esc(t('travel.leaveBy'))}</span>
@@ -111,7 +123,31 @@ function travelCard(travel) {
           <div><dt>${esc(t('travel.arrive'))}</dt><dd>${esc(fmtTime(x.travel_ends_at))}</dd></div>
         </dl>
       </div>
-    </article>`).join('');
+    </article>`;
+}
+
+const AUTH_FAILURE = /AUTH|CREDENTIAL|PERMISSION|TOKEN_EXPIRED|HTTP_401|HTTP_403/iu;
+
+function sourceLine(source) {
+  const actionRequired = AUTH_FAILURE.test(source.latest_failure_reason || '');
+  const last = source.last_successful_complete_sync_at;
+  return `<p>${esc(t(actionRequired ? 'today.sourceAction' : 'today.sourceTransient'))}${last ? ` ${esc(t('today.sourceLastKnown', { when: fmtDateTime(last) }))}` : ''}</p>${actionRequired ? `<button class="button small" data-nav="settings">${esc(t('today.sourceFix'))}</button>` : ''}`;
+}
+
+// What needs the user's decision before the plan can be trusted. Empty when nothing
+// does: a plan that fits is not news and lives in the day details below.
+export function attentionItems(data, cur = now()) {
+  const plan = data.plan || {};
+  const items = [];
+  if (plan.feasibility_status && plan.feasibility_status !== 'FEASIBLE') items.push(heroStatus(plan, data.tasks || []));
+  const travelProblem = travelProblems(data.travel);
+  if (travelProblem) items.push(travelProblem);
+  for (const x of travelTransitions(data.travel, cur)) {
+    if (new Date(x.latest_safe_departure).getTime() - cur.getTime() <= LEAVE_SOON_MS) items.push(travelCard(x));
+  }
+  const blocked = (data.source_health || []).filter((s) => s.health_status !== 'CURRENT' && AUTH_FAILURE.test(s.latest_failure_reason || ''));
+  if (blocked.length) items.push(`<div class="banner warn" data-source-action>${icon('alert')}<div>${sourceLine(blocked[0])}</div></div>`);
+  return items;
 }
 
 function nowCard(action, task, plan) {
@@ -221,7 +257,7 @@ function dailyIntentCard(data, tasks) {
   const ids = intent?.priority_task_ids || [];
   const chosen = ids.map((id) => tasks.get(id)).filter(Boolean);
   if (!intent || intent.closed_at) {
-    return `<section class="section"><button class="link" data-action="intent-edit">${icon('flag')} ${esc(t('intent.edit'))}</button></section>`;
+    return `<section class="section"><button class="link" data-action="intent-edit">${icon('flag')} ${esc(t('intent.choose'))}</button></section>`;
   }
   return `<section class="section"><article class="card">
     <div class="section-head"><div><span class="eyebrow">${esc(t('intent.eyebrow'))}</span>
@@ -320,28 +356,45 @@ export default {
     const inSoon = new Set(upcoming.filter((x) => x.kind !== 'TASK').map((x) => x.id));
     const otherEvents = events.filter((e) => e.id !== currentEvent?.id && !inSoon.has(e.id));
     const atRisk = (data.tasks || []).filter((x) => ['AT_RISK', 'CRITICAL', 'IMPOSSIBLE', 'OVERDUE'].includes(x.risk?.state));
-    const travel = travelCard(data.travel);
+    const attention = attentionItems(data, cur);
+    const laterTravel = travelTransitions(data.travel, cur)
+      .filter((x) => new Date(x.latest_safe_departure).getTime() - cur.getTime() > LEAVE_SOON_MS);
     const bounds = boundaries(data);
+    const transientSources = unhealthy.filter((s) => !AUTH_FAILURE.test(s.latest_failure_reason || ''));
+    const inbox = data.inbox_notes || [];
 
     const nothingYet = !(data.tasks || []).length && !(data.needs_refinement || []).length && !events.length && !(data.reminders || []).length && !(data.checkins || []).length;
     const capture = `<button class="capture-cta" data-action="compose">
         <span class="capture-cta-copy"><strong>${esc(t('capture.title'))}</strong><small>${esc(t('capture.ctaHint'))}</small></span>
         <span class="capture-cta-icons">${icon('plus')}</span></button>`;
+    const feasible = plan.feasibility_status === 'FEASIBLE';
+    // The summary line of the day details: the plan status when it fits (not news),
+    // plus how much is folded inside, so nothing is hidden without a trace.
+    const folded = [
+      otherEvents.length ? t('today.foldEvents', { n: otherEvents.length }) : '',
+      bounds.length ? t('today.foldBoundaries', { n: bounds.length }) : '',
+      inbox.length ? t('today.foldCaptures', { n: inbox.length }) : '',
+    ].filter(Boolean).join(' · ');
     return `
       ${nothingYet ? `<section class="section">${capture}<p class="help pad">${esc(t('today.firstHint'))}</p></section>` : ''}
 
-      <section class="section ${nothingYet ? 'hidden' : ''}">
+      <section class="section ${nothingYet ? 'hidden' : ''}" data-now>
         ${sectionHead(t('today.now'))}
         ${activeExecution ? executionCard(activeExecution, activeExecutionTask) : currentEvent ? `<article class="card now-card event-now-card" data-action="open-event" data-id="${esc(currentEvent.id)}">
           <div class="now-head"><span class="eyebrow">${esc(t('today.eventNow'))}</span>${chip(t('today.fixedEvent'), 'accent')}</div>
           <h3>${esc(currentEvent.title)}</h3>
           <p class="muted">${esc(fmtTime(currentEvent.starts_at))}–${esc(fmtTime(currentEvent.ends_at))}</p>
         </article>` : first ? nowCard(first, tasks.get(first.task_id), plan) : suggestion ? fallbackNowCard(suggestion) : nothingYet ? '' : empty(
-          plan.feasibility_status === 'FEASIBLE' ? t('today.nothing') : t('today.resolveFirst'),
-          plan.feasibility_status === 'FEASIBLE' ? t('today.nothingHint') : t('today.resolveFirstHint'),
-          plan.feasibility_status === 'FEASIBLE' ? 'check' : 'question',
+          feasible ? t('today.nothing') : t('today.resolveFirst'),
+          feasible ? t('today.nothingHint') : t('today.resolveFirstHint'),
+          feasible ? 'check' : 'question',
         )}
       </section>
+
+      ${attention.length && !nothingYet ? `<section class="section attention" data-attention>
+        ${sectionHead(t('today.attention'))}
+        ${attention.join('')}
+      </section>` : ''}
 
       ${rest.length ? `<section class="section">
         ${sectionHead(t('today.upNext'), `<button class="link" data-nav="plan">${esc(t('today.fullPlan'))}</button>`)}
@@ -364,23 +417,7 @@ export default {
         <div class="list">${upcoming.map((x) => soonRow(x, cur)).join('')}</div>
       </section>` : ''}
 
-      ${nothingYet ? '' : `<details class="section" data-planner-status><summary>${icon(statusIcon(plan.feasibility_status))} ${esc(statusCopy(plan.feasibility_status, plan.explanations, data.tasks || [], events).text)}</summary>${heroStatus(plan, data.tasks || [])}</details>`}
-      ${nothingYet ? '' : dailyIntentCard(data, tasks)}
-      ${unhealthy.length ? `<details class="section" data-source-status><summary>${esc(t('today.sourceStatus'))}</summary>${unhealthy.map((source) => {
-        const actionRequired = /AUTH|CREDENTIAL|PERMISSION|TOKEN_EXPIRED|HTTP_401|HTTP_403/iu.test(source.latest_failure_reason || '');
-        const last = source.last_successful_complete_sync_at;
-        return `<p>${esc(t(actionRequired ? 'today.sourceAction' : 'today.sourceTransient'))}${last ? ` ${esc(t('today.sourceLastKnown', { when: fmtDateTime(last) }))}` : ''}</p>${actionRequired ? `<button class="button small" data-nav="settings">${esc(t('status.fix'))}</button>` : ''}`;
-      }).join('')}</details>` : ''}
-
-      ${data.needs_refinement?.length ? `<section class="section">
-        ${sectionHead(t('today.needsRefinement'))}
-        <div class="list">${data.needs_refinement.map((x) => `<button class="row" data-action="open-task" data-id="${esc(x.id)}">
-          <span class="row-main"><strong>${esc(x.title)}</strong><small>${esc(t('today.needsEstimate'))}</small></span>
-          ${icon('chevron')}
-        </button>`).join('')}</div>
-      </section>` : ''}
-
-      ${travel ? `<section class="section">${sectionHead(t('today.travel'))}${travel}</section>` : ''}
+      ${laterTravel.length ? `<section class="section">${sectionHead(t('today.travel'))}${laterTravel.map((x) => travelCard(x)).join('')}</section>` : ''}
 
       ${atRisk.length ? `<section class="section">
         ${sectionHead(t('today.atRisk'))}
@@ -392,35 +429,52 @@ export default {
 
       ${todayReminders(data.reminders, cur, inSoon)}
 
-      ${(data.inbox_notes || []).length ? `<section class="section">
-        ${sectionHead(t('today.captures'), `<button class="link" data-nav="notes">${esc(t('nav.notes'))}</button>`)}
-        <div class="list">${data.inbox_notes.map((n) => `<button class="row" data-action="open-note" data-id="${esc(n.id)}">
-          <span class="row-icon tone-accent">${icon(n.audio ? 'mic' : 'note')}</span>
-          <span class="row-main"><strong>${esc((n.content || n.transcript || t('note.voice')).slice(0, 120))}</strong><small>${esc(t('note.unprocessed'))}</small></span>
+      ${data.needs_refinement?.length ? `<section class="section">
+        ${sectionHead(t('today.needsRefinement'))}
+        <div class="list">${data.needs_refinement.map((x) => `<button class="row" data-action="open-task" data-id="${esc(x.id)}">
+          <span class="row-main"><strong>${esc(x.title)}</strong><small>${esc(t('today.needsEstimate'))}</small></span>
           ${icon('chevron')}
         </button>`).join('')}</div>
       </section>` : ''}
 
-      <section class="section">
-        ${sectionHead(t('today.events'), `<button class="link" data-nav="calendar">${esc(t('nav.calendar'))}</button>`)}
-        ${otherEvents.length ? `<div class="list">${otherEvents.map((e) => {
-          const running = new Date(e.starts_at) <= cur;
-          return `<button class="row${running ? ' current' : ''}" data-action="open-event" data-id="${esc(e.id)}">
-          <span class="row-time"><strong>${esc(fmtTime(e.starts_at))}</strong><small>${esc(fmtTime(e.ends_at))}</small></span>
-          <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(eventBits(e, cur))}</small></span>
-          ${running ? chip(t('today.eventNowChip'), 'accent') : ''}
-        </button>`;
-        }).join('')}</div>` : `<p class="muted pad">${esc(t(events.length ? 'today.eventsAbove' : 'today.noEvents'))}</p>`}
-      </section>
+      ${nothingYet ? '' : dailyIntentCard(data, tasks)}
 
-      <section class="section">
-        ${sectionHead(t('today.boundaries'))}
-        ${bounds.length ? `<div class="list">${bounds.map((b) => `<button class="row" data-action="open-task" data-id="${esc(b.id)}">
-          <span class="row-icon tone-${b.kind === 'cutoff' ? 'danger' : b.kind === 'lss' ? 'warn' : 'accent'}">${icon(b.kind === 'cutoff' ? 'flag' : b.kind === 'lss' ? 'clock' : 'task')}</span>
-          <span class="row-main"><strong>${esc(b.title)}</strong><small>${esc(t(`bound.${b.kind}`))} · ${esc(fmtDateTime(b.at))}</small></span>
-          <span class="row-aside">${esc(fmtRelative(b.at))}</span>
-        </button>`).join('')}</div>` : `<p class="muted pad">${esc(t('today.noBoundaries'))}</p>`}
-      </section>`;
+      ${transientSources.length ? `<details class="section quiet" data-source-status><summary>${esc(t('today.sourceStatus'))}</summary>${transientSources.map(sourceLine).join('')}</details>` : ''}
+
+      ${nothingYet ? '' : `<details class="section quiet" data-planner-status data-day-details>
+        <summary>${feasible ? icon(statusIcon(plan.feasibility_status)) : ''}<span class="summary-copy">${esc(feasible ? statusCopy(plan.feasibility_status, plan.explanations, data.tasks || [], events).text : t('today.dayDetails'))}${folded ? ` <small class="muted">· ${esc(folded)}</small>` : ''}</span></summary>
+        ${feasible ? heroStatus(plan, data.tasks || []) : ''}
+
+        ${inbox.length ? `<section class="section">
+          ${sectionHead(t('today.captures'), `<button class="link" data-nav="notes">${esc(t('nav.notes'))}</button>`)}
+          <div class="list">${inbox.map((n) => `<button class="row" data-action="open-note" data-id="${esc(n.id)}">
+            <span class="row-icon tone-accent">${icon(n.audio ? 'mic' : 'note')}</span>
+            <span class="row-main"><strong>${esc((n.content || n.transcript || t('note.voice')).slice(0, 120))}</strong><small>${esc(t('note.unprocessed'))}</small></span>
+            ${icon('chevron')}
+          </button>`).join('')}</div>
+        </section>` : ''}
+
+        <section class="section">
+          ${sectionHead(t('today.events'), `<button class="link" data-nav="calendar">${esc(t('nav.calendar'))}</button>`)}
+          ${otherEvents.length ? `<div class="list">${otherEvents.map((e) => {
+            const running = new Date(e.starts_at) <= cur;
+            return `<button class="row${running ? ' current' : ''}" data-action="open-event" data-id="${esc(e.id)}">
+            <span class="row-time"><strong>${esc(fmtTime(e.starts_at))}</strong><small>${esc(fmtTime(e.ends_at))}</small></span>
+            <span class="row-main"><strong>${esc(e.title)}</strong><small>${esc(eventBits(e, cur))}</small></span>
+            ${running ? chip(t('today.eventNowChip'), 'accent') : ''}
+          </button>`;
+          }).join('')}</div>` : `<p class="muted pad">${esc(t(events.length ? 'today.eventsAbove' : 'today.noEvents'))}</p>`}
+        </section>
+
+        ${bounds.length ? `<section class="section">
+          ${sectionHead(t('today.boundaries'))}
+          <div class="list">${bounds.map((b) => `<button class="row" data-action="open-task" data-id="${esc(b.id)}">
+            <span class="row-icon tone-${b.kind === 'cutoff' ? 'danger' : b.kind === 'lss' ? 'warn' : 'accent'}">${icon(b.kind === 'cutoff' ? 'flag' : b.kind === 'lss' ? 'clock' : 'task')}</span>
+            <span class="row-main"><strong>${esc(b.title)}</strong><small>${esc(t(`bound.${b.kind}`))} · ${esc(fmtDateTime(b.at))}</small></span>
+            <span class="row-aside">${esc(fmtRelative(b.at))}</span>
+          </button>`).join('')}</div>
+        </section>` : ''}
+      </details>`}`;
   },
   mount(root, data, ctx) {
     const session = data?.active_execution || null;

@@ -38,7 +38,7 @@ export default {
           <button class="button small ghost danger" data-action="checkin-delete">${icon('x')}${esc(t('lifecycle.delete'))}</button>
         </div>
       </section>
-      <section class="section">${sectionHead(t('checkin.history'))}
+      <section class="section" data-history>${sectionHead(t('checkin.history'), `<span class="muted">${esc(t('checkin.historyWindow', { n: data.history_days || 30 }))}</span>`)}
         ${days || `<p class="muted pad">${esc(t('checkin.noHistory'))}</p>`}
       </section>`;
   },

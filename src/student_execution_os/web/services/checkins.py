@@ -116,7 +116,8 @@ class CheckInQueries(ApplicationService):
             store.ensure_horizon(self.account_id, now)
             template = store.get_template(self.account_id, template_id)
             history = _history(store, self.account_id, template, now, HISTORY_DAYS)
-            return {"now": _jsonify(now), **template_payload(template), "history": history}
+            # The detail shows a bounded window, and says so: it is not the full history.
+            return {"now": _jsonify(now), **template_payload(template), "history": history, "history_days": HISTORY_DAYS}
 
     def reminder_series(self) -> list[dict[str, Any]]:
         with self._repo() as repo:

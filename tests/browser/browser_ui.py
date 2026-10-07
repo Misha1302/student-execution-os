@@ -12,6 +12,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from student_execution_os.web.queries import UiService
+from tests.browser.touch import TOUCH_AUDIT_JS
 from tests.ui_fixture import ACCOUNT, NOW, seed_ui_database
 
 CHROMIUM = os.environ.get("CHROMIUM_PATH") or ("/usr/bin/chromium" if Path("/usr/bin/chromium").exists() else None)
@@ -52,6 +53,7 @@ class BrowserUiTest(unittest.TestCase):
             "/api/v1/notifications": service.notifications.notifications(),
             "/api/v1/evidence": service.account.evidence(),
             "/api/v1/places": service.events.places(),
+            "/api/v1/checkins": service.checkins.checkins(),
             "/api/v1/outlook?range=week": service.planning.outlook("week", None),
             "/api/v1/outlook?range=month": service.planning.outlook("month", None),
             "/api/v1/settings/diagnostics": service.account.diagnostics(),
@@ -320,6 +322,65 @@ class BrowserUiTest(unittest.TestCase):
                 self.assertIn(tasks[0]["title"], self._text(page))
             page.close()
             self.responses["/api/v1/today"] = original
+
+    def test_today_puts_the_next_action_first_and_folds_passive_information(self):
+        original = self.responses["/api/v1/today"]
+        tasks = original["tasks"]
+        # A plan that fits is not news: no "needs a decision" block, the green status and
+        # the day's events/deadlines are folded, and the next action leads the screen.
+        page = self._open(width=320, height=720)
+        self._ready(page, "today")
+        self.assertEqual(page.locator("[data-attention]").count(), 0)
+        details = page.locator("[data-day-details]")
+        self.assertFalse(details.evaluate("(el) => el.open"))
+        self.assertFalse(page.locator("[data-day-details] .hero-status").is_visible())
+        now_box = page.locator("[data-now]").bounding_box()
+        for selector in ("[data-soon]", "[data-day-details]"):
+            if page.locator(selector).count():
+                self.assertLess(now_box["y"], page.locator(selector).first.bounding_box()["y"], selector)
+        self.assertIn("Everything fits", details.locator("summary").inner_text())
+        details.locator("summary").click()
+        self.assertTrue(page.locator("[data-day-details] .hero-status").is_visible())
+        self._assert_no_horizontal_scroll(page, 320)
+        page.close()
+
+        # A plan that does not fit and a schedule source that lost access need the user:
+        # both are visible at once (no tap to discover them), right under "Now".
+        scenario = copy.deepcopy(original)
+        scenario["plan"]["feasibility_status"] = "INFEASIBLE"
+        scenario["plan"]["explanations"] = [f"UNKNOWN_HARD_CUTOFF:{tasks[0]['id']}"]
+        scenario["source_health"] = [{"health_status": "STALE", "latest_failure_reason": "HTTP_401",
+                                      "last_successful_complete_sync_at": "2026-09-28T08:20:00+03:00"}]
+        self.responses["/api/v1/today"] = scenario
+        try:
+            page = self._open(width=320, height=720)
+            self._ready(page, "today")
+            attention = page.locator("[data-attention]")
+            self.assertTrue(attention.is_visible())
+            self.assertTrue(attention.locator(".hero-status.status-infeasible").is_visible())
+            self.assertTrue(attention.locator('[data-source-action] [data-nav="settings"]').is_visible())
+            self.assertLess(page.locator("[data-now]").bounding_box()["y"], attention.bounding_box()["y"])
+            self.assertEqual(page.locator("[data-source-status]").count(), 0,
+                             "a source that needs the user is not also listed as passive status")
+            self.assertIn("Day details", page.locator("[data-day-details] summary").inner_text())
+            self._assert_human(self._text(page), "Today with problems")
+            self._assert_no_horizontal_scroll(page, 320)
+            self._screenshot(page, "today-problems-320.png")
+            self.assertEqual(self.page_errors, [])
+            page.close()
+        finally:
+            self.responses["/api/v1/today"] = original
+
+    def test_phone_touch_targets_are_at_least_44px(self):
+        found = {}
+        for view in ("today", "more", "tasks", "plan", "settings", "places", "checkins", "notifications"):
+            page = self._open(width=360, height=780, hash_=f"#/{view}")
+            self._ready(page, view)
+            small = page.evaluate(TOUCH_AUDIT_JS)
+            if small:
+                found[view] = small
+            page.close()
+        self.assertEqual(found, {}, "controls under 44 px on a phone")
 
     def test_task_detail_is_human_and_progress_conflict_is_visible(self):
         page = self._open()

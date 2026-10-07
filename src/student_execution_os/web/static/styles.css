@@ -660,3 +660,21 @@ body.bare .toast-region { bottom: calc(var(--safe-bottom) + 16px); }
 .help.warn { color: var(--warn, inherit); }
 .field.toggle { display: flex; align-items: center; gap: 10px; }
 .field.inline { display: flex; align-items: center; gap: 8px; }
+/* Today: passive information folds away; the summary stays a comfortable tap target. */
+details.section.quiet > summary { min-height: 44px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 2px; color: var(--text-2); cursor: pointer; }
+details.section.quiet > summary .icon { width: 18px; height: 18px; }
+details.section.quiet[open] > summary { color: var(--text); font-weight: 650; }
+.attention > .banner, .attention > .hero-status, .attention > .travel-card { margin: 0; }
+details.section.quiet > summary { flex-wrap: nowrap; }
+details.section.quiet > summary .summary-copy { flex: 1; min-width: 0; }
+.group-title { font-size: 13px; font-weight: 650; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; padding: 6px 2px 0; }
+/* Phone layout: every tappable control is at least 44 CSS px tall (WCAG 2.5.5 / platform
+   guidance). Desktop keeps the denser 34 px small buttons. */
+@media (max-width: 899px) {
+  .button.small, .chip-toggle, button.chip, a.chip { min-height: 44px; }
+  a.chip { display: inline-flex; align-items: center; padding-inline: 14px; }
+  .icon-button { width: 44px; height: 44px; }
+  .link { min-height: 44px; min-width: 44px; justify-content: center; }
+  summary { min-height: 44px; display: flex; align-items: center; gap: 8px; }
+}

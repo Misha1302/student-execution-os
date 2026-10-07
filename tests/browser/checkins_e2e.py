@@ -13,6 +13,7 @@ import unittest
 from datetime import datetime
 
 from tests.browser.harness import MOSCOW, NOW, PENDING_JS, ACCOUNT, RealServerTestCase
+from tests.browser.touch import TOUCH_AUDIT_JS
 
 
 class CheckInsEndToEndTest(RealServerTestCase):
@@ -39,6 +40,7 @@ class CheckInsEndToEndTest(RealServerTestCase):
         row.wait_for()
         self.assertIn("09:00", row.inner_text())
         self._no_overflow(page)
+        self.assertEqual(page.evaluate(TOUCH_AUDIT_JS), [], "«Принял» and its row are comfortable to tap")
         row.locator('[data-action="checkin-done"]').click()
         done = self._wait_db(page, "SELECT * FROM checkin_occurrences WHERE template_id=? AND status='DONE'", templates[0]["id"])
         self.assertEqual(datetime.fromisoformat(done[0]["occurred_at"]).astimezone(MOSCOW).strftime("%H:%M"), "09:04")
@@ -127,6 +129,7 @@ class CheckInsEndToEndTest(RealServerTestCase):
         self.assertIn("5 из 20 задач", page.locator(".checkin-row", has_text="Решать 20 задач матана").inner_text())
         self.assertIn("Вынести мусор", page.locator("body").inner_text())
         self._no_overflow(page)
+        self.assertEqual(page.evaluate(TOUCH_AUDIT_JS), [], "quota and reminder controls are comfortable to tap")
         self.assertEqual(self.errors, [])
 
 

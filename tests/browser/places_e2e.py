@@ -21,9 +21,15 @@ class PlacesEndToEndTest(RealServerTestCase):
         sheet.locator("[data-place-name]").fill(name)
         if alias:
             sheet.locator("[data-place-alias]").fill(alias)
+        # Raw coordinates and access settings are folded away from the everyday form.
+        self.assertFalse(sheet.locator("[data-place-lat]").is_visible())
+        self.assertFalse(sheet.locator("[data-place-routing]").is_visible())
+        self.assertIn("Точки пока нет", sheet.locator("[data-place-position-state]").inner_text())
         if lat:
+            sheet.locator("[data-place-advanced] summary").click()
             sheet.locator("[data-place-lat]").fill(lat)
             sheet.locator("[data-place-lon]").fill(lon)
+            self.assertIn("Точка сохранена", sheet.locator("[data-place-position-state]").inner_text())
         sheet.locator("[data-place-save]").click()
         page.locator("dialog.sheet[open]").wait_for(state="detached")
 

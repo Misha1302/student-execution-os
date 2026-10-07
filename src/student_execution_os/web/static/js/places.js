@@ -5,7 +5,7 @@
 import { api } from './api.js';
 import { peek } from './store.js';
 import { t, fmtTime } from './i18n.js';
-import { esc, openSheet, chipGroup, chipValue, toast, confirmSheet, actionSheet, setBusy } from './ui.js';
+import { esc, icon, openSheet, chipGroup, chipValue, toast, confirmSheet, actionSheet, setBusy } from './ui.js';
 import { change } from './actions.js';
 import { newEntityId } from './sync.js';
 import { isNative, refreshGeofences, requestLocation, geofenceStatus } from './native.js';
@@ -26,7 +26,7 @@ function readCoordinates(dialog) {
 }
 
 // One explicit read of the device position, for the place being edited (never in the background).
-function locateInto(dialog) {
+function locateInto(dialog, done = () => {}) {
   if (!navigator.geolocation) { toast(t('place.noGeolocation'), { error: true }); return; }
   const button = dialog.querySelector('[data-place-locate]');
   setBusy(button, true);
@@ -34,6 +34,7 @@ function locateInto(dialog) {
     dialog.querySelector('[data-place-lat]').value = position.coords.latitude.toFixed(6);
     dialog.querySelector('[data-place-lon]').value = position.coords.longitude.toFixed(6);
     setBusy(button, false);
+    done();
   }, (err) => {
     setBusy(button, false);
     toast(t(err.code === 1 ? 'place.locationDenied' : 'place.locationFailed'), { error: true });
@@ -49,25 +50,38 @@ export async function placeSheet(existing = null, prefill = {}) {
   }
   const dialog = openSheet({
     title: existing ? t('place.edit') : t('place.new'),
+    // Progressive disclosure: name, address and «where I am» are the everyday flow; raw
+    // coordinates and who may see/route the place are an advanced, safe-by-default part.
     body: `<label class="field"><span>${esc(t('place.name'))}</span><input data-place-name maxlength="120" value="${esc(detail.display_name || '')}" placeholder="${esc(t('place.namePlaceholder'))}"></label>
       <label class="field"><span>${esc(t('place.alias'))}</span><input data-place-alias maxlength="60" value="${esc(detail.alias || '')}" placeholder="${esc(t('place.aliasPlaceholder'))}"></label>
       <label class="field"><span>${esc(t('place.address'))}</span><input data-place-address maxlength="300" value="${esc(detail.address || '')}" autocomplete="off"></label>
       <div class="field"><span>${esc(t('place.position'))}</span>
-        <div class="field-row"><input data-place-lat inputmode="decimal" placeholder="${esc(t('place.lat'))}" aria-label="${esc(t('place.lat'))}" value="${esc(detail.latitude ?? '')}">
-        <input data-place-lon inputmode="decimal" placeholder="${esc(t('place.lon'))}" aria-label="${esc(t('place.lon'))}" value="${esc(detail.longitude ?? '')}"></div>
-        <button type="button" class="button small ghost" data-place-locate>${esc(t('place.locate'))}</button>
+        <p class="help" data-place-position-state></p>
+        <button type="button" class="button small ghost" data-place-locate>${icon('place')}${esc(t('place.locate'))}</button>
         <small class="help">${esc(t('place.positionHelp'))}</small></div>
-      <div class="field"><span>${esc(t('place.assistantSees'))}</span>${chipGroup('place-visibility', [
-        ['PRIVATE_ALIAS', t('place.visibility.PRIVATE_ALIAS')], ['ASSISTANT_ADDRESS', t('place.visibility.ASSISTANT_ADDRESS')]],
-        detail.visibility_policy || 'PRIVATE_ALIAS')}</div>
-      <label class="field toggle"><input type="checkbox" data-place-routing ${detail.routing_allowed ? 'checked' : ''}>
-        <span>${esc(t('place.routing'))}</span></label>
-      <p class="help">${esc(t('place.routingHelp'))}</p>`,
+      <details class="details" data-place-advanced>
+        <summary>${icon('chevron')}${esc(t('place.advanced'))}</summary>
+        <div class="field"><span>${esc(t('place.coordinates'))}</span>
+          <div class="field-row"><input data-place-lat inputmode="decimal" placeholder="${esc(t('place.lat'))}" aria-label="${esc(t('place.lat'))}" value="${esc(detail.latitude ?? '')}">
+          <input data-place-lon inputmode="decimal" placeholder="${esc(t('place.lon'))}" aria-label="${esc(t('place.lon'))}" value="${esc(detail.longitude ?? '')}"></div></div>
+        <div class="field"><span>${esc(t('place.assistantSees'))}</span>${chipGroup('place-visibility', [
+          ['PRIVATE_ALIAS', t('place.visibility.PRIVATE_ALIAS')], ['ASSISTANT_ADDRESS', t('place.visibility.ASSISTANT_ADDRESS')]],
+          detail.visibility_policy || 'PRIVATE_ALIAS')}</div>
+        <label class="field toggle"><input type="checkbox" data-place-routing ${detail.routing_allowed ? 'checked' : ''}>
+          <span>${esc(t('place.routing'))}</span></label>
+        <p class="help">${esc(t('place.routingHelp'))}</p>
+      </details>`,
     actions: `${existing ? `<button type="button" class="button danger ghost" data-place-delete>${esc(t('lifecycle.delete'))}</button>` : ''}
       <button value="cancel" class="button ghost">${esc(t('common.cancel'))}</button>
       <button type="button" class="button primary" data-place-save>${esc(t('common.save'))}</button>`,
   });
-  dialog.querySelector('[data-place-locate]').addEventListener('click', () => locateInto(dialog));
+  const showPosition = () => {
+    const has = dialog.querySelector('[data-place-lat]').value.trim() && dialog.querySelector('[data-place-lon]').value.trim();
+    dialog.querySelector('[data-place-position-state]').textContent = t(has ? 'place.positionSet' : 'place.positionMissing');
+  };
+  showPosition();
+  dialog.querySelectorAll('[data-place-lat],[data-place-lon]').forEach((input) => input.addEventListener('input', showPosition));
+  dialog.querySelector('[data-place-locate]').addEventListener('click', () => locateInto(dialog, showPosition));
   dialog.querySelector('[data-place-delete]')?.addEventListener('click', async () => {
     dialog.close('delete');
     await deletePlace(existing);
