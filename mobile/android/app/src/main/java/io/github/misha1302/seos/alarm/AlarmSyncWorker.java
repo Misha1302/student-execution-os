@@ -62,7 +62,7 @@ public class AlarmSyncWorker extends Worker {
                 if (status != 200) return Result.retry();
                 JSONArray alarms = new JSONObject(read(connection.getInputStream())).getJSONArray("alarms");
                 // Signed out or switched while the request was in flight: apply() drops it.
-                apply(getApplicationContext(), alarms, owner);
+                apply(getApplicationContext(), alarms, owner, true);
                 return Result.success();
             } finally {
                 connection.disconnect();
@@ -79,27 +79,36 @@ public class AlarmSyncWorker extends Worker {
      * lock {@link AlarmStore#clearAccountAlarms} takes, so a response that races a logout
      * or an account switch can never bring the previous account's alarms back.
      */
-    static int apply(Context context, JSONArray alarms, String owner) throws JSONException {
+    /**
+     * Replaces the account's alarms with {@code alarms}. {@code withCheckinPrompts}: the list
+     * is the server's full alarm feed, check-in prompts included. A list without them (the
+     * page's own reminders) leaves the check-in alarms this phone already has untouched, so
+     * opening the app can never silence a medication alarm.
+     */
+    static int apply(Context context, JSONArray alarms, String owner, boolean withCheckinPrompts) throws JSONException {
         synchronized (AlarmStore.class) {
             String current = sessionOwner(context);
             if (current == null || !current.equals(owner)) return 0;
             String previous = AlarmStore.owner(context);
             if (previous != null && !previous.equals(owner)) AlarmStore.clearAccountAlarms(context);
             AlarmStore.setOwner(context, owner);
-            return merge(context, alarms);
+            return merge(context, alarms, withCheckinPrompts);
         }
     }
 
-    private static int merge(Context context, JSONArray alarms) throws JSONException {
+    private static int merge(Context context, JSONArray alarms, boolean withCheckinPrompts) throws JSONException {
+        List<AlarmState> current = AlarmStore.all(context);
         List<AlarmState> incoming = new ArrayList<>();
         for (int i = 0; i < alarms.length(); i++) {
             JSONObject item = alarms.getJSONObject(i);
             String status = item.optString("status", "SCHEDULED");
             if (!"SCHEDULED".equals(status) && !"FIRED".equals(status)) continue;
-            incoming.add(AlarmState.fromServer(item));
+            AlarmState fresh = AlarmState.fromServer(item);
+            if (!withCheckinPrompts && !fresh.checkinTemplate.isEmpty()) continue;
+            incoming.add(fresh);
         }
+        if (!withCheckinPrompts) incoming.addAll(AlarmState.checkinPromptsOf(current));
         long now = System.currentTimeMillis();
-        List<AlarmState> current = AlarmStore.all(context);
         List<AlarmState> merged = AlarmState.merge(current, incoming, now);
         List<AlarmState> refreshRinging = new ArrayList<>();
         for (AlarmState old : current) {

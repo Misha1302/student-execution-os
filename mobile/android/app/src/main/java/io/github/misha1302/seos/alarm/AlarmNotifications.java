@@ -56,7 +56,7 @@ public final class AlarmNotifications {
         PendingIntent full = PendingIntent.getActivity(context, state.id.hashCode(), screen,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         String time = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date(state.at));
-        return new NotificationCompat.Builder(context, RINGING)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, RINGING)
                 .setSmallIcon(R.drawable.ic_stat_reminder)
                 .setContentTitle(state.title.isEmpty() ? time : state.title)
                 .setContentText(time)
@@ -66,11 +66,20 @@ public final class AlarmNotifications {
                 .setOngoing(true)
                 .setAutoCancel(false)
                 .setFullScreenIntent(full, true)
-                .setContentIntent(full)
-                .addAction(0, AlarmStore.label(context, state.wakeCheck ? "alarm_up" : "alarm_done"),
-                        answer(context, AlarmReceiver.ACTION_UP, state))
-                .addAction(0, AlarmStore.label(context, "alarm_snooze"), answer(context, AlarmReceiver.ACTION_SNOOZE, state))
-                .build();
+                .setContentIntent(full);
+        if (state.answersCheckin()) {
+            boolean med = state.isMedication();
+            builder.addAction(0, AlarmStore.label(context, med ? "alarm_taken" : "alarm_checkin_done"),
+                            answer(context, AlarmReceiver.ACTION_CHECKIN_DONE, state))
+                    .addAction(0, AlarmStore.label(context, "alarm_snooze"), answer(context, AlarmReceiver.ACTION_SNOOZE, state))
+                    .addAction(0, AlarmStore.label(context, med ? "alarm_not_taken" : "alarm_checkin_skip"),
+                            answer(context, AlarmReceiver.ACTION_CHECKIN_SKIP, state));
+        } else {
+            builder.addAction(0, AlarmStore.label(context, state.wakeCheck ? "alarm_up" : "alarm_done"),
+                            answer(context, AlarmReceiver.ACTION_UP, state))
+                    .addAction(0, AlarmStore.label(context, "alarm_snooze"), answer(context, AlarmReceiver.ACTION_SNOOZE, state));
+        }
+        return builder.build();
     }
 
     static void showAwakeCheck(Context context, AlarmState state) {

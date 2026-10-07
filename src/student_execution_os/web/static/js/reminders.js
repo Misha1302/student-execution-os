@@ -243,19 +243,38 @@ export function remindAboutSheet(entity) {
 // Hands the device every open alarm reminder of the account (queued ones included).
 // An alarm answered on another phone («Я встал» there) is sent too, marked
 // acknowledged: the device stops ringing it but keeps its own awake check.
+// Check-in prompts that ring as alarms come from the server's alarm feed (the reminder
+// list leaves them out: they are shown with their check-in). One answered on this
+// device but not yet delivered is dropped here, so it cannot ring again.
+async function checkinPromptAlarms() {
+  let feed;
+  try { feed = (await load('/api/v1/reminders/alarms', { fresh: true })).data; } catch { return null; }
+  const answered = new Set();
+  for (const checkin of peek('/api/v1/checkins')?.checkins || []) {
+    for (const occ of checkin.today || []) {
+      if (occ.status !== 'PENDING') answered.add(`${occ.template_id}|${occ.original_recurrence_id}`);
+    }
+  }
+  return (feed?.alarms || []).filter((r) => r.checkin && isOpen(r)
+    && !answered.has(`${r.checkin.template_id}|${r.checkin.original_recurrence_id}`));
+}
+
 export async function syncDeviceAlarms() {
   if (!alarmsSupported()) return;
   let reminders = peek('/api/v1/reminders');
   if (!reminders) {
     try { reminders = (await load('/api/v1/reminders', { cached: true })).data; } catch { return; }
   }
-  const alarms = (reminders || []).filter((r) => hasAlarm(r.delivery) && isOpen(r))
-    .map((r) => ({ id: r.id, remind_at: r.remind_at, title: r.title, wake_check: Boolean(r.wake_check),
-      raise_volume: Boolean(r.raise_volume), status: r.status, acknowledged_at: r.acknowledged_at || null }));
-  const labels = Object.fromEntries(['alarm_up', 'alarm_done', 'alarm_snooze', 'awake_title', 'awake_body', 'awake_ok', 'awake_wait', 'alarm_missed', 'test_title']
+  const shape = (r) => ({ id: r.id, remind_at: r.remind_at, title: r.title, wake_check: Boolean(r.wake_check),
+    raise_volume: Boolean(r.raise_volume), status: r.status, acknowledged_at: r.acknowledged_at || null,
+    checkin: r.checkin || null });
+  const alarms = (reminders || []).filter((r) => hasAlarm(r.delivery) && isOpen(r) && !r.checkin).map(shape);
+  const prompts = await checkinPromptAlarms();
+  const labels = Object.fromEntries(['alarm_up', 'alarm_done', 'alarm_snooze', 'awake_title', 'awake_body', 'awake_ok', 'awake_wait',
+    'alarm_missed', 'test_title', 'alarm_taken', 'alarm_not_taken', 'alarm_checkin_done', 'alarm_checkin_skip']
     .map((key) => [key, t(`alarm.${key}`)]));
   try {
-    await syncAlarms(alarms, labels);
+    await syncAlarms(prompts ? [...alarms, ...prompts.map(shape)] : alarms, labels, { withCheckinPrompts: Boolean(prompts) });
   } catch (err) { console.warn('alarm sync failed', err); }
 }
 

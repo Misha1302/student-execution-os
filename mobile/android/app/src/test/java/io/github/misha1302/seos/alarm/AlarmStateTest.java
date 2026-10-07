@@ -188,4 +188,79 @@ public class AlarmStateTest {
         assertEquals("reminder.done", new JSONArray(AlarmOps.up(plain)).getJSONObject(0).getString("type"));
         assertEquals(Collections.emptyList(), Collections.emptyList());
     }
+
+    private static AlarmState medicationPrompt() throws Exception {
+        return AlarmState.fromServer(new JSONObject().put("id", "reminder-checkin-vit").put("remind_at", Iso.format(NOW))
+                .put("title", "Витамин D").put("status", "SCHEDULED")
+                .put("checkin", new JSONObject().put("template_id", "checkin-vit")
+                        .put("original_recurrence_id", "2026-10-07T09:00:00").put("kind", "MEDICATION")));
+    }
+
+    @Test
+    public void aCheckinPromptCarriesItsOccurrenceAndSurvivesStorage() throws Exception {
+        AlarmState state = medicationPrompt();
+        assertTrue(state.answersCheckin());
+        assertTrue(state.isMedication());
+        AlarmState stored = AlarmState.fromJson(state.toJson());
+        assertEquals("checkin-vit", stored.checkinTemplate);
+        assertEquals("2026-10-07T09:00:00", stored.checkinRecurrence);
+        assertTrue(stored.answersCheckin());
+        // Stored by an older app version (no check-in fields): an ordinary reminder.
+        JSONObject legacy = new JSONObject().put("id", "r-old").put("at", NOW).put("title", "x").put("wake", false)
+                .put("loud", false).put("local", false).put("ack", false).put("phase", AlarmState.SCHEDULED)
+                .put("round", 0).put("next", NOW).put("nextKind", AlarmState.FIRE);
+        AlarmState old = AlarmState.fromJson(legacy);
+        assertFalse(old.answersCheckin());
+        assertEquals("", old.checkinTemplate);
+        // A quota needs a count, not a button on the alarm.
+        AlarmState quota = AlarmState.fromServer(new JSONObject().put("id", "r-q").put("remind_at", Iso.format(NOW))
+                .put("checkin", new JSONObject().put("template_id", "q").put("original_recurrence_id", "2026-10-07T09:00:00")
+                        .put("kind", "QUOTA")));
+        assertFalse(quota.answersCheckin());
+    }
+
+    @Test
+    public void takenOnTheAlarmIsTheOccurrencesOutcomeAtThePressAndSilencingIsNot() throws Exception {
+        AlarmState state = medicationPrompt();
+        state.fire(NOW);
+        long pressed = NOW + 3 * M + 17_000L;
+        JSONObject taken = new JSONArray(AlarmOps.checkin(state, true, pressed)).getJSONObject(0);
+        assertEquals("checkin.occurrence.done", taken.getString("type"));
+        assertEquals("checkin-vit", taken.getString("entity_id"));
+        JSONObject payload = taken.getJSONObject("payload");
+        assertEquals("2026-10-07T09:00:00", payload.getString("original_recurrence_id"));
+        assertEquals(Iso.format(pressed), payload.getString("occurred_at"));
+        // Fixed by the alarm and the answer: a retry or a second tap is one operation.
+        assertEquals(taken.getString("op_id"),
+                new JSONArray(AlarmOps.checkin(state, true, pressed + 60_000L)).getJSONObject(0).getString("op_id"));
+        JSONObject notTaken = new JSONArray(AlarmOps.checkin(state, false, pressed)).getJSONObject(0);
+        assertEquals("checkin.occurrence.skip", notTaken.getString("type"));
+        assertFalse(notTaken.getJSONObject("payload").has("occurred_at"));
+        assertTrue(!taken.getString("op_id").equals(notTaken.getString("op_id")));
+        // Turning the alarm off is a reminder operation, never an outcome.
+        assertEquals("reminder.done", new JSONArray(AlarmOps.up(state)).getJSONObject(0).getString("type"));
+        state.answered();
+        assertEquals(AlarmState.DONE, state.phase);
+        assertFalse(state.active());
+    }
+
+    @Test
+    public void aSyncWithoutPromptsKeepsTheCheckinAlarmsAndTheirProgress() throws Exception {
+        AlarmState prompt = medicationPrompt();
+        prompt.fire(NOW);
+        prompt.answered();  // answered here, not yet delivered to the server
+        AlarmState plain = new AlarmState("r-plain", NOW + 60 * M, "Созвон", false, false, false);
+        List<AlarmState> current = Arrays.asList(prompt, plain);
+        List<AlarmState> kept = AlarmState.checkinPromptsOf(current);
+        assertEquals(1, kept.size());
+        List<AlarmState> incoming = new ArrayList<>(Collections.singletonList(
+                new AlarmState("r-plain", NOW + 60 * M, "Созвон", false, false, false)));
+        incoming.addAll(kept);
+        List<AlarmState> merged = AlarmState.merge(current, incoming, NOW + M);
+        AlarmState after = null;
+        for (AlarmState state : merged) if (state.id.equals(prompt.id)) after = state;
+        assertTrue("the medication alarm is still known to the phone", after != null);
+        assertEquals("an answer given on the alarm is not undone by a page sync", AlarmState.DONE, after.phase);
+        assertEquals("checkin-vit", after.checkinTemplate);
+    }
 }

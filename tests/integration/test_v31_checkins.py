@@ -88,6 +88,32 @@ class Harness(unittest.TestCase):
 
 
 class CheckInOutcomeTests(Harness):
+    def test_alarm_feed_carries_the_prompts_occurrence_for_an_answer_on_the_alarm(self):
+        self.create_vitamin(delivery="ALARM")
+        today = "2026-10-06T09:00:00"
+        with SQLiteCanonicalRepository(self.db, clock=FrozenClock(T0)) as repo:
+            repo.initialize()
+            alarms = SQLiteReminderRepository(repo).upcoming_alarms("a", T0)
+            # The page's reminder list leaves prompts out; the phone's alarm feed has them.
+            self.assertEqual(SQLiteReminderRepository(repo).list("a"), [])
+        prompt = [x for x in alarms if x["checkin"] and x["checkin"]["original_recurrence_id"] == today]
+        self.assertEqual(len(prompt), 1, alarms)
+        self.assertEqual(prompt[0]["checkin"], {"template_id": "checkin-vitamin", "original_recurrence_id": today,
+                                                "kind": "MEDICATION"})
+        # «Принял» from the alarm is the same typed outcome, at the moment of the press.
+        pressed = T0 + timedelta(hours=1, minutes=3)
+        done = self.op("checkin.occurrence.done", "checkin-vitamin",
+                       {"template_id": "checkin-vitamin", "original_recurrence_id": today,
+                        "occurred_at": pressed.isoformat()},
+                       at=pressed + timedelta(minutes=20), op_id="alarm-reminder-x-1-CHECKIN_DONE")
+        self.assertEqual(done["status"], "APPLIED", done)
+        self.assertEqual(datetime.fromisoformat(self.occurrence("checkin-vitamin", today)["occurred_at"]), pressed)
+        with SQLiteCanonicalRepository(self.db, clock=FrozenClock(pressed)) as repo:
+            repo.initialize()
+            after = [x for x in SQLiteReminderRepository(repo).upcoming_alarms("a", pressed) if x["checkin"]
+                     and x["checkin"]["original_recurrence_id"] == today]
+        self.assertEqual(after, [], "an answered occurrence no longer rings")
+
     def test_scenario_daily_medication_prompt_snooze_and_taken(self):
         self.create_vitamin(dose_text="2000 ME")
         today = "2026-10-06T09:00:00"

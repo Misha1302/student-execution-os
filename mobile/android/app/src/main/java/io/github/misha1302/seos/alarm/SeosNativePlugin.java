@@ -94,7 +94,9 @@ public class SeosNativePlugin extends Plugin {
             if (labels != null) AlarmStore.setLabels(getContext(), labels);
             // The page hands over the signed-in account's list.
             String owner = AlarmSyncWorker.sessionOwner(getContext());
-            int count = AlarmSyncWorker.apply(getContext(), new JSONArray(alarms.toString()), owner);
+            // true only when the page passes the server's full alarm feed (check-in prompts too).
+            boolean withCheckinPrompts = Boolean.TRUE.equals(call.getBoolean("with_checkin_prompts", false));
+            int count = AlarmSyncWorker.apply(getContext(), new JSONArray(alarms.toString()), owner, withCheckinPrompts);
             JSObject out = new JSObject();
             out.put("scheduled", count);
             out.put("exact", AlarmScheduler.exactAllowed(getContext()));

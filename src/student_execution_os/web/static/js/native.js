@@ -297,12 +297,14 @@ export async function openDeviceSettings(target) {
 // schedule, so clearing that schedule forgets it.
 let lastAlarmList = '';
 
-export async function syncAlarms(alarms, labels = {}) {
+// withCheckinPrompts: the list is the server's full alarm feed (check-in prompts
+// included); without it the phone keeps the check-in alarms it already has.
+export async function syncAlarms(alarms, labels = {}, { withCheckinPrompts = false } = {}) {
   const native = seos();
   if (!native) return { supported: false };
-  const signature = JSON.stringify({ alarms, labels });
+  const signature = JSON.stringify({ alarms, labels, withCheckinPrompts });
   if (signature === lastAlarmList) return { unchanged: true };
-  const result = await native.syncAlarms({ alarms, labels });
+  const result = await native.syncAlarms({ alarms, labels, with_checkin_prompts: withCheckinPrompts });
   lastAlarmList = signature;
   return result;
 }

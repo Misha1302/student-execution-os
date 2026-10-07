@@ -8,6 +8,7 @@ import { t, fmtTime, fmtDateTime, fmtDuration, getLocale } from './i18n.js';
 import { esc, icon, chip, openSheet, chipGroup, chipValue, toast, confirmSheet, actionSheet, setBusy, localInputValue } from './ui.js';
 import { change, shell } from './actions.js';
 import { newEntityId } from './sync.js';
+import { syncDeviceAlarms } from './reminders.js';
 
 const WEEKDAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -100,18 +101,21 @@ function occurrenceFrom(el) {
 
 const identity = (occ) => ({ template_id: occ.template_id, original_recurrence_id: occ.original_recurrence_id });
 
+// An answer in the app also stops the phone's alarm for that occurrence.
+const thenAlarms = (result) => { syncDeviceAlarms(); return result; };
+
 export function markDone(occ) {
   return change('checkin.occurrence.done', occ.template_id, { ...identity(occ), occurred_at: new Date().toISOString() }, {
     success: t(isMedication(occ) ? 'checkin.toast.taken' : 'checkin.toast.done', { title: occ.title }),
-    undo: () => change('checkin.occurrence.reopen', occ.template_id, identity(occ)),
-  });
+    undo: () => change('checkin.occurrence.reopen', occ.template_id, identity(occ)).then(thenAlarms),
+  }).then(thenAlarms);
 }
 
 export function markSkipped(occ) {
   return change('checkin.occurrence.skip', occ.template_id, identity(occ), {
     success: t(isMedication(occ) ? 'checkin.toast.notTaken' : 'checkin.toast.skipped', { title: occ.title }),
-    undo: () => change('checkin.occurrence.reopen', occ.template_id, identity(occ)),
-  });
+    undo: () => change('checkin.occurrence.reopen', occ.template_id, identity(occ)).then(thenAlarms),
+  }).then(thenAlarms);
 }
 
 function quotaSheet(occ) {

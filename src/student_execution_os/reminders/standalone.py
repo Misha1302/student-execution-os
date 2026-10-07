@@ -47,9 +47,11 @@ def has_alarm(delivery: str) -> bool:
 _SELECT = (
     "SELECT " + ",".join(f"r.{column}" for column in _COLUMNS.split(",")) + ","
     "so.series_id AS series_id,so.original_recurrence_id AS series_recurrence_id,"
-    "co.template_id AS checkin_template_id,co.original_recurrence_id AS checkin_recurrence_id "
+    "co.template_id AS checkin_template_id,co.original_recurrence_id AS checkin_recurrence_id,"
+    "ct.kind AS checkin_kind "
     "FROM reminders r LEFT JOIN reminder_series_occurrences so ON so.reminder_id=r.id "
-    "LEFT JOIN checkin_occurrences co ON co.reminder_id=r.id"
+    "LEFT JOIN checkin_occurrences co ON co.reminder_id=r.id "
+    "LEFT JOIN checkin_templates ct ON ct.account_id=co.account_id AND ct.id=co.template_id"
 )
 
 
@@ -62,7 +64,10 @@ def reminder_payload(row) -> dict[str, Any]:
     keys = row.keys()
     item["series"] = ({"series_id": row["series_id"], "original_recurrence_id": row["series_recurrence_id"]}
                       if "series_id" in keys and row["series_id"] else None)
-    item["checkin"] = ({"template_id": row["checkin_template_id"], "original_recurrence_id": row["checkin_recurrence_id"]}
+    # The prompt of a check-in carries its occurrence identity and kind, so a phone can
+    # offer «Принял»/«Не принял» on the alarm itself (a quota needs a count: no button).
+    item["checkin"] = ({"template_id": row["checkin_template_id"], "original_recurrence_id": row["checkin_recurrence_id"],
+                        "kind": row["checkin_kind"] if "checkin_kind" in keys else None}
                        if "checkin_template_id" in keys and row["checkin_template_id"] else None)
     return item
 
