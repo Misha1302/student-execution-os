@@ -84,7 +84,8 @@ class CheckInsEndToEndTest(RealServerTestCase):
         self._ready(page, "checkins")
         self.assertIn("Принял", page.locator(".checkin-row", has_text="Сертралин").first.inner_text())
         self.assertEqual(self._db("SELECT count(*) AS n FROM checkin_occurrences WHERE template_id=? AND status='DONE'",
-                                  templates[0]["id"])[0]["n"], 0)
+                                  templates[0]["id"])[0]["n"], 0,
+                         [x for x in self.api_log if x[1] == "POST"])
         # Back online: delivered once, with the moment the button was pressed.
         self.online = True
         page.evaluate("window.dispatchEvent(new Event('online'))")

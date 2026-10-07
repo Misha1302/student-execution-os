@@ -82,6 +82,9 @@ class RealServerTestCase(unittest.TestCase):
         self.context.add_init_script("try { localStorage.setItem('seos.locale', 'ru') } catch (e) {}")
         self.context.route(f"{self.origin}/**", self._route)
         self.errors: list[str] = []
+        # Every API request with whether it was let through: evidence when an
+        # "offline" assertion fails (which request reached the server, and when).
+        self.api_log: list[tuple[float, str, str, bool]] = []
 
     def tearDown(self) -> None:
         self.context.close()
@@ -89,6 +92,7 @@ class RealServerTestCase(unittest.TestCase):
     def _route(self, route):
         path = route.request.url.removeprefix(self.origin).split("#")[0] or "/"
         if path.startswith("/api/"):
+            self.api_log.append((time.monotonic(), route.request.method, path, self.online))
             if not self.online:
                 route.abort("internetdisconnected")
                 return
