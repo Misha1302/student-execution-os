@@ -22,6 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import uvicorn
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from student_execution_os.persistence.sqlite import SQLiteCanonicalRepository
@@ -120,9 +121,17 @@ class RealServerTestCase(unittest.TestCase):
         page.goto(f"{self.origin}/{hash_}")
         return page
 
-    @staticmethod
-    def _ready(page, view: str) -> None:
-        page.wait_for_selector(f'#workspace[data-view="{view}"][data-view-state="ready"]')
+    def _ready(self, page, view: str) -> None:
+        try:
+            page.wait_for_selector(f'#workspace[data-view="{view}"][data-view-state="ready"]')
+        except PlaywrightTimeoutError:
+            # What the screen was doing instead: its state, its text, page errors and the
+            # last API requests (method, path, let through, seconds before now).
+            state = page.evaluate("""() => { const w = document.querySelector('#workspace');
+                return w ? { view: w.dataset.view, state: w.dataset.viewState, text: w.innerText.slice(0, 300) } : null; }""")
+            now = time.monotonic()
+            recent = [(method, path, online, round(now - at, 1)) for at, method, path, online in self.api_log[-12:]]
+            self.fail(f"#{view} never became ready: {state}; page errors {self.errors}; last API requests {recent}")
 
     def _go(self, page, view: str) -> None:
         page.evaluate(f"location.hash = '#/{view}'")

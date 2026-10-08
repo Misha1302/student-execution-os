@@ -38,7 +38,7 @@ export async function load(path, { fresh = false, cached = false } = {}) {
   const candidate = memory.get(path);
   const hit = candidate?.scope === currentScope ? candidate : null;
   if (candidate && !hit) memory.delete(path);
-  if (hit && !fresh) return view(path, hit, Boolean(hit.stale));
+  if (hit && !fresh && !hit.outdated) return view(path, hit, Boolean(hit.stale));
   if (cached || (cacheFirst && !fresh)) {
     const saved = restore(path);
     if (saved) return view(path, saved, true);
@@ -55,12 +55,15 @@ export async function load(path, { fresh = false, cached = false } = {}) {
     if (err.code !== 'NETWORK') throw err;
     const saved = hit || restore(path);
     if (!saved) throw err;
-    memory.set(path, { ...saved, scope: currentScope, stale: true });
+    memory.set(path, { ...saved, scope: currentScope, stale: true, outdated: false });
     return view(path, saved, true);
   }
 }
 
-export function invalidate() { memory.clear(); }
+// The next load() of every response asks the server again. Until the new response
+// arrives, peek() keeps answering with the one the screen on display was drawn from:
+// emptying it made «Маршрут» right after a sync answer report no places at all.
+export function invalidate() { for (const entry of memory.values()) entry.outdated = true; }
 
 export function clearAll() {
   memory.clear();

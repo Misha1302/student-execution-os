@@ -1,5 +1,6 @@
 package io.github.misha1302.seos.alarm;
 
+import android.app.Notification;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -57,15 +58,21 @@ public class AlarmService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String id = intent == null ? null : intent.getStringExtra(AlarmReceiver.EXTRA_ID);
         if (intent == null || ACTION_STOP.equals(intent.getAction())) {
-            if (id == null || id.equals(ringing)) finish();
+            if (id == null || ringing == null || id.equals(ringing)) finish(startId);
             return START_NOT_STICKY;
         }
         AlarmState state = id == null ? null : AlarmStore.get(this, id);
         if (state == null || !AlarmState.RINGING.equals(state.phase)) {
-            finish();
+            // Answered or removed between firing and this start (another device, a sync).
+            // Another alarm that is ringing keeps ringing. With nothing ringing, a service
+            // started by startForegroundService must still go foreground before it stops,
+            // or Android kills the app (ForegroundServiceDidNotStartInTimeException).
+            if (ringing != null) return START_NOT_STICKY;
+            goForeground(AlarmNotifications.ending(this));
+            finish(startId);
             return START_NOT_STICKY;
         }
-        goForeground(state);
+        goForeground(AlarmNotifications.ringing(this, state));
         if (ringing != null && !ringing.equals(id)) {
             // Another alarm was ringing: it rests and comes back like an unanswered one.
             AlarmReceiver.handle(this, AlarmReceiver.ACTION_TIMEOUT, ringing, null);
@@ -84,7 +91,7 @@ public class AlarmService extends Service {
         return START_NOT_STICKY;
     }
 
-    private void goForeground(AlarmState state) {
+    private void goForeground(Notification notification) {
         int type = 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // Alarm apps allowed to schedule exact alarms may use systemExempted; otherwise
@@ -94,7 +101,7 @@ public class AlarmService extends Service {
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
         }
-        ServiceCompat.startForeground(this, AlarmNotifications.RINGING_ID, AlarmNotifications.ringing(this, state), type);
+        ServiceCompat.startForeground(this, AlarmNotifications.RINGING_ID, notification, type);
     }
 
     private void startRinging(AlarmState state) {
@@ -164,7 +171,9 @@ public class AlarmService extends Service {
         }
     }
 
-    private void finish() {
+    // stopSelf(startId), not stopSelf(): a start that arrived meanwhile (the next alarm)
+    // keeps the service; a plain stopSelf() stopped it and that alarm never rang.
+    private void finish(int startId) {
         handler.removeCallbacksAndMessages(null);
         stopSound();
         restoreVolume(this);
@@ -172,7 +181,7 @@ public class AlarmService extends Service {
         wakeLock = null;
         ringing = null;
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
-        stopSelf();
+        stopSelf(startId);
     }
 
     @Override

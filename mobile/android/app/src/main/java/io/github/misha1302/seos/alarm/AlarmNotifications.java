@@ -49,6 +49,17 @@ public final class AlarmNotifications {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 
+    /** Shown for the moment a start with nothing left to ring goes foreground, then removed. */
+    static Notification ending(Context context) {
+        ensureChannels(context);
+        return new NotificationCompat.Builder(context, RINGING)
+                .setSmallIcon(R.drawable.ic_stat_reminder)
+                .setContentTitle(context.getString(R.string.alarm_channel))
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setSilent(true)
+                .build();
+    }
+
     static Notification ringing(Context context, AlarmState state) {
         ensureChannels(context);
         Intent screen = new Intent(context, AlarmActivity.class).putExtra(AlarmReceiver.EXTRA_ID, state.id)
