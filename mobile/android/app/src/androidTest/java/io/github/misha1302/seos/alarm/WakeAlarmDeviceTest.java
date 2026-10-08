@@ -113,6 +113,31 @@ public class WakeAlarmDeviceTest {
         assertTrue(AlarmStore.get(context, "reminder-device-wake") == null);
     }
 
+    /**
+     * An alarm answered or removed between firing and the ringing service starting (from
+     * another device, by a sync): that start ends quietly instead of killing the app for
+     * never going foreground, and an alarm that is ringing keeps ringing.
+     */
+    @Test
+    public void aStartForAnAlarmNoLongerRingingEndsQuietlyAndLeavesTheRingingOneAlone() throws Exception {
+        AlarmService.start(context, "reminder-already-answered");  // nothing ringing
+        long at = System.currentTimeMillis() + 3_600_000L;
+        JSONArray list = new JSONArray().put(new JSONObject().put("id", "reminder-device-ringing")
+                .put("remind_at", Iso.format(at)).put("title", "Подъём").put("wake_check", false).put("raise_volume", false));
+        assertEquals(1, AlarmSyncWorker.apply(context, list, owner, true));
+        AlarmReceiver.ring(context, AlarmStore.get(context, "reminder-device-ringing"), System.currentTimeMillis());
+        waitFor(this::serviceRunning);
+        assertTrue("the next alarm rings", serviceRunning());
+
+        AlarmService.start(context, "reminder-already-answered");  // a stale start while one rings
+        waitFor(() -> !serviceRunning());
+        assertTrue("a stale start does not silence the ringing alarm", serviceRunning());
+
+        AlarmReceiver.handle(context, AlarmReceiver.ACTION_UP, "reminder-device-ringing", null);
+        waitFor(() -> !serviceRunning());
+        assertTrue("its own answer stops it", !serviceRunning());
+    }
+
     @Test
     public void logoutAndAccountSwitchRemoveThePreviousAccountsAlarms() throws Exception {
         long at = System.currentTimeMillis() + 3_600_000L;
