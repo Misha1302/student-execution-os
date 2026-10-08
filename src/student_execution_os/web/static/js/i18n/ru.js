@@ -215,7 +215,7 @@ export default {
   'routine.every2Days': 'Раз в два дня',
   'routine.weekly': 'Каждую неделю',
   'routine.biweekly': 'Раз в две недели',
-  'routine.timezone': 'Часовой пояс серии: {zone}. Время хранится как локальное гражданское время серии.',
+  'routine.timezone': 'Время — по часовому поясу {zone}. При переходе на летнее или зимнее время оно не сдвигается.',
   'routine.empty': 'Повторяющихся задач пока нет',
   'routine.emptyHelp': 'Создайте регулярную работу — ближайшие occurrence будут материализованы как обычные задачи.',
   'routine.stop': 'Остановить серию',
@@ -410,7 +410,7 @@ export default {
   'tasks.emptyAll': 'Задач пока нет',
   'tasks.emptyAllHint': 'Добавьте первую задачу — план построится автоматически.',
   'tasks.noMatch': 'Ничего не найдено',
-  'tasks.left': 'осталось {d}',
+  'tasks.left': 'работы ещё на {d}',
   'tasks.startBy': 'начать до {when}',
   'tasks.count': ['{n} задача', '{n} задачи', '{n} задач'],
 

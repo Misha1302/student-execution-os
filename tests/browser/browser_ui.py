@@ -1424,6 +1424,48 @@ class BrowserUiTest(unittest.TestCase):
         self.assertIn("Изменение не прошло проверку", text)
         page.close()
 
+    def test_sync_problems_on_a_phone_keep_the_title_and_readable_rows(self):
+        # Found on a real phone (360px wide, Russian): the long «Проблема синхронизации · 7»
+        # chip left the screen title one letter («Н.»), and a refused start with its two
+        # buttons squeezed the explanation to one letter per line.
+        tasks = [t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE" and not t.get("started_at")]
+        page = self._open(width=360, height=780, locale="ru", hash_="#/tasks")
+        self._ready(page, "tasks")
+        # Next to a deadline a bare «осталось 2 ч» read as time until the deadline (an
+        # overdue task on the phone); the number is the work that is left.
+        self.assertIn("работы ещё на", self._text(page))
+        self.assertNotIn("осталось", self._text(page))
+
+        def busy(route):
+            ops = json.loads(route.request.post_data or "{}").get("operations", [])
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"server_revision": 1, "results": [
+                {**op, "status": "CONFLICT", "code": "EXECUTION_ACTIVE", "message": "another execution is active", "entity": None}
+                for op in ops]}))
+        page.route(ORIGIN + "/api/v1/sync", busy)
+        for task in tasks[:2]:
+            page.locator(f'.task-card[data-id="{task["id"]}"]').click(button="right")
+            page.locator('dialog.sheet[open] [data-choice="start"]').click()
+            page.locator("dialog.sheet[open]").wait_for(state="detached")
+        chip = page.locator("#offline-chip").filter(has_text="2")
+        chip.wait_for()
+        title = page.locator("#page-title")
+        self.assertEqual(title.evaluate("el => el.scrollWidth <= el.clientWidth"), True, "screen title is cut")
+        self.assertLessEqual(chip.bounding_box()["width"], 80)
+        self.assertEqual(chip.get_attribute("aria-label"), "Проблема синхронизации · 2")
+
+        chip.click()
+        sheet = page.locator("dialog.sheet[open]")
+        sheet.wait_for()
+        rows = sheet.locator(".sync-item")
+        self.assertEqual(rows.count(), 2)
+        for i in range(2):
+            self.assertGreaterEqual(rows.nth(i).locator(".row-main").bounding_box()["width"], 200)
+        self.assertIn("На другом устройстве уже идёт другая работа", sheet.inner_text())
+        self.assertEqual(page.evaluate(TOUCH_AUDIT_JS), [])
+        self._assert_no_horizontal_scroll(page, 360)
+        self._screenshot(page, "sync-problems-phone-ru.png")
+        page.close()
+
 
 if __name__ == "__main__":
     unittest.main()
