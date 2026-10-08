@@ -111,7 +111,14 @@ export async function api(path, { method = 'GET', body, server, timeoutMs = 2000
     clearTimeout(timer);
   }
   const contentType = response.headers.get('content-type') || '';
-  const payload = contentType.includes('json') ? await response.json().catch(() => null) : await response.text();
+  let payload = null;
+  try {
+    payload = contentType.includes('json') ? await response.json() : await response.text();
+  } catch {
+    // A body cut off after the headers (connection lost, page leaving) is a network
+    // failure, never empty data: `null` here was once cached and shown on the next start.
+    if (response.ok) throw new ApiError('Network unavailable', { code: 'NETWORK', retryable: true });
+  }
   if (!response.ok) {
     const error = payload?.error || {};
     const err = new ApiError(error.message || `HTTP ${response.status}`, {

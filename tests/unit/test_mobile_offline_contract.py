@@ -69,6 +69,71 @@ console.log('{{"ok":true}}');
         result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_a_response_cut_off_mid_body_is_a_network_failure_not_empty_data(self):
+        # Seen as a stuck «Места» screen: a reload cut the old page's response after its
+        # 200 headers, the unreadable body became `null` data in the saved cache, and the
+        # next cold start rendered `null`. A body that cannot be read is a network failure:
+        # the last good copy stays, and a copy without data is never shown.
+        script = f"""
+globalThis.window = {{ Capacitor: null }};
+const values = new Map();
+globalThis.localStorage = {{ getItem:k=>values.get(k)??null, setItem:(k,v)=>values.set(k,String(v)), removeItem:k=>values.delete(k), key:i=>[...values.keys()][i], get length(){{return values.size;}} }};
+let cut = false;
+globalThis.fetch = async () => ({{ ok:true, status:200, headers:{{get:()=> 'application/json'}},
+  json: async () => {{ if (cut) throw new DOMException('The user aborted a request.', 'AbortError'); return {{ places:[{{id:'place-1'}}] }}; }} }});
+const api = await import('file://{ROOT}/src/student_execution_os/web/static/js/api.js');
+const store = await import('file://{ROOT}/src/student_execution_os/web/static/js/store.js');
+api.session.authMode='bound';
+const good = await store.load('/api/v1/places');
+cut = true;
+let code = null;
+try {{ await api.api('/api/v1/places'); }} catch (err) {{ code = err.code; }}
+if (code !== 'NETWORK') throw new Error('an unreadable 200 body was returned as data: ' + code);
+const again = await store.load('/api/v1/places', {{ fresh:true }});
+if (!again.stale || again.data?.places?.[0]?.id !== 'place-1') throw new Error('the last good copy was not kept: ' + JSON.stringify(again));
+const saved = JSON.parse(localStorage.getItem('seos.cache./api/v1/places'));
+if (saved.data == null) throw new Error('null data was saved for the next start');
+// A copy saved by an older version with no data is not a copy: the next start asks the server.
+localStorage.setItem('seos.cache./api/v1/notes', JSON.stringify({{ ...saved, data:null }}));
+store.invalidate(); store.setCacheFirst(true); cut = false;
+const cold = await store.load('/api/v1/notes');
+if (cold.data == null || cold.stale) throw new Error('a saved copy without data was shown: ' + JSON.stringify(cold));
+console.log(JSON.stringify({{ok:true, first:good.stale}}));
+"""
+        result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_refresh_in_flight_keeps_what_the_screen_shows_for_its_buttons(self):
+        # «Маршрут» right after a sync answer said «add two places» on a screen showing
+        # two: the answer emptied the loaded responses before the new ones arrived.
+        script = f"""
+globalThis.window = {{ Capacitor: null }};
+const values = new Map();
+globalThis.localStorage = {{ getItem:k=>values.get(k)??null, setItem:(k,v)=>values.set(k,String(v)), removeItem:k=>values.delete(k), key:i=>[...values.keys()][i], get length(){{return values.size;}} }};
+let calls = 0; let release;
+globalThis.fetch = async () => {{
+  calls += 1;
+  if (calls > 1) await new Promise((resolve) => {{ release = resolve; }});
+  return {{ ok:true, headers:{{get:()=> 'application/json'}}, json:async()=>({{ places:[{{id:'home'}},{{id:'hse'}}].slice(0, calls > 1 ? 1 : 2) }}) }};
+}};
+const api = await import('file://{ROOT}/src/student_execution_os/web/static/js/api.js');
+const store = await import('file://{ROOT}/src/student_execution_os/web/static/js/store.js');
+api.session.authMode='bound';
+await store.load('/api/v1/places');
+store.invalidate();
+const refreshing = store.load('/api/v1/places');
+if (calls !== 2) throw new Error('an outdated response was served instead of asking the server');
+if (store.peek('/api/v1/places')?.places?.length !== 2) throw new Error('the screen lost its places while refreshing');
+release();
+await refreshing;
+if (store.peek('/api/v1/places')?.places?.length !== 1) throw new Error('the new response did not replace the old one');
+store.clearAll();
+if (store.peek('/api/v1/places') !== undefined) throw new Error('clearAll kept a response');
+console.log('{{"ok":true}}');
+"""
+        result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_backend_probe_rejects_incompatible_server_without_switching(self):
         script = f"""
 globalThis.window = {{ Capacitor: null }};

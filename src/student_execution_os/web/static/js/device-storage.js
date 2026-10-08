@@ -56,7 +56,8 @@ export class BrowserReadModelCache {
   read(path, scope) {
     try {
       const value = JSON.parse(this.storage().getItem(`seos.cache.${path}`) || 'null');
-      return value && value.scope === scope ? value : null;
+      // A copy without data (left by a cut-off response before 0.8.1) is no copy at all.
+      return value && value.scope === scope && value.data != null ? value : null;
     } catch { return null; }
   }
 
