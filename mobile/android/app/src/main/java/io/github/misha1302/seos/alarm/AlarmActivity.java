@@ -17,6 +17,9 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import java.text.DateFormat;
 import java.util.Date;
 
@@ -24,8 +27,10 @@ import java.util.Date;
  * The ringing alarm on top of the lock screen: big time, the title, large buttons.
  * Every answer stays on screen in any orientation: on a short (landscape) screen the
  * buttons sit side by side under a smaller clock, and the whole screen scrolls when a
- * large system font still does not fit. Leaving it (Back, Home) does not silence the alarm: the sound belongs to {@link
- * AlarmService} and only an answer stops it.
+ * large system font still does not fit. Nothing sits under the status or navigation bar or
+ * a camera cutout (Android 15 draws every screen edge to edge). Leaving it (Back, Home)
+ * does not silence the alarm: the sound belongs to {@link AlarmService} and only an
+ * answer stops it.
  */
 public class AlarmActivity extends Activity {
     static final String ACTION_CLOSED = "io.github.misha1302.seos.ALARM_CLOSED";
@@ -110,6 +115,13 @@ public class AlarmActivity extends Activity {
         scroll.setBackgroundColor(Color.rgb(15, 18, 22));
         scroll.addView(root, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
+        // Sideways, a three-button navigation bar and the camera cutout stand on the sides:
+        // without this the right answer ran under the bar on a real phone.
+        ViewCompat.setOnApplyWindowInsetsListener(scroll, (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return WindowInsetsCompat.CONSUMED;
+        });
         setContentView(scroll);
     }
 
