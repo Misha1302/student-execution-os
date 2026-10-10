@@ -183,6 +183,13 @@ export class AppUpdateService {
     this.current.enabled = Boolean(this.configuration.enabled && this.adapter.available);
     this.current.currentVersion = this.configuration.versionName || null;
     this.current.currentVersionCode = Number(this.configuration.buildNumber) || null;
+    if (saved.channel === UpdateChannel.BETA && !this.configuration.betaChannelAvailable) {
+      // Older builds advertised Beta before a feed existed. Hiding the picker
+      // must not strand that persisted choice on an unavailable source.
+      saved.channel = UpdateChannel.STABLE;
+      saved.pendingDownload = null;
+      await this.store.save();
+    }
     this.current.lastCheckAt = saved.lastCheckAt ? new Date(saved.lastCheckAt) : null;
     this.provider = this.current.enabled ? new StaticUpdatePolicyProvider(this.adapter, this.store, this.configuration) : null;
     if (this.current.enabled && saved.pendingDownload?.policy && saved.pendingDownload?.downloaded) {
@@ -216,7 +223,9 @@ export class AppUpdateService {
     this.configuration ||= await this.adapter.configuration();
     this.current.currentVersion = this.configuration.versionName || null;
     this.current.currentVersionCode = Number(this.configuration.buildNumber) || null;
-    if (!saved.health && this.configuration.enabled && typeof this.adapter.nativeState === 'function') {
+    if ((!saved.health || saved.health.pendingVersion !== this.current.currentVersion
+        || !pendingBuildMatches(saved.health, this.current.currentVersionCode))
+        && this.configuration.enabled && typeof this.adapter.nativeState === 'function') {
       // Recover the launch marker before storage/session/render work even if the
       // JS preference write was lost and Android already finished the upgrade.
       let native;
@@ -232,7 +241,8 @@ export class AppUpdateService {
     }
     if (saved.health?.pendingVersion === this.current.currentVersion
         && pendingBuildMatches(saved.health, this.current.currentVersionCode)) {
-      saved.health.launchAttempts = Number(saved.health.launchAttempts || 0) + 1;
+      saved.health.launchAttempts = saved.health.startupHealth === 'healthy'
+        ? 1 : Number(saved.health.launchAttempts || 0) + 1;
       saved.health.startupHealth = 'pending';
       await this.store.save();
       if (saved.health.launchAttempts >= 3) {
