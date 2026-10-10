@@ -10,8 +10,13 @@ public class UpdateInstallerStateTest {
     private static final class MemoryBackend implements UpdateInstallerState.Backend {
         UpdateInstallerState.Snapshot value = new UpdateInstallerState.Snapshot(
                 -1, "IDLE", "", "", "", 0, "", 0);
+        boolean writable = true;
         @Override public UpdateInstallerState.Snapshot load() { return value; }
-        @Override public boolean save(UpdateInstallerState.Snapshot next) { value = next; return true; }
+        @Override public boolean save(UpdateInstallerState.Snapshot next) {
+            if (!writable) return false;
+            value = next;
+            return true;
+        }
     }
 
     @Test public void sessionIdentityAndTargetArePersistedBeforeSubmission() {
@@ -56,5 +61,42 @@ public class UpdateInstallerStateTest {
         assertEquals("FAILED", state.get().state);
         assertFalse(state.markCommitted(44));
         assertEquals("FAILED", state.get().state);
+    }
+
+    @Test public void installedPackageReconcilesEveryPendingStateIncludingManualRecovery() {
+        for (String pending : new String[] {"PREPARING", "SUBMITTING", "COMMITTED", "USER_ACTION_REQUIRED"}) {
+            MemoryBackend backend = new MemoryBackend();
+            backend.value = new UpdateInstallerState.Snapshot(45, pending, "", "", "1.2.3", 123, "e".repeat(64), 0);
+            UpdateInstallerState state = new UpdateInstallerState(backend);
+            assertFalse(state.reconcileInstalledBuild(122));
+            assertEquals(pending, state.get().state);
+            assertTrue(state.reconcileInstalledBuild(123));
+            assertEquals("INSTALLED", state.get().state);
+            assertEquals(45, state.get().sessionId);
+            assertEquals("e".repeat(64), state.get().targetSha256);
+            assertFalse(state.callback(45, "FAILED", "INSTALLER_FAILED", "late"));
+        }
+    }
+
+    @Test public void failedInstalledStateWriteRetainsOwnershipForRetry() {
+        MemoryBackend backend = new MemoryBackend();
+        UpdateInstallerState state = new UpdateInstallerState(backend);
+        state.begin(46, "1.2.3", 123, "f".repeat(64));
+        backend.writable = false;
+        assertFalse(state.reconcileInstalledBuild(123));
+        assertEquals("PREPARING", state.get().state);
+        backend.writable = true;
+        assertTrue(state.reconcileInstalledBuild(124));
+        assertEquals("INSTALLED", state.get().state);
+    }
+
+    @Test public void installedBuildEvidenceDoesNotRewriteIdleOrTerminalStates() {
+        for (String terminal : new String[] {"IDLE", "FAILED", "INSTALLED"}) {
+            MemoryBackend backend = new MemoryBackend();
+            backend.value = new UpdateInstallerState.Snapshot(47, terminal, "", "", "1.2.3", 123, "a".repeat(64), 0);
+            UpdateInstallerState state = new UpdateInstallerState(backend);
+            assertFalse(state.reconcileInstalledBuild(124));
+            assertEquals(terminal, state.get().state);
+        }
     }
 }

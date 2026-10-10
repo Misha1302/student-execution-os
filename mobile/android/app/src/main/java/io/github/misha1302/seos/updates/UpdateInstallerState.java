@@ -82,6 +82,19 @@ final class UpdateInstallerState {
     boolean markSubmitting(int sessionId) { return transition(sessionId, "SUBMITTING", "", "", "PREPARING"); }
     boolean markCommitted(int sessionId) { return transition(sessionId, "COMMITTED", "", "", "SUBMITTING"); }
 
+    boolean reconcileInstalledBuild(long runningBuild) {
+        synchronized (LOCK) {
+            Snapshot current = backend.load();
+            if (current.targetBuild <= 0 || runningBuild < current.targetBuild
+                    || !("PREPARING".equals(current.state) || "SUBMITTING".equals(current.state)
+                    || "COMMITTED".equals(current.state) || "USER_ACTION_REQUIRED".equals(current.state))) return false;
+            // A manual same-signer upgrade can finish a target whose original
+            // installer never reached commit. This is installed-package evidence,
+            // not a PackageInstaller callback, so PREPARING is eligible too.
+            return backend.save(current.with("INSTALLED", "", "Installed build is running"));
+        }
+    }
+
     boolean fail(int sessionId, String code, String message) {
         synchronized (LOCK) {
             Snapshot current = backend.load();
