@@ -519,8 +519,11 @@ dialog.sheet-full .sheet-frame { height: calc(100dvh - var(--safe-top) - 24px); 
 .sheet-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 12px 6px 20px; flex: none; }
 .sheet-head h2 { font-size: 20px; font-weight: 750; padding-top: 6px; overflow-wrap: anywhere; }
 .sheet-body { padding: 8px 20px 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 14px; -webkit-overflow-scrolling: touch; }
-.sheet-actions { display: flex; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--line); flex: none; }
-.sheet-actions .button { flex: 1; }
+/* Answers wrap instead of widening the sheet: a modal <dialog> scrolls, so a row wider than
+   the phone let a sideways swipe slide the whole sheet off the screen (seen on a real phone).
+   Equal widths while they fit; a label longer than the row wraps inside its button. */
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--line); flex: none; }
+.sheet-actions .button { flex: 1 1 0; min-width: fit-content; max-width: 100%; text-align: center; }
 .confirm-body { display: flex; flex-direction: column; gap: 10px; color: var(--text-2); }
 
 @media (min-width: 700px) {
