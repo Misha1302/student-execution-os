@@ -192,6 +192,22 @@ unavailableBetaAdapter.configuration = async () => ({ enabled: true, debug: fals
 const unavailableBeta = new AppUpdateService(unavailableBetaAdapter); await unavailableBeta.initialize();
 await assert.rejects(unavailableBeta.setPreferences({ channel: 'BETA' }), (error) => error.code === 'INVALID_PREFERENCE'); assertions += 1;
 
+// A persisted Beta preference from older production builds must remain usable
+// when the new production build hides the unavailable channel picker.
+values.clear(); served = rawPolicy({ sequence: 11 });
+values.set('seos.update.state.v1', JSON.stringify({ installationId: 'beta-migration', channel: 'BETA',
+  acceptedPolicies: { 'https://updates.example/updates-stable.json': { sequence: 10, hash: null } },
+  pendingDownload: { releaseId: 'old-beta-download' },
+  pending: { version: '1.1.0-beta.1', buildNumber: 102, sha256: 'b'.repeat(64) } }));
+const migratedBeta = new AppUpdateService(unavailableBetaAdapter); await migratedBeta.initialize();
+persisted = JSON.parse(values.get('seos.update.state.v1'));
+equal(persisted.channel, 'STABLE', 'unavailable persisted Beta channel migrates to Stable');
+equal(persisted.pendingDownload, null, 'old Beta download cannot survive source migration');
+equal(persisted.pending.buildNumber, 102, 'channel migration retains OS-owned installation identity');
+equal(persisted.acceptedPolicies['https://updates.example/updates-stable.json'].sequence, 10, 'migration retains Stable anti-rollback floor');
+await migratedBeta.checkForUpdates({ manual: true });
+equal(migratedBeta.getState().target.release.channel, 'STABLE', 'migrated client finds the signed Stable target');
+
 values.clear(); served = rawPolicy({ sequence: 14, minVersion: '1.0.1' });
 const oldSdkAdapter = new FakeAdapter();
 oldSdkAdapter.configuration = async () => ({ enabled: true, debug: false, policyUrlTemplate: 'https://updates.example/updates-{channel}.json', betaChannelAvailable: false,
@@ -270,6 +286,25 @@ for (let attempt = 1; attempt <= 3; attempt += 1) {
 equal(recoveredLaunch.getState().error.code, 'STARTUP_UNHEALTHY', 'three incomplete installed-target launches remain observable');
 await recoveredLaunch.markHealthy();
 equal(JSON.parse(values.get('seos.update.state.v1')).health.startupHealth, 'healthy', 'explicit first-render signal completes recovered health');
+
+// Successful launches reset the streak; three ordinary opens cannot signal a crash loop.
+for (let attempt = 1; attempt <= 4; attempt += 1) {
+  const successful = new AppUpdateService(updatedAdapter);
+  await successful.recordUpdatedLaunch(); await successful.initialize(); await successful.reconcileInstallerState();
+  equal(JSON.parse(values.get('seos.update.state.v1')).health.launchAttempts, 1, 'successful preceding launch resets the incomplete-launch streak');
+  equal(successful.getState().error, null, 'ordinary healthy relaunch does not report STARTUP_UNHEALTHY');
+  await successful.markHealthy();
+}
+
+// A lost write can leave the previous release's healthy record, not just null.
+values.clear();
+values.set('seos.update.state.v1', JSON.stringify({ health: { pendingVersion: '1.0.0', pendingBuild: 100,
+  launchAttempts: 20, startupHealth: 'healthy' } }));
+const staleHealth = new AppUpdateService(updatedAdapter); await staleHealth.recordUpdatedLaunch();
+persisted = JSON.parse(values.get('seos.update.state.v1'));
+equal(persisted.health.pendingVersion, '1.0.1', 'matching native target replaces stale prior-release health');
+equal(persisted.health.launchAttempts, 1, 'recovered current release starts its own launch streak');
+equal(persisted.health.startupHealth, 'pending', 'prior release health cannot certify the new binary');
 
 // An OS prompt that cannot be reopened becomes a retryable failure, never a dead end.
 values.clear(); served = rawPolicy({ sequence: 30 });
