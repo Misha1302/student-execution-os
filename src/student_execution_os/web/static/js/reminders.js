@@ -168,12 +168,16 @@ export function reminderSheet(r) {
     eyebrow: t(hasAlarm(r.delivery) ? 'reminder.kindAlarm' : 'reminder.kind'),
     title: r.title,
     full: open,
-    body: open ? `<p>${reminderStatusChip(r)}</p>${reminderFieldsHtml(r)}`
+    // Five answers do not fit a phone's footer: cancelling and deleting are rarer and sit
+    // under the fields, the footer keeps what a reminder is opened for.
+    body: open ? `<p>${reminderStatusChip(r)}</p>${reminderFieldsHtml(r)}
+        <div class="button-row">
+          <button type="button" class="button small ghost" data-act="cancel">${esc(t('reminder.cancel'))}</button>
+          <button type="button" class="button small danger ghost" data-act="delete">${esc(t('lifecycle.delete'))}</button>
+        </div>`
       : `<p>${reminderStatusChip(r)}</p><p class="muted">${esc(reminderWhen(r))}</p>${r.note ? `<p class="pre">${esc(r.note)}</p>` : ''}`,
     actions: open
-      ? `<button type="button" class="button danger ghost" data-act="delete">${esc(t('lifecycle.delete'))}</button>
-         <button type="button" class="button ghost" data-act="cancel">${esc(t('reminder.cancel'))}</button>
-         <button type="button" class="button ghost" data-act="snooze">${esc(t('notif.snooze'))}</button>
+      ? `<button type="button" class="button ghost" data-act="snooze">${esc(t('notif.snooze'))}</button>
          <button type="button" class="button ok" data-act="done">${icon('check')}${esc(t('reminder.markDone'))}</button>
          <button type="button" class="button primary" data-act="save">${esc(t('common.save'))}</button>`
       : `<button type="button" class="button danger ghost" data-act="delete">${esc(t('lifecycle.delete'))}</button>

@@ -7,6 +7,7 @@ buttons, which is why each action's bounding rect is checked against the viewpor
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
 import tempfile
@@ -15,6 +16,7 @@ import time
 import unittest
 from contextlib import closing
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 import uvicorn
 from playwright.sync_api import sync_playwright
@@ -53,6 +55,29 @@ MEASURE_JS = """(selector) => {
           count: document.querySelectorAll(selector).length};
 }"""
 
+# A <dialog> scrolls: an answer row wider than the phone does not widen the page, it lets a
+# sideways swipe slide the whole sheet off the screen. So the sheet's own scroll width and
+# every element's rect against the sheet are checked, deliberate scrollers excepted.
+SHEET_JS = """() => {
+  const dialog = [...document.querySelectorAll('dialog[open]')].pop();
+  const frame = dialog.querySelector('.sheet-frame').getBoundingClientRect();
+  const inScroller = (el) => {
+    for (let a = el.parentElement; a && a !== dialog; a = a.parentElement) {
+      if (['auto', 'scroll'].includes(getComputedStyle(a).overflowX)) return true;
+    }
+    return false;
+  };
+  const outside = [...dialog.querySelectorAll('.sheet-frame *')].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && (r.left < frame.left - 0.5 || r.right > frame.right + 0.5) && !inScroller(el);
+  }).map((el) => el.textContent.trim());
+  return {scroll: dialog.scrollWidth, client: dialog.clientWidth, outside, frameLeft: frame.left,
+          frameWidth: frame.width, answers: [...dialog.querySelectorAll('.sheet-actions button')].length};
+}"""
+# A long title, as on the phone where this was found; alarm delivery shows every field.
+WIDE_REMINDER = {"title": "Пройти онлайн-регистрацию на рейс и распечатать посадочный",
+                 "remind_at": "2030-01-15T09:00:00+00:00", "delivery": "ALARM", "wake_check": True}
+
 
 def _free_port() -> int:
     with closing(socket.socket()) as sock:
@@ -77,6 +102,11 @@ class ResponsiveLayoutTest(unittest.TestCase):
                 break
             time.sleep(0.05)
         cls.origin = f"http://127.0.0.1:{port}"
+        operation = {"op_id": "responsive-reminder-0001", "type": "reminder.create", "entity_id": "rem-wide", "payload": WIDE_REMINDER}
+        request = Request(f"{cls.origin}/api/v1/sync", data=json.dumps({"operations": [operation]}).encode(),
+                          headers={"Content-Type": "application/json"})
+        with urlopen(request) as response:
+            assert json.load(response)["results"][0]["status"] == "APPLIED"
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.chromium.launch(headless=True, executable_path=CHROMIUM)
 
@@ -110,6 +140,25 @@ class ResponsiveLayoutTest(unittest.TestCase):
                         self.assertGreaterEqual(result["count"], 3)
                         self.assertEqual(result["scroll"], result["client"])
                         self.assertEqual(result["offscreen"], [])
+
+    def test_sheet_answers_stay_inside_the_sheet_on_every_phone_width(self) -> None:
+        # (screen, what opens the sheet, how many answers its footer keeps)
+        sheets = (("reminder/rem-wide", "[data-action=rem-edit]", 3),
+                  ("places", "[data-action=place-edit]", 3))
+        for locale in LOCALES:
+            for width in WIDTHS:
+                page = self._page(width, locale)
+                for route, opener, answers in sheets:
+                    with self.subTest(locale=locale, width=width, sheet=route):
+                        page.goto(f"{self.origin}/#/{route}")
+                        page.locator(opener).first.click(timeout=15000)
+                        page.wait_for_selector("dialog[open] .sheet-actions button")
+                        result = page.evaluate(SHEET_JS)
+                        self.assertEqual(result["answers"], answers)
+                        self.assertEqual(result["scroll"], result["client"])
+                        self.assertEqual(result["outside"], [])
+                        self.assertEqual((result["frameLeft"], result["frameWidth"]), (0, width))
+                        page.keyboard.press("Escape")
 
     def test_no_screen_scrolls_sideways_at_320(self) -> None:
         for locale in LOCALES:
