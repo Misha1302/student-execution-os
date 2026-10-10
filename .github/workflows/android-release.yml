@@ -129,15 +129,18 @@ jobs:
           UPDATE_URL: ${{ vars.SEOS_UPDATE_POLICY_URL_TEMPLATE }}
           UPDATE_KEY_ID: ${{ vars.SEOS_UPDATE_SIGNING_KEY_ID }}
           GOOGLE_SERVICES_B64: ${{ secrets.SEOS_GOOGLE_SERVICES_JSON_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SEOS_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.SEOS_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SEOS_KEY_ALIAS }}
         run: |
           test -n "$KEYSTORE_B64"
           test -n "$GOOGLE_SERVICES_B64"
           test -n "$UPDATE_KEYS"
           test -n "$UPDATE_URL"
           test -n "$UPDATE_KEY_ID"
-          test -n "${{ secrets.SEOS_KEYSTORE_PASSWORD }}"
-          test -n "${{ secrets.SEOS_KEY_PASSWORD }}"
-          test -n "${{ secrets.SEOS_KEY_ALIAS }}"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          test -n "$KEY_ALIAS"
       - name: Install and audit npm graph before exposing signing material
         run: |
           npm ci --prefix mobile --ignore-scripts
