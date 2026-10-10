@@ -22,7 +22,7 @@ function scopeLabel(scope) {
 function grantRow(grant) {
   const expired = grant.expires_at && new Date(grant.expires_at) <= new Date();
   const state = grant.revoked_at ? chip(t('apps.revoked'), 'muted') : expired ? chip(t('apps.expired'), 'warn') : chip(t('apps.active'), 'ok');
-  return `<div class="row static" data-grant="${esc(grant.id)}">
+  return `<div class="row static grant-row" data-grant="${esc(grant.id)}">
       <span class="row-main"><strong>${esc(grant.label)}</strong>
         <small>${esc(grant.scopes.map(scopeLabel).join(' · '))}</small>
         <small>${esc(t('apps.used', { when: grant.last_used_at ? fmtDateTime(grant.last_used_at) : t('apps.never') }))}${grant.expires_at ? ` · ${esc(t('apps.expires', { when: fmtDateTime(grant.expires_at) }))}` : ''}</small>

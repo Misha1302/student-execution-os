@@ -295,8 +295,8 @@ button.row:active, .task-card:active, .menu-row:active, .agenda-item:active { ba
 .row-main small { color: var(--text-3); font-size: 13px; overflow-wrap: anywhere; }
 /* A problem with its two buttons: the words keep a readable width and the buttons move
    under them when the row is narrow (they used to squeeze the text to one letter a line). */
-.sync-item { flex-wrap: wrap; }
-.sync-item .row-main { flex: 1 1 14rem; }
+.sync-item, .grant-row { flex-wrap: wrap; }
+.sync-item .row-main, .grant-row .row-main { flex: 1 1 14rem; }
 .sync-item > .button { flex: 1 1 auto; }
 .row-time { flex: none; width: 50px; display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
 .row-time small { color: var(--text-3); font-size: 12px; }

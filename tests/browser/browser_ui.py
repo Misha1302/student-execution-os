@@ -1466,6 +1466,44 @@ class BrowserUiTest(unittest.TestCase):
         self._screenshot(page, "sync-problems-phone-ru.png")
         page.close()
 
+    def test_a_saved_today_says_whose_day_and_when_next_to_sync_problems(self):
+        # Found on a real phone: with old sync problems on the account the chip showed only
+        # «⚠ 7», so a cold start drew last night's saved Today — a check-in already done —
+        # under the new day's date, with nothing saying it was a saved copy.
+        page = self._open(width=360, height=780, locale="ru", hash_="#/tasks")
+        page.clock.set_fixed_time(NOW)
+        self._ready(page, "tasks")
+
+        def busy(route):
+            ops = json.loads(route.request.post_data or "{}").get("operations", [])
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"server_revision": 1, "results": [
+                {**op, "status": "CONFLICT", "code": "EXECUTION_ACTIVE", "message": "another execution is active", "entity": None}
+                for op in ops]}))
+        page.route(ORIGIN + "/api/v1/sync", busy)
+        task = next(t for t in self.responses["/api/v1/tasks"] if t["status"] == "ACTIVE" and not t.get("started_at"))
+        page.locator(f'.task-card[data-id="{task["id"]}"]').click(button="right")
+        page.locator('dialog.sheet[open] [data-choice="start"]').click()
+        page.locator("#offline-chip").filter(has_text="1").wait_for()
+        self._go(page, "today")
+        self._ready(page, "today")
+        self.assertEqual(page.locator("#page-subtitle").inner_text(), "Понедельник, 21 сентября")
+
+        # The next afternoon, without network: the saved Today opens at once.
+        for path in self.responses:
+            self.offline.add(("GET", path))
+        page.clock.set_fixed_time(NOW + timedelta(days=1, hours=4))
+        page.reload()
+        self._ready(page, "today")
+        chip = page.locator("#offline-chip")
+        chip.wait_for()
+        self.assertEqual(page.locator("#page-subtitle").inner_text(), "Понедельник, 21 сентября")
+        self.assertEqual(chip.get_attribute("aria-label"), "Офлайн · 12:00 · Проблема синхронизации · 1")
+        self.assertEqual(chip.locator(".chip-short").inner_text(), "12:00")
+        title = page.locator("#page-title")
+        self.assertEqual(title.evaluate("el => el.scrollWidth <= el.clientWidth"), True, "screen title is cut")
+        self._assert_no_horizontal_scroll(page, 360)
+        page.close()
+
 
 if __name__ == "__main__":
     unittest.main()
