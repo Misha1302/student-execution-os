@@ -140,6 +140,7 @@ class ConnectAppBrowserTest(unittest.TestCase):
         sheet = page.locator("dialog.sheet[open]")
         sheet.locator("[data-label]").fill("Codex")
         sheet.locator('[data-scope="tasks:write"]').check()
+        sheet.locator('[data-chip-group="app-days"] [data-value="365"]').click()
         sheet.locator("[data-create]").click()
         shown = page.locator("dialog.sheet[open] [data-token]")
         shown.wait_for()
@@ -148,6 +149,21 @@ class ConnectAppBrowserTest(unittest.TestCase):
         self.assertIn("bearer_token_env_var", page.locator("dialog.sheet[open] [data-codex]").inner_text())
         tasks = self.http.get("/api/v1/ext/tasks", headers={"Authorization": f"Bearer {codex_token}"})
         self.assertEqual([task["title"] for task in tasks.json()], ["Доклад по ИИ"])
+
+        # Found on a real phone: «Активно» and «Отключить» squeezed the scopes and dates to
+        # a word a line, and «действует до Чт, 30 сент.» of next year read as expired.
+        page.locator("dialog.sheet[open] button[value=done]").click()
+        page.clock.set_fixed_time(NOW)
+        page.reload()
+        page.wait_for_selector('#workspace[data-view="settings"][data-view-state="ready"]')
+        rows = page.locator("[data-connected-apps] .grant-row")
+        self.assertEqual(rows.count(), 2)
+        for i in range(rows.count()):
+            words, row = rows.nth(i).locator(".row-main").bounding_box()["width"], rows.nth(i).bounding_box()["width"]
+            self.assertGreaterEqual(words, 0.8 * row, "the chip and the button stay beside a narrow column")
+        self.assertIn("2027", rows.filter(has_text="Codex").inner_text())
+        self.assertNotIn("2026", rows.filter(has_text="ChatGPT").inner_text())
+        self.assertEqual(page.evaluate("document.documentElement.scrollWidth <= innerWidth"), True)
         self.assertEqual(errors, [])
 
 

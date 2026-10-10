@@ -78,7 +78,9 @@ export function fmtDay(value, now = now_()) {
   if (sameDay(d, now)) return t('day.today');
   if (sameDay(d, tomorrow)) return t('day.tomorrow');
   if (sameDay(d, yesterday)) return t('day.yesterday');
-  const label = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short' }).format(d);
+  // Another year names it: a token «до Чт, 30 сент.» read as already expired in October.
+  const year = d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' };
+  const label = new Intl.DateTimeFormat(locale, { weekday: 'short', day: 'numeric', month: 'short', ...year }).format(d);
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 

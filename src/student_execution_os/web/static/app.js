@@ -99,13 +99,20 @@ function relabel() {
   $('#search-button').setAttribute('aria-label', t('search.title'));
 }
 
-function updateChrome(view) {
+// The day the Today data describes: a saved copy from last night is labelled with its
+// own date, not with the phone's.
+function todaySubtitle(localDate) {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(localDate || '') ? new Date(`${localDate}T12:00:00`) : new Date();
+  return capitalize(new Intl.DateTimeFormat(getLocale(), { weekday: 'long', day: 'numeric', month: 'long' }).format(day));
+}
+
+function updateChrome(view, data) {
   const bare = Boolean(view.bare);
   document.body.classList.toggle('bare', bare);
   const detail = Boolean(view.detail);
   $('#back-button').hidden = !detail;
   $('#page-title').textContent = view.title();
-  const subtitle = view.id === 'today' ? capitalize(new Intl.DateTimeFormat(getLocale(), { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())) : '';
+  const subtitle = view.id === 'today' ? todaySubtitle(data?.local_date) : '';
   $('#page-subtitle').textContent = subtitle;
   $('#page-subtitle').hidden = !subtitle;
   document.title = `${view.title()} · ${t('app.name')}`;
@@ -125,9 +132,13 @@ function setOffline(stale, fetchedAt) {
   chip.hidden = !stale && !syncing.pending && !syncing.conflicts;
   chip.classList.toggle('chip-danger', Boolean(syncing.conflicts));
   const time = fetchedAt ? fmtTime(fetchedAt) : '—';
-  const [label, glyph, short] = syncing.conflicts ? [t('sync.conflictChip', { n: syncing.conflicts }), 'alert', syncing.conflicts]
-    : syncing.pending ? [t('sync.pendingChip', { n: syncing.pending }), 'refresh', syncing.pending]
-      : stale ? [t('offline.chip', { time }), 'clock', time] : ['', '', ''];
+  const queue = syncing.conflicts ? t('sync.conflictChip', { n: syncing.conflicts })
+    : syncing.pending ? t('sync.pendingChip', { n: syncing.pending }) : '';
+  // A saved screen says so even next to old sync problems: with conflicts on the account
+  // the chip showed only «⚠ 7», and a cold start drew last night's check-ins as today's.
+  const [label, glyph, short] = stale ? [[t('offline.chip', { time }), queue].filter(Boolean).join(' · '), 'clock', time]
+    : syncing.conflicts ? [queue, 'alert', syncing.conflicts]
+      : syncing.pending ? [queue, 'refresh', syncing.pending] : ['', '', ''];
   // On a phone the whole label squeezed the screen title down to one letter: there the
   // chip shows an icon and the number, and the words stay for screen readers and wide screens.
   chip.innerHTML = label ? `${icon(glyph)}<span class="chip-long">${esc(label)}</span><span class="chip-short" aria-hidden="true">${esc(String(short))}</span>` : '';
@@ -213,6 +224,7 @@ async function render({ fresh = false, reuse = false, keepScroll = false } = {})
   }
   if (seq !== renderSeq) return;
   current = { view, ...result };
+  updateChrome(view, result.data);
   const ctx = context();
   const container = document.createElement('div');
   // A refresh of the same screen appears in place (no entrance animation, no jump).
