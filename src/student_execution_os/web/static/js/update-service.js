@@ -216,6 +216,20 @@ export class AppUpdateService {
     this.configuration ||= await this.adapter.configuration();
     this.current.currentVersion = this.configuration.versionName || null;
     this.current.currentVersionCode = Number(this.configuration.buildNumber) || null;
+    if (!saved.health && this.configuration.enabled && typeof this.adapter.nativeState === 'function') {
+      // Recover the launch marker before storage/session/render work even if the
+      // JS preference write was lost and Android already finished the upgrade.
+      let native;
+      try { native = await this.adapter.nativeState(); } catch { /* retry on a later launch */ }
+      if (['PREPARING', 'SUBMITTING', 'COMMITTED', 'USER_ACTION_REQUIRED', 'INSTALLED'].includes(native?.state)
+          && native.targetVersion === this.current.currentVersion
+          && Number(native.targetBuild) === this.current.currentVersionCode
+          && this.current.currentVersionCode > 0 && /^[0-9a-f]{64}$/.test(String(native.targetSha256 || ''))) {
+        saved.pending = { version: native.targetVersion, buildNumber: Number(native.targetBuild), sha256: native.targetSha256 };
+        saved.health = { pendingVersion: native.targetVersion, pendingBuild: Number(native.targetBuild),
+          launchAttempts: 0, startupHealth: 'pending', appliedAt: null, rollbackCompatibility: 'BINARY_ONLY' };
+      }
+    }
     if (saved.health?.pendingVersion === this.current.currentVersion
         && pendingBuildMatches(saved.health, this.current.currentVersionCode)) {
       saved.health.launchAttempts = Number(saved.health.launchAttempts || 0) + 1;
@@ -272,7 +286,9 @@ export class AppUpdateService {
     }
     if (nativeState === 'INSTALLED') {
       if (this.current.currentVersionCode >= Number(saved.pending.buildNumber)) {
-        await this.markHealthy();
+        // Package installation proves the running binary's identity, not that
+        // storage and the first meaningful render succeeded. Only startup's
+        // explicit markHealthy() may finish the launch-health marker.
         if (this.current.status === UpdateState.RESTART_REQUIRED) this.setStatus(UpdateState.IDLE, { error: null });
       } else if ([UpdateState.IDLE, UpdateState.READY_TO_INSTALL, UpdateState.APPLYING].includes(this.current.status)) {
         this.setStatus(UpdateState.RESTART_REQUIRED, { error: null });

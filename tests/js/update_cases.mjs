@@ -247,8 +247,29 @@ await legacyUpgraded.recordUpdatedLaunch();
 equal(JSON.parse(values.get('seos.update.state.v1')).health.launchAttempts, 1, 'legacy health marker is counted');
 await legacyUpgraded.initialize(); await legacyUpgraded.reconcileInstallerState();
 persisted = JSON.parse(values.get('seos.update.state.v1'));
+equal(persisted.health.startupHealth, 'pending', 'installed callback does not certify storage/render health');
+ok(persisted.pending, 'pending startup marker remains until the first meaningful render');
+await legacyUpgraded.markHealthy();
+persisted = JSON.parse(values.get('seos.update.state.v1'));
 equal(persisted.pending, null, 'legacy pending marker is cleared after the installed build runs');
 equal(persisted.health.startupHealth, 'healthy', 'legacy upgrade reaches healthy state');
+
+// Lost JS state plus an already installed native target still counts early crashes.
+values.clear();
+updatedAdapter.installerState = { state: 'INSTALLED', targetVersion: '1.0.1', targetBuild: 101, targetSha256: 'a'.repeat(64) };
+let recoveredLaunch;
+for (let attempt = 1; attempt <= 3; attempt += 1) {
+  recoveredLaunch = new AppUpdateService(updatedAdapter);
+  await recoveredLaunch.recordUpdatedLaunch();
+  await recoveredLaunch.initialize();
+  await recoveredLaunch.reconcileInstallerState();
+  persisted = JSON.parse(values.get('seos.update.state.v1'));
+  equal(persisted.health.launchAttempts, attempt, 'native installed target reconstructs and counts lost JS startup state');
+  equal(persisted.health.startupHealth, 'pending', 'native installed state cannot hide an incomplete launch');
+}
+equal(recoveredLaunch.getState().error.code, 'STARTUP_UNHEALTHY', 'three incomplete installed-target launches remain observable');
+await recoveredLaunch.markHealthy();
+equal(JSON.parse(values.get('seos.update.state.v1')).health.startupHealth, 'healthy', 'explicit first-render signal completes recovered health');
 
 // An OS prompt that cannot be reopened becomes a retryable failure, never a dead end.
 values.clear(); served = rawPolicy({ sequence: 30 });

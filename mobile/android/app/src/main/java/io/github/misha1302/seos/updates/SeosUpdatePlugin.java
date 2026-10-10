@@ -187,7 +187,13 @@ public class SeosUpdatePlugin extends Plugin {
             // Never leave the user locked behind an OS prompt nobody can reopen:
             // abandon this platform session (no install can follow it) and allow a
             // fresh apply from the verified cached APK.
-            try { installer.abandonSession(current.sessionId); } catch (RuntimeException ignored) { }
+            try { installer.abandonSession(current.sessionId); }
+            catch (RuntimeException abandonFailure) {
+                // The OS may still complete this committed session. Keep durable
+                // ownership until it ends; clearing it would permit duplicate apply.
+                call.reject("Android installer session could not be cancelled", "INSTALLER_FAILED", abandonFailure);
+                return;
+            }
             state.fail(current.sessionId, "INSTALL_CANCELLED", "Android installer could not be reopened; start the installation again");
             call.reject("Android installer could not be reopened", "INSTALL_CANCELLED", failure);
         }
@@ -271,7 +277,7 @@ public class SeosUpdatePlugin extends Plugin {
                 || "COMMITTED".equals(current.state) || "USER_ACTION_REQUIRED".equals(current.state);
         if (!pending) return current;
         if (current.targetBuild > 0 && runningBuild() >= current.targetBuild) {
-            state.callback(current.sessionId, "INSTALLED", "", "Installed build is running");
+            state.reconcileInstalledBuild(runningBuild());
             return state.get();
         }
         PackageInstaller installer = getContext().getPackageManager().getPackageInstaller();
