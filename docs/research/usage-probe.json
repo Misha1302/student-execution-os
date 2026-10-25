@@ -1,0 +1,42 @@
+{
+  "synthetic": true,
+  "source_sha256": "1b78cb3e165870af79ee363ba44fccb03e9efab27c75893c38f24c757d8c6ab3",
+  "source": "src/student_execution_os/agent/providers.py",
+  "anthropic_fixture": {
+    "usage": {
+      "input_tokens": 50,
+      "output_tokens": 20,
+      "cache_read_input_tokens": 1000,
+      "cache_creation_input_tokens": 200
+    }
+  },
+  "anthropic_observed": {
+    "prompt_tokens": 50,
+    "completion_tokens": 20,
+    "total_tokens": 70
+  },
+  "anthropic_documented_total_input": 1250,
+  "openai_fixture": {
+    "usage": {
+      "prompt_tokens": 1250,
+      "completion_tokens": 20,
+      "total_tokens": 1270,
+      "prompt_tokens_details": {
+        "cached_tokens": 1000
+      }
+    }
+  },
+  "openai_observed": {
+    "prompt_tokens": 1250,
+    "completion_tokens": 20,
+    "total_tokens": 1270
+  },
+  "missing_usage_observed": null,
+  "network_requests": 0,
+  "system_prompt_size": {
+    "characters": 12724,
+    "utf8_bytes": 13690,
+    "lines": 147,
+    "model_tokens": null
+  }
+}

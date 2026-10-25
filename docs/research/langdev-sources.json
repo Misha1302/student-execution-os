@@ -1,0 +1,31 @@
+{
+  "reviewed_on": "2026-10-25",
+  "baseline_commit": "648c18d7dc679fe16c06a50b1e8477c814adf9ec",
+  "raw_transcripts_included": false,
+  "sources": [
+    {
+      "id": "xQd8bCu1bj8",
+      "title": "Context Over Corpus: AI Autocompletion for Low-Resource DSLs",
+      "sha256": "fa55496c14ec62f1d058c43631f04274e309f92f357ae232acf7f8b632717632",
+      "bytes": 14612,
+      "url": "https://www.youtube.com/watch?v=xQd8bCu1bj8",
+      "evidence_type": "ASR transcript; excerpts examined, not slide verification"
+    },
+    {
+      "id": "rOB4V547hU8",
+      "title": "Teaching AI Agents to Work with MPS",
+      "sha256": "86999986f988074296ee61a7de04477ee30ed89255c4f63b884ba6737704e13e",
+      "bytes": 24241,
+      "url": "https://www.youtube.com/watch?v=rOB4V547hU8",
+      "evidence_type": "ASR transcript; excerpts examined, not slide verification"
+    },
+    {
+      "id": "05i4vScgH4M",
+      "title": "Domain Knowledge Debt in Metamodeling: When LLMs Act as Oracles",
+      "sha256": "991b683874cee2bc5640d15ffeb46082d38ded7c585bafd2462ef0e53cc026b1",
+      "bytes": 21517,
+      "url": "https://www.youtube.com/watch?v=05i4vScgH4M",
+      "evidence_type": "ASR transcript; excerpts examined, not slide verification"
+    }
+  ]
+}
